@@ -1,0 +1,70 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  MOD
+  USER
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  username      String   @unique
+  passwordHash  String
+  role          Role     @default(USER)
+  minecraftUUID String?  @unique
+  minecraftName String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  servers       Server[]
+}
+
+model SetupState {
+  id                  String   @id @default("singleton")
+  isInitialized       Boolean  @default(false)
+  initialAdminCreated Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+enum ServerProvider {
+  VANILLA
+  PAPER
+  PURPUR
+  FABRIC
+  FORGE
+}
+
+enum ServerStatus {
+  STOPPED
+  STARTING
+  RUNNING
+  STOPPING
+  ERROR
+}
+
+model Server {
+  id          String         @id @default(cuid())
+  name        String
+  provider    ServerProvider
+  version     String
+  port        Int            @unique
+  containerId String?        @unique
+  status      ServerStatus   @default(STOPPED)
+  maxPlayers  Int            @default(20)
+  difficulty  String         @default("normal")
+  gamemode    String         @default("survival")
+  pvp         Boolean        @default(true)
+  worldPath   String?
+  ownerId     String
+  owner       User           @relation(fields: [ownerId], references: [id])
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+}

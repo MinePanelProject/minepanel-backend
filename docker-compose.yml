@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  # NestJS Backend
+  nestjs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: minepanel-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - mc-data:/mc-data
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://minepanel:${POSTGRES_PASSWORD:-changeme}@postgres:5432/minepanel
+      - JWT_SECRET=${JWT_SECRET:-please-change-this-in-production}
+      - JWT_EXPIRES_IN=15m
+      - JWT_REFRESH_EXPIRES_IN=7d
+      - PORT=3000
+      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+      - DOCKER_NETWORK=minepanel_network
+      - MC_DATA_PATH=/mc-data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - minepanel_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: minepanel-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=minepanel
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - POSTGRES_DB=minepanel
+    networks:
+      - minepanel_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U minepanel"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  minepanel_network:
+    driver: bridge
+    name: minepanel_network
+
+volumes:
+  postgres-data:
+    name: minepanel-postgres-data
+  mc-data:
+    name: minepanel-mc-data
