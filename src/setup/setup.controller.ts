@@ -1,6 +1,6 @@
 import { Controller, Get } from '@nestjs/common';
-import { SetupService, SetupStatus } from './setup.service';
 import { Public } from '../common/decorators/public.decorator'; // We'll create this
+import { SetupService, type SetupStatus } from './setup.service';
 
 @Controller('setup')
 export class SetupController {

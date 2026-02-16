@@ -1,13 +1,11 @@
-import { Controller, Post, Body } from '@nestjs/common';
-import * as os from 'os';
-import * as fs from 'fs';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import { Body, Controller, Post } from '@nestjs/common';
 
 @Controller('servers')
 export class ServersController {
   @Post('validate-resources')
-  validateResources(
-    @Body() body: { ram: number; cpuCores?: number; storage: number },
-  ) {
+  validateResources(@Body() body: { ram: number; cpuCores?: number; storage: number }) {
     const stats = fs.statfsSync('/');
     const bsize = Number(stats.bsize);
 
@@ -50,8 +48,7 @@ export class ServersController {
       host: { totalRamGB, freeRamGB, totalCores, freeStorageGB },
       proposed: body,
       warnings,
-      recommendation:
-        warnings.length === 0 ? 'Looks good!' : 'Consider lowering resources.',
+      recommendation: warnings.length === 0 ? 'Looks good!' : 'Consider lowering resources.',
     };
   }
 }

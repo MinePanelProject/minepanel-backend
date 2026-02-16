@@ -2,8 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { ServersModule } from './servers/servers.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { ServersModule } from './servers/servers.module';
 import { SetupModule } from './setup/setup.module';
 
 @Module({
