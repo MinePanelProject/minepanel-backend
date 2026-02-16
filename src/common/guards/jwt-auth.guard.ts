@@ -12,11 +12,11 @@ export class JwtAuthGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
-    
+
     if (isPublic) {
       return true;
     }
-    
+
     // TODO: Implement JWT validation later
     return false; // For now, block non-public
   }

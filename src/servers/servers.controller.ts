@@ -1,25 +1,20 @@
 import { Controller, Post, Body } from '@nestjs/common';
-// import { ServersService } from './servers.service';  // Uncomment once you have the service
+import * as os from 'os';
+import * as fs from 'fs';
 
 @Controller('servers')
 export class ServersController {
-  // constructor(private readonly serversService: ServersService) {}  // Optional for now
-
   @Post('validate-resources')
-  validateResources(@Body() body: { ram: number; cpuCores?: number, storage: number }) {
-    // Simple host resource check using Node's built-in 'os' module
-    const os = require('os');  // or import * as os from 'os'; at top
-    const fs = require('fs');
-
-    const stats = fs.statfsSync("/");
+  validateResources(
+    @Body() body: { ram: number; cpuCores?: number; storage: number },
+  ) {
+    const stats = fs.statfsSync('/');
     const bsize = Number(stats.bsize);
 
-    const totalBlocks = Number(stats.blocks);
     const freeBlocks = Number(stats.bfree);
-    const totalStorageGB = Math.round((totalBlocks * bsize) / 1024 / 1024 / 1024);
     const freeStorageGB = Math.round((freeBlocks * bsize) / 1024 / 1024 / 1024);
 
-    const freeRamGB = Math.round(os.freemem() / 1024 / 1024 / 1024); // in GB
+    const freeRamGB = Math.round(os.freemem() / 1024 / 1024 / 1024);
     const totalRamGB = Math.round(os.totalmem() / 1024 / 1024 / 1024);
     const totalCores = os.cpus().length;
 
@@ -55,7 +50,8 @@ export class ServersController {
       host: { totalRamGB, freeRamGB, totalCores, freeStorageGB },
       proposed: body,
       warnings,
-      recommendation: warnings.length === 0 ? 'Looks good!' : 'Consider lowering resources.',
+      recommendation:
+        warnings.length === 0 ? 'Looks good!' : 'Consider lowering resources.',
     };
   }
 }

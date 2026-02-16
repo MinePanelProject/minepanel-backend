@@ -13,7 +13,7 @@ import { SetupModule } from './setup/setup.module';
     PrismaModule,
     SetupModule,
     PrismaModule,
-    SetupModule
+    SetupModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface SetupStatus {
@@ -63,7 +63,10 @@ export class SetupService {
     });
   }
 
-  private determineNextStep(state: any): SetupStatus['nextStep'] {
+  private determineNextStep(state: {
+    initialAdminCreated: boolean;
+    firstServerCreated: boolean;
+  }): SetupStatus['nextStep'] {
     if (!state.initialAdminCreated) {
       return 'register_admin';
     }
