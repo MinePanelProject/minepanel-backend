@@ -31,7 +31,7 @@ export class SetupService {
     }
 
     return {
-      isInitialized: setupState.initialAdminCreated,
+      isInitialized: setupState.isInitialized,
       initialAdminCreated: setupState.initialAdminCreated,
       firstServerCreated: setupState.firstServerCreated,
       nextStep: this.determineNextStep(setupState),
@@ -39,18 +39,12 @@ export class SetupService {
   }
 
   async markAdminCreated() {
-    await this.prisma.setupState.upsert({
+    await this.prisma.setupState.update({
       where: { id: 'singleton' },
-      update: {
+      data: {
         initialAdminCreated: true,
         isInitialized: true,
-      },
-      create: {
-        id: 'singleton',
-        initialAdminCreated: true,
-        isInitialized: true,
-        firstServerCreated: false,
-      },
+      }
     });
   }
 

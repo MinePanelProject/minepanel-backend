@@ -12,8 +12,6 @@ import { SetupModule } from './setup/setup.module';
     ServersModule,
     PrismaModule,
     SetupModule,
-    PrismaModule,
-    SetupModule,
   ],
   controllers: [AppController],
   providers: [AppService],
