@@ -68,7 +68,7 @@ export class SetupService {
     const status = await this.getSetupState();
 
     if (status.initialAdminCreated) {
-      throw new ForbiddenException();
+      throw new ForbiddenException('First admin already created');
     }
 
     const passwordHash = await bcrypt.hash(createUser.password, 10);
