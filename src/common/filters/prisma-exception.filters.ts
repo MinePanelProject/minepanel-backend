@@ -8,6 +8,8 @@ export class PrismaExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
 
+    console.log(exception);
+
     // map Prisma error codes to HTTP status + message
     switch (exception.code) {
       case 'P2002':
@@ -15,6 +17,9 @@ export class PrismaExceptionFilter implements ExceptionFilter {
         break;
       case 'P2025':
         response.status(HttpStatus.NOT_FOUND).json({ message: 'Resource not found' });
+        break;
+      case 'P2022':
+        response.status(HttpStatus.NOT_FOUND).json({ message: 'Column not found' });
         break;
       case 'P1001':
         response.status(HttpStatus.SERVICE_UNAVAILABLE).json({ message: 'Database unreachable' });
