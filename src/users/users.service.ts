@@ -4,32 +4,34 @@ import { Role, User } from '@prisma/client';
 
 @Injectable()
 export class UsersService {
-    constructor(private prisma: PrismaService) {}
-    
-    async createUser(email: string, username: string, passwordHash: string, role?: Role ): Promise<Omit<User, 'passwordHash'>> {
-        
-        return this.prisma.user.create({
-            data: {
-                username,
-                email,
-                passwordHash,
-                role
-            },
-            omit: { passwordHash: true }
-        })
-    }
+  constructor(private prisma: PrismaService) {}
 
-    async findById(id: string): Promise<Omit<User, 'passwordHash'> | null> {
+  async createUser(
+    email: string,
+    username: string,
+    passwordHash: string,
+    role?: Role,
+  ): Promise<Omit<User, 'passwordHash'>> {
+    return this.prisma.user.create({
+      data: {
+        username,
+        email,
+        passwordHash,
+        role,
+      },
+      omit: { passwordHash: true },
+    });
+  }
 
-        return this.prisma.user.findUnique({
-            where: { id },
-        })
-    }
+  async findById(id: string): Promise<Omit<User, 'passwordHash'> | null> {
+    return this.prisma.user.findUnique({
+      where: { id },
+    });
+  }
 
-    async findByUsername(username: string): Promise<User | null> {
-
-        return this.prisma.user.findUnique({
-            where: { username },
-        })
-    }
+  async findByUsername(username: string): Promise<User | null> {
+    return this.prisma.user.findUnique({
+      where: { username },
+    });
+  }
 }
