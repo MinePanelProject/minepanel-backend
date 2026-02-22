@@ -27,9 +27,7 @@ model User {
 
 model SetupState {
   id                  String   @id @default("singleton")
-  isInitialized       Boolean  @default(false)
   initialAdminCreated Boolean  @default(false)
-  firstServerCreated  Boolean  @default(false)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }

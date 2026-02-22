@@ -6,10 +6,8 @@ import { UsersService } from 'src/users/users.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface SetupStatus {
-  isInitialized: boolean;
   initialAdminCreated: boolean;
-  firstServerCreated: boolean;
-  nextStep: 'register_admin' | 'create_server' | 'complete';
+  nextStep: 'register_admin' | 'complete';
 }
 
 @Injectable()
@@ -30,17 +28,13 @@ export class SetupService {
       setupState = await this.prisma.setupState.create({
         data: {
           id: 'singleton',
-          isInitialized: false,
           initialAdminCreated: false,
-          firstServerCreated: false,
         },
       });
     }
 
     return {
-      isInitialized: setupState.isInitialized,
       initialAdminCreated: setupState.initialAdminCreated,
-      firstServerCreated: setupState.firstServerCreated,
       nextStep: this.determineNextStep(setupState),
     };
   }
@@ -50,16 +44,6 @@ export class SetupService {
       where: { id: 'singleton' },
       data: {
         initialAdminCreated: true,
-        isInitialized: true,
-      },
-    });
-  }
-
-  async markFirstServerCreated() {
-    await this.prisma.setupState.update({
-      where: { id: 'singleton' },
-      data: {
-        firstServerCreated: true,
       },
     });
   }
@@ -85,15 +69,9 @@ export class SetupService {
     return true;
   }
 
-  private determineNextStep(state: {
-    initialAdminCreated: boolean;
-    firstServerCreated: boolean;
-  }): SetupStatus['nextStep'] {
+  private determineNextStep(state: { initialAdminCreated: boolean }): SetupStatus['nextStep'] {
     if (!state.initialAdminCreated) {
       return 'register_admin';
-    }
-    if (!state.firstServerCreated) {
-      return 'create_server';
     }
     return 'complete';
   }
