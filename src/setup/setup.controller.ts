@@ -1,6 +1,7 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Post } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CreateUserDto } from 'src/auth/dto/register.dto';
+import { Public } from 'src/common/decorators/public.decorator';
 import { SetupService, type SetupStatus } from './setup.service';
 
 @ApiTags('setup')
@@ -8,6 +9,7 @@ import { SetupService, type SetupStatus } from './setup.service';
 export class SetupController {
   constructor(private readonly setupService: SetupService) {}
 
+  @Public()
   @ApiOperation({ summary: 'Get setup status' })
   @HttpCode(HttpStatus.OK)
   @Get('status')
@@ -15,6 +17,7 @@ export class SetupController {
     return this.setupService.getSetupState();
   }
 
+  @Public()
   @ApiOperation({ summary: 'Register first admin user' })
   @HttpCode(HttpStatus.CREATED)
   @Post('init')

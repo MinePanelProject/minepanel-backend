@@ -153,13 +153,14 @@ src/
 | updatedAt           | DateTime |                    |
 
 **RefreshToken**
-| Field     | Type     | Notes              |
-|-----------|----------|--------------------|
-| id        | String   | cuid, PK           |
-| token     | String   | unique, hashed     |
-| userId    | String   | FK -> User         |
-| expiresAt | DateTime |                    |
-| createdAt | DateTime |                    |
+| Field        | Type     | Notes                                  |
+|--------------|----------|----------------------------------------|
+| id           | String   | cuid, PK                               |
+| token        | String   | unique, hashed                         |
+| userId       | String   | FK -> User                             |
+| expiresAt    | DateTime |                                        |
+| stayLoggedIn | Boolean  | default: false — enables sliding expiry (TODO) |
+| createdAt    | DateTime |                                        |
 
 **Server**
 | Field       | Type           | Notes             |
@@ -240,7 +241,7 @@ Each MC server gets:
 | DATABASE_URL          | PostgreSQL connection string       | (required)                       |
 | JWT_SECRET            | Secret for JWT signing             | (required)                       |
 | JWT_EXPIRES_IN        | Access token TTL                   | 15m                              |
-| JWT_REFRESH_EXPIRES_IN| Refresh token TTL                  | 7d                               |
+| JWT_REFRESH_EXPIRES_IN| Refresh token TTL (TODO: wire into storeRefreshToken) | 7d              |
 | PORT                  | Backend listen port                | 3000                             |
 | CORS_ORIGIN           | Allowed CORS origin                | http://localhost:5173            |
 | DOCKER_NETWORK        | Docker network for MC containers   | minepanel_network                |
@@ -286,12 +287,21 @@ docker-compose up -d
 
 #### Auth implementation status
 - [x] `POST /auth/register`
-- [x] `POST /auth/login` (no JWT yet)
-- [ ] JWT strategy + guard
-- [ ] HttpOnly cookie handling
+- [x] `POST /auth/login` — sets HttpOnly cookies (access + refresh tokens)
+- [x] JWT strategy — extracts token from cookie, validates payload
+- [x] JWT guard — global, `@Public()` decorator skips it
+- [x] HttpOnly cookie handling — access token (15min), refresh token (7 days)
+- [x] Refresh token hashed and stored in DB with expiry
+- [ ] `@Public()` missing on setup routes
 - [ ] `POST /auth/refresh`
 - [ ] `POST /auth/logout`
 - [ ] `GET /auth/profile`
+
+#### Key decisions
+- JWT payload: `{ sub, username, role }` — minimal, no sensitive data
+- Refresh tokens stored in DB (not stateless) — allows true logout/revocation
+- `NODE_ENV=production` enables `secure` flag on cookies (requires HTTPS)
+- Sliding expiry planned for refresh tokens: if user is active within 24h of refresh token expiry, issue a new refresh token automatically (TODO)
 
 ### Phase 2 - Frontend
 
