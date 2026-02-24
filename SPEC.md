@@ -60,7 +60,7 @@ User runs: docker-compose up -d
 - **Framework:** NestJS
 - **Database:** PostgreSQL 16 + Prisma v7
 - **Docker management:** Dockerode
-- **Auth:** Passport + JWT
+- **Auth:** Passport + JWT (HttpOnly cookies)
 - **Language:** TypeScript
 - **Runtime:** Node.js 20
 
@@ -91,8 +91,7 @@ src/
 │   │   ├── register.dto.ts
 │   │   └── login.dto.ts
 │   ├── strategies/
-│   │   ├── jwt.strategy.ts
-│   │   └── local.strategy.ts
+│   │   └── jwt.strategy.ts
 │   └── guards/
 │       ├── jwt-auth.guard.ts
 │       └── roles.guard.ts
@@ -111,9 +110,11 @@ src/
 │   ├── servers.service.ts
 │   └── servers.controller.ts
 └── common/
-    └── decorators/
-        ├── public.decorator.ts
-        └── roles.decorator.ts
+    ├── decorators/
+    │   ├── public.decorator.ts
+    │   └── roles.decorator.ts
+    └── filters/
+        └── prisma-exception.filter.ts
 ```
 
 ---
@@ -140,17 +141,25 @@ src/
 | minecraftName | String?  |                      |
 | createdAt     | DateTime |                      |
 | updatedAt     | DateTime |                      |
-| servers       | Server[] | relation             |
+| servers       | Server[]       | relation         |
+| refreshTokens | RefreshToken[] | relation         |
 
 **SetupState** (singleton)
-| Field               | Type     | Notes             |
-|---------------------|----------|-------------------|
+| Field               | Type     | Notes              |
+|---------------------|----------|--------------------|
 | id                  | String   | default: singleton |
-| isInitialized       | Boolean  | default: false    |
-| initialAdminCreated | Boolean  | default: false    |
-| firstServerCreated  | Boolean  | default: false    |
-| createdAt           | DateTime |                   |
-| updatedAt           | DateTime |                   |
+| initialAdminCreated | Boolean  | default: false     |
+| createdAt           | DateTime |                    |
+| updatedAt           | DateTime |                    |
+
+**RefreshToken**
+| Field     | Type     | Notes              |
+|-----------|----------|--------------------|
+| id        | String   | cuid, PK           |
+| token     | String   | unique, hashed     |
+| userId    | String   | FK -> User         |
+| expiresAt | DateTime |                    |
+| createdAt | DateTime |                    |
 
 **Server**
 | Field       | Type           | Notes             |
@@ -184,11 +193,13 @@ src/
 
 ### Auth
 
-| Method | Path            | Auth | Description          |
-|--------|-----------------|------|----------------------|
-| POST   | /auth/register  | No   | Register user        |
-| POST   | /auth/login     | No   | Login, get JWT token |
-| GET    | /auth/profile   | JWT  | Get current user     |
+| Method | Path            | Auth | Description                              |
+|--------|-----------------|------|------------------------------------------|
+| POST   | /auth/register  | No   | Register user                            |
+| POST   | /auth/login     | No   | Login, sets HttpOnly cookies (JWT)       |
+| POST   | /auth/refresh   | No   | Refresh access token via HttpOnly cookie |
+| POST   | /auth/logout    | JWT  | Revoke refresh token, clear cookies      |
+| GET    | /auth/profile   | JWT  | Get current user                         |
 
 ### Servers
 
@@ -267,11 +278,20 @@ docker-compose up -d
 
 ### Phase 1 - Foundation
 
-1. Auth module (register, login, JWT, guards)
-2. Setup module (first-run wizard, admin creation)
+1. Auth module (register, login, JWT via HttpOnly cookies, refresh, logout, guards) ← IN PROGRESS
+2. Setup module (first-run wizard, admin creation) ✅
 3. Docker module (socket connection, container CRUD)
 4. Server module (create/start/stop/delete MC servers)
 5. Dockerize the backend
+
+#### Auth implementation status
+- [x] `POST /auth/register`
+- [x] `POST /auth/login` (no JWT yet)
+- [ ] JWT strategy + guard
+- [ ] HttpOnly cookie handling
+- [ ] `POST /auth/refresh`
+- [ ] `POST /auth/logout`
+- [ ] `GET /auth/profile`
 
 ### Phase 2 - Frontend
 
