@@ -56,7 +56,13 @@ export class AuthService {
       role: user.role,
     });
 
-    const refreshToken = randomBytes(32).toString('hex');
+    const refreshToken = await this.jwtService.signAsync(
+      {
+        sub: user.id,
+      },
+      { expiresIn: '7d' },
+    );
+
     const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
 
     await this.storeRefreshToken(user.id, hashedRefreshToken);
@@ -70,6 +76,7 @@ export class AuthService {
     };
   }
 
+  // TODO: update to get userid directly from refresh token
   async logoutUser(user: AuthTokens['user'], refreshToken: AuthTokens['refreshToken']) {
     const storedRefreshTokens = await this.prismaService.refreshToken.findMany({
       where: { userId: user.id },
@@ -98,5 +105,58 @@ export class AuthService {
         user: { connect: { id: userId } },
       },
     });
+  }
+
+  async refreshTokens(refreshToken: AuthTokens['refreshToken']) {
+    const decodedRefreshToken = await this.jwtService.verifyAsync<{ sub: string }>(refreshToken);
+    const userId = decodedRefreshToken.sub;
+
+    const storedRefreshTokens = await this.prismaService.refreshToken.findMany({
+      where: { userId },
+      select: { id: true, token: true, expiresAt: true },
+    });
+
+    // find matching token
+    for (const tokenEntry of storedRefreshTokens) {
+      const matches = await bcrypt.compare(refreshToken, tokenEntry.token);
+      if (!matches) continue;
+
+      const now = new Date();
+      const timeRemainingMs = new Date(tokenEntry.expiresAt).getTime() - now.getTime();
+      const expiringWithinOneDay = timeRemainingMs <= 86_400_000;
+
+      const user = await this.prismaService.user.findUniqueOrThrow({ where: { id: userId } });
+
+      const newAccessToken = await this.jwtService.signAsync({
+        sub: user.id,
+        username: user.username,
+        role: user.role,
+      });
+
+      // case 3
+      if (expiringWithinOneDay) {
+        await this.prismaService.refreshToken.delete({
+          where: {
+            id: tokenEntry.id,
+          },
+        });
+
+        const newRefreshToken = await this.jwtService.signAsync(
+          {
+            sub: user.id,
+          },
+          { expiresIn: '7d' },
+        );
+
+        const hashedNewRefreshToken = await bcrypt.hash(newRefreshToken, 10);
+
+        await this.storeRefreshToken(user.id, hashedNewRefreshToken);
+
+        return { accessToken: newAccessToken, refreshToken: newRefreshToken };
+      }
+
+      // case 2
+      return { accessToken: newAccessToken };
+    }
   }
 }

@@ -8,6 +8,7 @@ import {
   Post,
   Req,
   Res,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
@@ -71,13 +72,6 @@ export class AuthController {
     return req.user;
   }
 
-  @ApiOperation({ summary: 'Refresh jwt or refresh tokens' })
-  @HttpCode(HttpStatus.OK)
-  @Post('refresh')
-  async refresh(@Res({ passthrough: true }) res: Response) {
-    res.cookie;
-  }
-
   @ApiOperation({ summary: 'Logout and invalidate tokens cookies' })
   @HttpCode(HttpStatus.OK)
   @Post('logout')
@@ -109,5 +103,36 @@ export class AuthController {
       sameSite: 'lax',
       maxAge: 0,
     });
+  }
+
+  @Public()
+  @ApiOperation({ summary: 'Refresh jwt or refresh tokens' })
+  @HttpCode(HttpStatus.OK)
+  @Post('refresh')
+  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const fetchedRefreshToken = req.cookies.refresh_token as AuthTokens['refreshToken'];
+    const newTokens = await this.authService.refreshTokens(fetchedRefreshToken);
+
+    if (!newTokens) {
+      throw new UnauthorizedException('Something went wrong when generating new tokens');
+    }
+
+    const { accessToken, refreshToken } = newTokens;
+
+    res.cookie('access_token', accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 15 * 60 * 1000, // 15 minutes in ms
+    });
+
+    if (refreshToken) {
+      res.cookie('refresh_token', refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
+      });
+    }
   }
 }
