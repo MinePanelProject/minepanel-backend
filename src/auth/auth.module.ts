@@ -1,18 +1,15 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
-import { PassportModule } from '@nestjs/passport';
-import { PrismaModule } from 'src/prisma/prisma.module';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { DbModule } from 'src/db/db.module';
 import { UsersModule } from 'src/users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
-import { JwtStrategy } from './strategies/jwt.strategy';
 
 @Module({
   imports: [
     UsersModule,
-    PrismaModule,
+    DbModule,
     JwtModule.registerAsync({
       global: true,
       inject: [ConfigService],
@@ -21,9 +18,8 @@ import { JwtStrategy } from './strategies/jwt.strategy';
         signOptions: { expiresIn: configService.get('JWT_EXPIRES_IN') },
       }),
     }),
-    PassportModule,
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, PrismaService],
+  providers: [AuthService],
 })
 export class AuthModule {}

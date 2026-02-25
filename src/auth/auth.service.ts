@@ -1,9 +1,9 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import { randomBytes } from 'crypto';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { eq } from 'drizzle-orm';
+import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
+import { type User, refreshTokens, users } from 'src/db/schema';
 import { UsersService } from 'src/users/users.service';
 import { LoginUserDto } from './dto/login.dto';
 import { CreateUserDto } from './dto/register.dto';
@@ -19,7 +19,7 @@ export class AuthService {
   constructor(
     private readonly usersService: UsersService,
     private jwtService: JwtService,
-    private prismaService: PrismaService,
+    @Inject(DRIZZLE) private db: DrizzleDB,
   ) {}
 
   async registerUser(createUser: CreateUserDto): Promise<boolean> {
@@ -57,75 +57,59 @@ export class AuthService {
     });
 
     const refreshToken = await this.jwtService.signAsync(
-      {
-        sub: user.id,
-      },
+      { sub: user.id },
       { expiresIn: '7d' },
     );
 
     const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
-
     await this.storeRefreshToken(user.id, hashedRefreshToken);
 
     const { passwordHash, ...userWithoutPassword } = user;
 
-    return {
-      user: userWithoutPassword,
-      accessToken,
-      refreshToken,
-    };
+    return { user: userWithoutPassword, accessToken, refreshToken };
   }
 
-  // TODO: update to get userid directly from refresh token
   async logoutUser(user: AuthTokens['user'], refreshToken: AuthTokens['refreshToken']) {
-    const storedRefreshTokens = await this.prismaService.refreshToken.findMany({
-      where: { userId: user.id },
-      select: { id: true, token: true },
-    });
+    const storedTokens = await this.db
+      .select({ id: refreshTokens.id, token: refreshTokens.token })
+      .from(refreshTokens)
+      .where(eq(refreshTokens.userId, user.id));
 
-    if (storedRefreshTokens.length > 0) {
-      for (const tokenEntry of storedRefreshTokens) {
-        const matches = await bcrypt.compare(refreshToken, tokenEntry.token);
-        if (matches) {
-          await this.prismaService.refreshToken.delete({
-            where: { id: tokenEntry.id },
-          });
-
-          break;
-        }
+    for (const tokenEntry of storedTokens) {
+      const matches = await bcrypt.compare(refreshToken, tokenEntry.token);
+      if (matches) {
+        await this.db.delete(refreshTokens).where(eq(refreshTokens.id, tokenEntry.id));
+        break;
       }
     }
   }
 
   async storeRefreshToken(userId: string, hashedRefreshToken: string) {
-    await this.prismaService.refreshToken.create({
-      data: {
-        token: hashedRefreshToken,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        user: { connect: { id: userId } },
-      },
+    await this.db.insert(refreshTokens).values({
+      token: hashedRefreshToken,
+      userId,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
   }
 
   async refreshTokens(refreshToken: AuthTokens['refreshToken']) {
-    const decodedRefreshToken = await this.jwtService.verifyAsync<{ sub: string }>(refreshToken);
-    const userId = decodedRefreshToken.sub;
+    const decoded = await this.jwtService.verifyAsync<{ sub: string }>(refreshToken);
+    const userId = decoded.sub;
 
-    const storedRefreshTokens = await this.prismaService.refreshToken.findMany({
-      where: { userId },
-      select: { id: true, token: true, expiresAt: true },
-    });
+    const storedTokens = await this.db
+      .select({ id: refreshTokens.id, token: refreshTokens.token, expiresAt: refreshTokens.expiresAt })
+      .from(refreshTokens)
+      .where(eq(refreshTokens.userId, userId));
 
-    // find matching token
-    for (const tokenEntry of storedRefreshTokens) {
+    for (const tokenEntry of storedTokens) {
       const matches = await bcrypt.compare(refreshToken, tokenEntry.token);
       if (!matches) continue;
 
-      const now = new Date();
-      const timeRemainingMs = new Date(tokenEntry.expiresAt).getTime() - now.getTime();
+      const timeRemainingMs = new Date(tokenEntry.expiresAt).getTime() - Date.now();
       const expiringWithinOneDay = timeRemainingMs <= 86_400_000;
 
-      const user = await this.prismaService.user.findUniqueOrThrow({ where: { id: userId } });
+      const [user] = await this.db.select().from(users).where(eq(users.id, userId)).limit(1);
+      if (!user) throw new UnauthorizedException();
 
       const newAccessToken = await this.jwtService.signAsync({
         sub: user.id,
@@ -133,29 +117,20 @@ export class AuthService {
         role: user.role,
       });
 
-      // case 3
       if (expiringWithinOneDay) {
-        await this.prismaService.refreshToken.delete({
-          where: {
-            id: tokenEntry.id,
-          },
-        });
+        await this.db.delete(refreshTokens).where(eq(refreshTokens.id, tokenEntry.id));
 
         const newRefreshToken = await this.jwtService.signAsync(
-          {
-            sub: user.id,
-          },
+          { sub: user.id },
           { expiresIn: '7d' },
         );
 
-        const hashedNewRefreshToken = await bcrypt.hash(newRefreshToken, 10);
-
-        await this.storeRefreshToken(user.id, hashedNewRefreshToken);
+        const hashedNew = await bcrypt.hash(newRefreshToken, 10);
+        await this.storeRefreshToken(user.id, hashedNew);
 
         return { accessToken: newAccessToken, refreshToken: newRefreshToken };
       }
 
-      // case 2
       return { accessToken: newAccessToken };
     }
   }

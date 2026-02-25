@@ -1,10 +1,11 @@
-import { Injectable } from '@nestjs/common';
-import { Role, User } from '@prisma/client';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { Inject, Injectable } from '@nestjs/common';
+import { eq, or } from 'drizzle-orm';
+import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
+import { type Role, type User, users } from 'src/db/schema';
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(@Inject(DRIZZLE) private db: DrizzleDB) {}
 
   async createUser(
     email: string,
@@ -12,29 +13,26 @@ export class UsersService {
     passwordHash: string,
     role?: Role,
   ): Promise<boolean> {
-    await this.prisma.user.create({
-      data: {
-        username,
-        email,
-        passwordHash,
-        role,
-      },
+    await this.db.insert(users).values({
+      email,
+      username,
+      passwordHash,
+      ...(role ? { role } : {}),
     });
-
     return true;
   }
 
   async findById(id: string): Promise<User | null> {
-    return this.prisma.user.findUnique({
-      where: { id },
-    });
+    const [user] = await this.db.select().from(users).where(eq(users.id, id)).limit(1);
+    return user ?? null;
   }
 
   async findByIdentifier(identifier: string): Promise<User | null> {
-    return this.prisma.user.findFirst({
-      where: {
-        OR: [{ email: identifier }, { username: identifier }],
-      },
-    });
+    const [user] = await this.db
+      .select()
+      .from(users)
+      .where(or(eq(users.email, identifier), eq(users.username, identifier)))
+      .limit(1);
+    return user ?? null;
   }
 }

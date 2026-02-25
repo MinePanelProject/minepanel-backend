@@ -1,9 +1,10 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { ForbiddenException, Inject, Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import { eq } from 'drizzle-orm';
 import { CreateUserDto } from 'src/auth/dto/register.dto';
+import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
+import { setupState } from 'src/db/schema';
 import { UsersService } from 'src/users/users.service';
-import { PrismaService } from '../prisma/prisma.service';
 
 export interface SetupStatus {
   initialAdminCreated: boolean;
@@ -13,39 +14,34 @@ export interface SetupStatus {
 @Injectable()
 export class SetupService {
   constructor(
-    private prisma: PrismaService,
+    @Inject(DRIZZLE) private db: DrizzleDB,
     private usersService: UsersService,
   ) {}
 
   async getSetupState(): Promise<SetupStatus> {
-    // Get or create setup state (singleton)
-    let setupState = await this.prisma.setupState.findUnique({
-      where: { id: 'singleton' },
-    });
+    // Upsert singleton row
+    await this.db
+      .insert(setupState)
+      .values({ id: 'singleton', initialAdminCreated: false })
+      .onConflictDoNothing();
 
-    if (!setupState) {
-      // Create initial state
-      setupState = await this.prisma.setupState.create({
-        data: {
-          id: 'singleton',
-          initialAdminCreated: false,
-        },
-      });
-    }
+    const [state] = await this.db
+      .select()
+      .from(setupState)
+      .where(eq(setupState.id, 'singleton'))
+      .limit(1);
 
     return {
-      initialAdminCreated: setupState.initialAdminCreated,
-      nextStep: this.determineNextStep(setupState),
+      initialAdminCreated: state.initialAdminCreated,
+      nextStep: state.initialAdminCreated ? 'complete' : 'register_admin',
     };
   }
 
   async markAdminCreated() {
-    await this.prisma.setupState.update({
-      where: { id: 'singleton' },
-      data: {
-        initialAdminCreated: true,
-      },
-    });
+    await this.db
+      .update(setupState)
+      .set({ initialAdminCreated: true })
+      .where(eq(setupState.id, 'singleton'));
   }
 
   async initAdminRegister(createUser: CreateUserDto): Promise<boolean> {
@@ -61,18 +57,11 @@ export class SetupService {
       createUser.email,
       createUser.username,
       passwordHash,
-      Role.ADMIN,
+      'ADMIN',
     );
 
     await this.markAdminCreated();
 
     return true;
-  }
-
-  private determineNextStep(state: { initialAdminCreated: boolean }): SetupStatus['nextStep'] {
-    if (!state.initialAdminCreated) {
-      return 'register_admin';
-    }
-    return 'complete';
   }
 }
