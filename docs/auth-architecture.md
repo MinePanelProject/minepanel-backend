@@ -37,8 +37,8 @@ server  →  returns user data (no tokens in body)
 
 ```
 browser →  sends request with cookies automatically
-server  →  JwtStrategy reads access_token cookie
-server  →  verifies JWT signature + expiry
+server  →  JwtAuthGuard reads access_token cookie directly
+server  →  jwtService.verifyAsync(token) — verifies signature + expiry
 server  →  sets req.user = { id, username, role }
 server  →  controller runs
 ```
@@ -84,11 +84,9 @@ request comes in
 ↓
 JwtAuthGuard.canActivate()
   → checks if route has @Public()  →  if yes: allow through
-  → if no: calls passport JWT strategy
-      → JwtStrategy reads access_token cookie
-      → verifies JWT with JWT_SECRET
-      → calls validate()  →  returns { id, username, role }
-      → sets req.user to that object
+  → if no: reads access_token cookie directly
+      → jwtService.verifyAsync(token) with JWT_SECRET
+      → sets req.user = { id, username, role }
 ↓
 controller receives request with req.user populated
 ```

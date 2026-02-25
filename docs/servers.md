@@ -113,7 +113,7 @@ DELETE /servers/:id  (ADMIN only)
 
 ---
 
-## Server Model (Prisma)
+## Server Model (Drizzle schema)
 
 | Field       | Type           | Notes                          |
 |-------------|----------------|--------------------------------|

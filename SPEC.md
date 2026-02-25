@@ -57,12 +57,13 @@ User runs: docker-compose up -d
 
 ### Backend (`minepanel-backend`)
 
-- **Framework:** NestJS
-- **Database:** PostgreSQL 16 + Prisma v7
+- **Framework:** NestJS v11
+- **Database:** PostgreSQL 16 + Drizzle ORM
 - **Docker management:** Dockerode
-- **Auth:** Passport + JWT (HttpOnly cookies)
-- **Language:** TypeScript
-- **Runtime:** Node.js 20
+- **Auth:** JWT (HttpOnly cookies) via `@nestjs/jwt` — no Passport
+- **Language:** TypeScript 5
+- **Runtime:** Node.js 20 (dev) / Bun (prod)
+- **Package manager:** Bun
 
 ### Frontend (`minepanel-frontend` - separate repo)
 
@@ -80,9 +81,9 @@ User runs: docker-compose up -d
 src/
 ├── main.ts
 ├── app.module.ts
-├── prisma/
-│   ├── prisma.module.ts
-│   └── prisma.service.ts
+├── db/
+│   ├── db.module.ts          ← Drizzle connection + DRIZZLE token
+│   └── schema.ts             ← all table/enum definitions + inferred types
 ├── auth/
 │   ├── auth.module.ts
 │   ├── auth.service.ts
@@ -90,10 +91,8 @@ src/
 │   ├── dto/
 │   │   ├── register.dto.ts
 │   │   └── login.dto.ts
-│   ├── strategies/
-│   │   └── jwt.strategy.ts
 │   └── guards/
-│       ├── jwt-auth.guard.ts
+│       ├── jwt-auth.guard.ts ← pure CanActivate, no Passport
 │       └── roles.guard.ts
 ├── users/
 │   ├── users.module.ts
@@ -114,7 +113,7 @@ src/
     │   ├── public.decorator.ts
     │   └── roles.decorator.ts
     └── filters/
-        └── prisma-exception.filter.ts
+        └── db-exception.filter.ts ← catches postgres.js errors (PG error codes)
 ```
 
 ---
@@ -268,10 +267,13 @@ Each MC server gets:
 # Start Postgres only
 docker-compose -f docker-compose.dev.yml up -d
 
-# Run NestJS locally with hot-reload
+# Install dependencies
 bun install
-bunx prisma migrate dev
-bunx prisma generate
+
+# Push DB schema (first time or after schema changes)
+bun db:push
+
+# Run NestJS locally with hot-reload (uses SWC internally)
 bun start:dev
 ```
 
