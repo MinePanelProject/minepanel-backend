@@ -280,9 +280,10 @@ docker-compose up -d
 
 1. Auth module (register, login, JWT via HttpOnly cookies, refresh, logout, guards) ✅
 2. Setup module (first-run wizard, admin creation) ✅
-3. Docker module (socket connection, container CRUD)
-4. Server module (create/start/stop/delete MC servers)
-5. Dockerize the backend
+3. RolesGuard + `@Roles()` decorator ← NEXT
+4. Docker module (socket connection, container CRUD)
+5. Server module (create/start/stop/delete MC servers)
+6. Dockerize the backend
 
 #### Auth implementation status
 - [x] `POST /auth/register`
@@ -294,6 +295,8 @@ docker-compose up -d
 - [x] `POST /auth/refresh` — issues new access token; new refresh token if within 24h of expiry
 - [x] `POST /auth/logout` — deletes DB record, clears cookies
 - [x] `GET /auth/profile` — returns decoded JWT payload from guard
+- [ ] `RolesGuard` — global, registered after `JwtAuthGuard` in `AppModule`
+- [ ] `@Roles()` decorator — marks routes with required roles, returns 403 if role doesn't match
 
 #### Key decisions
 - JWT payload: `{ sub, username, role }` — minimal, no sensitive data
@@ -301,6 +304,71 @@ docker-compose up -d
 - Refresh tokens stored in DB (not stateless) — allows true logout/revocation
 - `NODE_ENV=production` enables `secure` flag on cookies (requires HTTPS)
 - Sliding expiry: if refresh token is within 24h of expiry and user calls `/auth/refresh`, a new refresh token is issued automatically
+- `RolesGuard` runs after `JwtAuthGuard` (order in `APP_GUARD` matters — JWT sets `req.user.role` first)
+- Routes without `@Roles()` pass through the guard freely (no role required)
+- Role mismatch returns `403 Forbidden`, not `401 Unauthorized`
+
+### Phase 1.5 - Access Control (post-core)
+
+Features deferred from Phase 1 to avoid scope creep. Implement after Docker + Servers are working.
+
+#### Minecraft account linking
+- Users can link their Minecraft account via `minecraftUUID` + `minecraftName` on their profile
+- Already present in the `User` schema, just needs a `PATCH /auth/profile` endpoint
+- Required for whitelist automation (Phase 3)
+
+#### Server access model
+Panel registration is always global and open. Server access is controlled per-server independently.
+
+Each server has an `accessType`:
+- `OPEN` — all panel users can see and access it, no approval needed
+- `REQUEST` — user submits a request, admin approves before access is granted
+- `PRIVATE` — only users explicitly assigned by admin can see or access it
+
+A `ServerAccess` join table links users to servers:
+
+| Field     | Notes                            |
+|-----------|----------------------------------|
+| id        | cuid PK                          |
+| userId    | FK → User                        |
+| serverId  | FK → Server                      |
+| status    | PENDING \| APPROVED              |
+| createdAt |                                  |
+
+For `OPEN` servers no row is needed — the server is visible to all authenticated users.
+For `REQUEST`/`PRIVATE` servers, a row with `status: APPROVED` is required to see/access the server.
+
+#### MOD granular permissions (PBAC)
+Simple RBAC (role check) is not enough for MODs — an admin should be able to assign specific capabilities per MOD.
+
+Permission groups:
+```
+SERVER_LIFECYCLE      // start, stop, restart servers
+SERVER_CONFIG         // modify server settings (port, difficulty, gamemode, etc.)
+PLUGIN_MANAGEMENT     // install/remove plugins
+WHITELIST_MANAGEMENT  // add/remove players from whitelist
+USER_MANAGEMENT       // view/manage users assigned to a server
+```
+
+A `ModPermission` table links a MOD user to their allowed permissions:
+
+| Field      | Notes                                          |
+|------------|------------------------------------------------|
+| id         | cuid PK                                        |
+| userId     | FK → User (role must be MOD)                   |
+| permission | enum (see above)                               |
+| serverId   | FK → Server (optional — null = all servers)    |
+| createdAt  |                                                |
+
+Guard logic order:
+1. `JwtAuthGuard` — validates JWT, sets `req.user`
+2. `RolesGuard` — checks `@Roles()`: ADMIN bypasses everything, USER gets 403 on admin routes
+3. `PermissionsGuard` (Phase 1.5) — for MOD: checks `ModPermission` table against `@RequiresPermission()`
+
+#### User account status
+- Add `status: PENDING | ACTIVE | BANNED` to `User` model if global registration approval is needed
+- A guard checks `status === ACTIVE` on every authenticated request
+- For now registration is open and all new users are `ACTIVE` by default
 
 ### Phase 2 - Frontend
 
