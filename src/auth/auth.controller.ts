@@ -1,7 +1,17 @@
-import { Body, Controller, HttpCode, HttpStatus, Post, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Logger,
+  Post,
+  Req,
+  Res,
+} from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { Public } from 'src/common/decorators/public.decorator';
 import { AuthService, AuthTokens } from './auth.service';
 import { LoginUserDto } from './dto/login.dto';
@@ -52,5 +62,52 @@ export class AuthController {
     });
 
     return user.user;
+  }
+
+  @ApiOperation({ summary: 'Get profile data' })
+  @HttpCode(HttpStatus.OK)
+  @Get('profile')
+  async profile(@Req() req: Request) {
+    return req.user;
+  }
+
+  @ApiOperation({ summary: 'Refresh jwt or refresh tokens' })
+  @HttpCode(HttpStatus.OK)
+  @Post('refresh')
+  async refresh(@Res({ passthrough: true }) res: Response) {
+    res.cookie;
+  }
+
+  @ApiOperation({ summary: 'Logout and invalidate tokens cookies' })
+  @HttpCode(HttpStatus.OK)
+  @Post('logout')
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const user = req.user as User;
+
+    // find token in cookies
+    const accessToken = req.cookies.access_token as AuthTokens['accessToken'];
+    const refreshToken = req.cookies.refresh_token as AuthTokens['refreshToken'];
+
+    // find and delete refresh token db record for the user
+    try {
+      await this.authService.logoutUser(user, refreshToken);
+    } catch (error) {
+      Logger.error(error);
+    }
+
+    // set both tokens as invalid in cookies
+    res.cookie('access_token', accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 0,
+    });
+
+    res.cookie('refresh_token', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 0,
+    });
   }
 }

@@ -70,6 +70,26 @@ export class AuthService {
     };
   }
 
+  async logoutUser(user: AuthTokens['user'], refreshToken: AuthTokens['refreshToken']) {
+    const storedRefreshTokens = await this.prismaService.refreshToken.findMany({
+      where: { userId: user.id },
+      select: { id: true, token: true },
+    });
+
+    if (storedRefreshTokens.length > 0) {
+      for (const tokenEntry of storedRefreshTokens) {
+        const matches = await bcrypt.compare(refreshToken, tokenEntry.token);
+        if (matches) {
+          await this.prismaService.refreshToken.delete({
+            where: { id: tokenEntry.id },
+          });
+
+          break;
+        }
+      }
+    }
+  }
+
   async storeRefreshToken(userId: string, hashedRefreshToken: string) {
     await this.prismaService.refreshToken.create({
       data: {
