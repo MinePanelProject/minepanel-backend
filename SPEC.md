@@ -159,7 +159,6 @@ src/
 | token        | String   | unique, hashed                         |
 | userId       | String   | FK -> User                             |
 | expiresAt    | DateTime |                                        |
-| stayLoggedIn | Boolean  | default: false — enables sliding expiry (TODO) |
 | createdAt    | DateTime |                                        |
 
 **Server**
@@ -241,7 +240,7 @@ Each MC server gets:
 | DATABASE_URL          | PostgreSQL connection string       | (required)                       |
 | JWT_SECRET            | Secret for JWT signing             | (required)                       |
 | JWT_EXPIRES_IN        | Access token TTL                   | 15m                              |
-| JWT_REFRESH_EXPIRES_IN| Refresh token TTL (TODO: wire into storeRefreshToken) | 7d              |
+| JWT_REFRESH_EXPIRES_IN| Refresh token TTL                  | 7d                               |
 | PORT                  | Backend listen port                | 3000                             |
 | CORS_ORIGIN           | Allowed CORS origin                | http://localhost:5173            |
 | DOCKER_NETWORK        | Docker network for MC containers   | minepanel_network                |
@@ -279,7 +278,7 @@ docker-compose up -d
 
 ### Phase 1 - Foundation
 
-1. Auth module (register, login, JWT via HttpOnly cookies, refresh, logout, guards) ← IN PROGRESS
+1. Auth module (register, login, JWT via HttpOnly cookies, refresh, logout, guards) ✅
 2. Setup module (first-run wizard, admin creation) ✅
 3. Docker module (socket connection, container CRUD)
 4. Server module (create/start/stop/delete MC servers)
@@ -291,17 +290,17 @@ docker-compose up -d
 - [x] JWT strategy — extracts token from cookie, validates payload
 - [x] JWT guard — global, `@Public()` decorator skips it
 - [x] HttpOnly cookie handling — access token (15min), refresh token (7 days)
-- [x] Refresh token hashed and stored in DB with expiry
-- [ ] `@Public()` missing on setup routes
-- [ ] `POST /auth/refresh`
-- [ ] `POST /auth/logout`
-- [ ] `GET /auth/profile`
+- [x] Refresh token is a JWT (signed, contains `sub`) stored hashed in DB
+- [x] `POST /auth/refresh` — issues new access token; new refresh token if within 24h of expiry
+- [x] `POST /auth/logout` — deletes DB record, clears cookies
+- [x] `GET /auth/profile` — returns decoded JWT payload from guard
 
 #### Key decisions
 - JWT payload: `{ sub, username, role }` — minimal, no sensitive data
+- Refresh token is a JWT with 7d expiry — allows extracting `userId` without `req.user`
 - Refresh tokens stored in DB (not stateless) — allows true logout/revocation
 - `NODE_ENV=production` enables `secure` flag on cookies (requires HTTPS)
-- Sliding expiry planned for refresh tokens: if user is active within 24h of refresh token expiry, issue a new refresh token automatically (TODO)
+- Sliding expiry: if refresh token is within 24h of expiry and user calls `/auth/refresh`, a new refresh token is issued automatically
 
 ### Phase 2 - Frontend
 

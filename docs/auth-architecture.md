@@ -7,8 +7,8 @@
 - Stateless — the server doesn't store it, it just verifies the signature
 - Short-lived because if stolen, it expires fast
 
-**Refresh token** — a random 32-byte hex string, long-lived (7 days), stored in an HttpOnly cookie called `refresh_token`.
-- NOT a JWT — just a random secret
+**Refresh token** — a signed JWT, long-lived (7 days), stored in an HttpOnly cookie called `refresh_token`.
+- Contains: `{ sub: userId }` — allows the server to identify the user without `req.user`
 - The server stores a **bcrypt hash** of it in the DB (`RefreshToken` table), not the raw value
 - Long-lived because it's used to get new access tokens without re-logging in
 
@@ -26,8 +26,8 @@
 ```
 client  →  sends email/password
 server  →  verifies password with bcrypt
-server  →  generates access token (JWT, signed)
-server  →  generates refresh token (random bytes)
+server  →  generates access token (JWT, signed, 15min)
+server  →  generates refresh token (JWT, signed, 7d, contains sub only)
 server  →  bcrypt hashes refresh token → stores hash in DB
 server  →  sets both as HttpOnly cookies
 server  →  returns user data (no tokens in body)
@@ -47,13 +47,11 @@ server  →  controller runs
 
 ```
 client  →  sends request (browser sends refresh_token cookie automatically)
-server  →  reads refresh_token cookie
+server  →  verifies refresh token JWT → extracts userId from sub
 server  →  fetches all RefreshTokens for that user from DB
 server  →  bcrypt.compare(cookieToken, each DB hash) to find a match
-server  →  checks expiresAt hasn't passed
-server  →  deletes old refresh token from DB
 server  →  generates new access token
-server  →  (TODO) if within 24h of expiry → also issues new refresh token
+server  →  if within 24h of expiry → deletes old record, issues new refresh token
 server  →  sets new cookies
 ```
 
@@ -104,10 +102,9 @@ One row per active session. A user can have multiple rows (multiple devices/brow
 | Field     | Notes                                      |
 |-----------|--------------------------------------------|
 | id        | cuid PK                                    |
-| token     | bcrypt hash of the raw token               |
+| token     | bcrypt hash of the refresh token JWT       |
 | userId    | FK → User                                  |
 | expiresAt | 7 days from creation                       |
-| stayLoggedIn | (TODO) enables sliding expiry           |
 | createdAt |                                            |
 
 Logout deletes the specific row for that session. Without DB storage you cannot invalidate a specific session — that's why refresh tokens are stateful even though access tokens are not.
