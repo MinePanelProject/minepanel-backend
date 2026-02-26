@@ -420,6 +420,36 @@ healthcheck:
 }
 ```
 
+### System Events (Phase 2)
+
+| Method | Path              | Auth  | Description                                                  |
+|--------|-------------------|-------|--------------------------------------------------------------|
+| GET    | /system/events    | ADMIN | List system events (filter: `?level=&source=&limit=&offset=`) |
+
+`SystemEvent` table:
+
+| Field     | Type     | Notes                                                                 |
+|-----------|----------|-----------------------------------------------------------------------|
+| id        | String   | cuid PK                                                               |
+| level     | Enum     | `INFO`, `WARN`, `ERROR`                                               |
+| source    | Enum     | `DOCKER`, `SERVERS`, `HEALTH`, `SCHEDULER`                            |
+| message   | String   | Human-readable description                                            |
+| metadata  | Json?    | Extra context (e.g. `{ serverId, containerId, errorCode }`)           |
+| createdAt | DateTime |                                                                       |
+
+**Who writes events:**
+
+| Source      | Examples                                                                 |
+|-------------|--------------------------------------------------------------------------|
+| `DOCKER`    | Docker daemon unreachable, container OOM-killed, image pull failed       |
+| `SERVERS`   | Startup reconciliation changes, resource check failures, graceful shutdown |
+| `HEALTH`    | DB ping failed, Docker ping failed                                       |
+| `SCHEDULER` | Scheduled task failed, cron re-registration at boot                     |
+
+Events are written by the relevant service directly (no interceptor needed — these are internal events, not user actions). Retention: last 10 000 rows, older rows auto-deleted by a weekly cron. Surfaced in the Admin dashboard as a filterable event feed, distinct from the audit log (which records user actions) and notifications (which require user acknowledgement).
+
+---
+
 ### Server Access (Phase 1.5)
 
 | Method | Path                                         | Auth      | Description                        |
