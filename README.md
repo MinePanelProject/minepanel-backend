@@ -20,7 +20,7 @@ See [SPEC.md](./SPEC.md) for the full architecture specification and implementat
 | Database      | PostgreSQL 16                                   |
 | ORM           | [Drizzle ORM](https://orm.drizzle.team/) v0.45  |
 | Auth          | JWT (HttpOnly cookies) via `@nestjs/jwt`        |
-| Docker        | [Dockerode](https://github.com/apocas/dockerode) via `/var/run/docker.sock` |
+| Docker        | [Dockerode](https://github.com/apocas/dockerode) via Docker socket (rootless default) |
 | Validation    | `class-validator` + `class-transformer`         |
 | API docs      | Swagger / OpenAPI (`@nestjs/swagger`)           |
 | Linter        | [Biome](https://biomejs.dev/)                   |
@@ -37,7 +37,7 @@ docker-compose up -d
 │                                        │
 │  minepanel-nestjs  ──── PostgreSQL     │
 │       │                                │
-│       │ /var/run/docker.sock           │
+│       │ ${DOCKER_SOCKET} (rootless)    │
 │       ▼                                │
 │  mc-server-1 (itzg/minecraft-server)  │
 │  mc-server-2 (itzg/minecraft-server)  │
