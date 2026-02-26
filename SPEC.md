@@ -228,7 +228,11 @@ src/
 
 ## Docker Service
 
-The NestJS container connects to the host Docker daemon via the mounted socket at `/var/run/docker.sock`. It uses Dockerode to:
+The NestJS container connects to the host Docker daemon via the Docker socket. The socket path is configurable via the `DOCKER_SOCKET` environment variable, with **rootless Docker as the default** (`/run/user/1000/docker.sock`). This avoids requiring root privileges and follows security best practices.
+
+`DockerService` reads the socket path from `ConfigService` at startup — it is never hardcoded. The `docker-compose.yml` mounts the socket path defined in `.env` into the container.
+
+It uses Dockerode to:
 
 - **Create containers** using `itzg/minecraft-server` image
 - **Manage lifecycle** (start, stop, remove)
@@ -243,6 +247,16 @@ Each MC server gets:
 - A 2GB default memory limit
 - `unless-stopped` restart policy
 
+### Socket path reference
+
+| Setup              | `DOCKER_SOCKET` value                    |
+|--------------------|------------------------------------------|
+| Rootless Docker    | `/run/user/1000/docker.sock` (default)   |
+| Root Docker        | `/var/run/docker.sock`                   |
+| Custom / Podman    | any valid socket path                    |
+
+> The UID in the rootless path (`1000`) matches the default non-root user. If the host user has a different UID, adjust accordingly in `.env`.
+
 ---
 
 ## Environment Variables
@@ -255,6 +269,7 @@ Each MC server gets:
 | JWT_REFRESH_EXPIRES_IN| Refresh token TTL                  | 7d                               |
 | PORT                  | Backend listen port                | 3000                             |
 | CORS_ORIGIN           | Allowed CORS origin                | http://localhost:5173            |
+| DOCKER_SOCKET         | Path to Docker socket              | /run/user/1000/docker.sock       |
 | DOCKER_NETWORK        | Docker network for MC containers   | minepanel_network                |
 | MC_DATA_PATH          | Base path for MC server data       | /mc-data                         |
 | POSTGRES_PASSWORD     | Postgres password (docker-compose) | changeme                         |

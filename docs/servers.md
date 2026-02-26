@@ -8,6 +8,8 @@
 
 The NestJS backend manages Minecraft server containers via the Docker socket. Each MC server is an independent container spawned and controlled by the backend.
 
+The socket path is configurable via `DOCKER_SOCKET` (default: `/run/user/1000/docker.sock`). **Rootless Docker is the default** — no root privileges required. `DockerService` reads the path from `ConfigService` at startup, never hardcoded.
+
 ```
 NestJS backend
   └── DockerService (via Dockerode + /var/run/docker.sock)
@@ -151,7 +153,8 @@ For Phase 1 (before ServerAccess table exists): all authenticated users see all 
 
 ## Environment Variables
 
-| Variable        | Description                          | Default           |
-|-----------------|--------------------------------------|-------------------|
-| DOCKER_NETWORK  | Docker network for MC containers     | minepanel_network |
-| MC_DATA_PATH    | Base path for MC server data volumes | /mc-data          |
+| Variable       | Description                          | Default                      |
+|----------------|--------------------------------------|------------------------------|
+| DOCKER_SOCKET  | Path to Docker socket                | /run/user/1000/docker.sock   |
+| DOCKER_NETWORK | Docker network for MC containers     | minepanel_network            |
+| MC_DATA_PATH   | Base path for MC server data volumes | /mc-data                     |
