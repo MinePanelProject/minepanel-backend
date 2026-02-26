@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { DbExceptionFilter } from './common/filters/db-exception.filter';
 
@@ -19,14 +20,19 @@ async function bootstrap() {
     }
   }
 
+  app.use(helmet());
+
   app.use(cookieParser());
 
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  app.useGlobalPipes(
+    new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }),
+  );
 
   app.useGlobalFilters(new DbExceptionFilter());
 
   app.enableCors({
     origin: configService.get<string>('CORS_ORIGIN', 'http://localhost:5173'),
+    credentials: true,
   });
 
   const port = configService.get<number>('PORT', 3000);

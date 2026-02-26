@@ -1,12 +1,4 @@
-import { createId } from '@paralleldrive/cuid2';
-import {
-  boolean,
-  integer,
-  pgEnum,
-  pgTable,
-  text,
-  timestamp,
-} from 'drizzle-orm/pg-core';
+import { boolean, integer, pgEnum, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 
 // --- Enums ---
 
@@ -29,7 +21,9 @@ export const serverStatusEnum = pgEnum('server_status', [
 // --- Tables ---
 
 export const users = pgTable('users', {
-  id: text('id').primaryKey().$defaultFn(() => createId()),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
   email: text('email').notNull().unique(),
   username: text('username').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
@@ -37,11 +31,16 @@ export const users = pgTable('users', {
   minecraftUUID: text('minecraft_uuid').unique(),
   minecraftName: text('minecraft_name'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull().$onUpdateFn(() => new Date()),
+  updatedAt: timestamp('updated_at')
+    .defaultNow()
+    .notNull()
+    .$onUpdateFn(() => new Date()),
 });
 
 export const refreshTokens = pgTable('refresh_tokens', {
-  id: text('id').primaryKey().$defaultFn(() => createId()),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
   token: text('token').notNull().unique(),
   userId: text('user_id')
     .notNull()
@@ -54,11 +53,16 @@ export const setupState = pgTable('setup_state', {
   id: text('id').primaryKey().default('singleton'),
   initialAdminCreated: boolean('initial_admin_created').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull().$onUpdateFn(() => new Date()),
+  updatedAt: timestamp('updated_at')
+    .defaultNow()
+    .notNull()
+    .$onUpdateFn(() => new Date()),
 });
 
 export const servers = pgTable('servers', {
-  id: text('id').primaryKey().$defaultFn(() => createId()),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
   name: text('name').notNull(),
   provider: serverProviderEnum('provider').notNull(),
   version: text('version').notNull(),
@@ -74,7 +78,10 @@ export const servers = pgTable('servers', {
     .notNull()
     .references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull().$onUpdateFn(() => new Date()),
+  updatedAt: timestamp('updated_at')
+    .defaultNow()
+    .notNull()
+    .$onUpdateFn(() => new Date()),
 });
 
 // --- Inferred types ---
@@ -83,6 +90,6 @@ export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type RefreshToken = typeof refreshTokens.$inferSelect;
 export type Server = typeof servers.$inferSelect;
-export type Role = typeof roleEnum.enumValues[number];
-export type ServerProvider = typeof serverProviderEnum.enumValues[number];
-export type ServerStatus = typeof serverStatusEnum.enumValues[number];
+export type Role = (typeof roleEnum.enumValues)[number];
+export type ServerProvider = (typeof serverProviderEnum.enumValues)[number];
+export type ServerStatus = (typeof serverStatusEnum.enumValues)[number];
