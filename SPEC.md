@@ -79,6 +79,7 @@ User runs: docker-compose up -d
 - **Database:** PostgreSQL 16 + Drizzle ORM
 - **Docker management:** Dockerode
 - **Auth:** JWT (HttpOnly cookies) via `@nestjs/jwt` — no Passport
+- **Logging:** `nestjs-pino` (structured JSON via Pino, replaces NestJS default Logger)
 - **Language:** TypeScript 5
 - **Runtime:** Node.js 20 (dev) / Bun (prod)
 - **Package manager:** Bun
@@ -817,12 +818,15 @@ This is the single most important security check in the file manager. A missed c
 
 ### Summary of packages
 
-| Package             | Purpose                          |
-|---------------------|----------------------------------|
-| `@nestjs/throttler` | Rate limiting                    |
-| `helmet`            | Security headers                 |
-| `class-validator`   | DTO input validation             |
-| `class-transformer` | DTO transformation               |
+| Package             | Purpose                                              |
+|---------------------|------------------------------------------------------|
+| `@nestjs/throttler` | Rate limiting                                        |
+| `helmet`            | Security headers                                     |
+| `class-validator`   | DTO input validation                                 |
+| `class-transformer` | DTO transformation                                   |
+| `nestjs-pino`       | Structured JSON logging (Pino)                       |
+| `nestjs-paginate`   | Cursor/offset pagination for list endpoints (post-v1.0) |
+| `nestjs-cls`        | Request-scoped context propagation — used for audit log interceptor (Phase 2) |
 
 ---
 
