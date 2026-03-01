@@ -26,7 +26,9 @@ export class DbExceptionFilter implements ExceptionFilter {
         break;
       case '42P01': // undefined_table
       case '42703': // undefined_column
-        response.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ message: 'Database schema error' });
+        response
+          .status(HttpStatus.INTERNAL_SERVER_ERROR)
+          .json({ message: 'Database schema error' });
         break;
       default:
         response.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ message: 'Database error' });

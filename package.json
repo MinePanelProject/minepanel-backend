@@ -13,6 +13,7 @@
     "start:debug": "nest start --debug --watch",
     "start:prod": "bun dist/main.js",
     "lint": "biome check --write .",
+    "lint:fix": "biome check --write --unsafe .",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
