@@ -1,10 +1,12 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
   Logger,
+  Param,
   Post,
   Req,
   Res,
@@ -17,6 +19,8 @@ import { User } from 'src/db/schema';
 import { AuthService, AuthTokens } from './auth.service';
 import { LoginUserDto } from './dto/login.dto';
 import { CreateUserDto } from './dto/register.dto';
+
+type JwtPayload = { sub: string; username: string; role: string };
 
 @ApiTags('auth')
 @Controller('auth')
@@ -76,28 +80,27 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('logout')
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const user = req.user as User;
+    const user = req.user as JwtPayload;
 
     // find token in cookies
-    const accessToken = req.cookies.access_token as AuthTokens['accessToken'];
     const refreshToken = req.cookies.refresh_token as AuthTokens['refreshToken'];
 
     // find and delete refresh token db record for the user
     try {
-      await this.authService.logoutUser(user, refreshToken);
+      await this.authService.logoutUser(user.sub, refreshToken);
     } catch (error) {
       Logger.error(error);
     }
 
     // set both tokens as invalid in cookies
-    res.cookie('access_token', accessToken, {
+    res.cookie('access_token', '', {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: 0,
     });
 
-    res.cookie('refresh_token', refreshToken, {
+    res.cookie('refresh_token', '', {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
@@ -133,6 +136,61 @@ export class AuthController {
         sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
         maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
       });
+    }
+  }
+
+  @ApiOperation({ summary: 'Invalidate all user sessions' })
+  @HttpCode(HttpStatus.OK)
+  @Post('logout-all')
+  async logoutAll(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const user = req.user as JwtPayload;
+
+    // find and delete all refresh token db record for the user
+    try {
+      await this.authService.logoutAll(user.sub);
+    } catch (error) {
+      Logger.error(error);
+    }
+
+    // set both tokens as invalid in cookies
+    res.cookie('access_token', '', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 0,
+    });
+
+    res.cookie('refresh_token', '', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 0,
+    });
+  }
+
+  @ApiOperation({ summary: 'List own active sessions (refresh tokens)' })
+  @HttpCode(HttpStatus.OK)
+  @Get('sessions')
+  async getSessions(@Req() req: Request) {
+    const user = req.user as JwtPayload;
+
+    try {
+      return await this.authService.getSessions(user.sub);
+    } catch (error) {
+      Logger.error(error);
+    }
+  }
+
+  @ApiOperation({ summary: 'Revoke a specific session by token id' })
+  @HttpCode(HttpStatus.OK)
+  @Delete('sessions/:id')
+  async deleteSingleSession(@Req() req: Request, @Param('id') tokenId: string) {
+    const user = req.user as JwtPayload;
+
+    try {
+      await this.authService.deleteSingleSession(user.sub, tokenId);
+    } catch (error) {
+      Logger.error(error);
     }
   }
 }

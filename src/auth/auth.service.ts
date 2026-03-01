@@ -1,9 +1,9 @@
 import { ConflictException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
-import { eq } from 'drizzle-orm';
+import { and, eq, getTableColumns } from 'drizzle-orm';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
-import { type User, refreshTokens, users } from 'src/db/schema';
+import { RefreshToken, refreshTokens, type User, users } from 'src/db/schema';
 import { UsersService } from 'src/users/users.service';
 import { LoginUserDto } from './dto/login.dto';
 import { CreateUserDto } from './dto/register.dto';
@@ -56,10 +56,7 @@ export class AuthService {
       role: user.role,
     });
 
-    const refreshToken = await this.jwtService.signAsync(
-      { sub: user.id },
-      { expiresIn: '7d' },
-    );
+    const refreshToken = await this.jwtService.signAsync({ sub: user.id }, { expiresIn: '7d' });
 
     const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
     await this.storeRefreshToken(user.id, hashedRefreshToken);
@@ -69,11 +66,11 @@ export class AuthService {
     return { user: userWithoutPassword, accessToken, refreshToken };
   }
 
-  async logoutUser(user: AuthTokens['user'], refreshToken: AuthTokens['refreshToken']) {
+  async logoutUser(userId: string, refreshToken: AuthTokens['refreshToken']) {
     const storedTokens = await this.db
       .select({ id: refreshTokens.id, token: refreshTokens.token })
       .from(refreshTokens)
-      .where(eq(refreshTokens.userId, user.id));
+      .where(eq(refreshTokens.userId, userId));
 
     for (const tokenEntry of storedTokens) {
       const matches = await bcrypt.compare(refreshToken, tokenEntry.token);
@@ -82,6 +79,10 @@ export class AuthService {
         break;
       }
     }
+  }
+
+  async logoutAll(userId: string) {
+    await this.db.delete(refreshTokens).where(eq(refreshTokens.userId, userId));
   }
 
   async storeRefreshToken(userId: string, hashedRefreshToken: string) {
@@ -97,7 +98,11 @@ export class AuthService {
     const userId = decoded.sub;
 
     const storedTokens = await this.db
-      .select({ id: refreshTokens.id, token: refreshTokens.token, expiresAt: refreshTokens.expiresAt })
+      .select({
+        id: refreshTokens.id,
+        token: refreshTokens.token,
+        expiresAt: refreshTokens.expiresAt,
+      })
       .from(refreshTokens)
       .where(eq(refreshTokens.userId, userId));
 
@@ -133,5 +138,22 @@ export class AuthService {
 
       return { accessToken: newAccessToken };
     }
+  }
+
+  async getSessions(userId: string): Promise<Omit<RefreshToken, 'token'>[]> {
+    const { token: _token, ...tableWithoutToken } = getTableColumns(refreshTokens);
+
+    const tokens = await this.db
+      .select(tableWithoutToken)
+      .from(refreshTokens)
+      .where(eq(refreshTokens.userId, userId));
+
+    return tokens;
+  }
+
+  async deleteSingleSession(userId: string, tokenId: string) {
+    await this.db
+      .delete(refreshTokens)
+      .where(and(eq(refreshTokens.userId, userId), eq(refreshTokens.id, tokenId)));
   }
 }
