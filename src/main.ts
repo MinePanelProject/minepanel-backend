@@ -35,12 +35,16 @@ async function bootstrap() {
     credentials: true,
   });
 
+  app.setGlobalPrefix('api', { exclude: ['/health'] });
+
   const port = configService.get<number>('PORT', 3000);
 
   const config = new DocumentBuilder()
-    .setTitle('MinePanel API')
-    .setDescription('Minecraft server management panel API')
-    .setVersion('1.0')
+    .setTitle(`${configService.get<string>('PANEL_NAME', 'MinePanel')} API`)
+    .setDescription(
+      configService.get<string>('PANEL_DESCRIPTION', 'Minecraft server management panel API'),
+    )
+    .setVersion(configService.get<string>('PANEL_VERSION', 'N/A'))
     .addBearerAuth()
     .build();
 
