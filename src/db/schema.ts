@@ -1,4 +1,4 @@
-import { boolean, integer, pgEnum, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import { boolean, integer, pgEnum, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core';
 
 // --- Enums ---
 
@@ -24,8 +24,8 @@ export const users = pgTable('users', {
   id: text('id')
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
-  email: text('email').notNull().unique(),
-  username: text('username').notNull().unique(),
+  email: varchar('email', { length: 254 }).notNull().unique(),
+  username: varchar('username', { length: 32 }).notNull().unique(),
   passwordHash: text('password_hash').notNull(),
   role: roleEnum('role').default('USER').notNull(),
   minecraftUUID: text('minecraft_uuid').unique(),

@@ -802,6 +802,24 @@ app.useGlobalPipes(new ValidationPipe({
 
 `whitelist: true` is important — it prevents unexpected fields from being passed down to the DB layer.
 
+### DTO field constraints
+
+Standard rules applied to all user-facing DTOs and mirrored in the DB schema:
+
+| Field        | DTO validators                                              | DB type        |
+|--------------|-------------------------------------------------------------|----------------|
+| `email`      | `@IsEmail()`, `@MaxLength(254)`                             | `varchar(254)` |
+| `username`   | `@IsString()`, `@MinLength(3)`, `@MaxLength(32)`, `@Matches(/^[a-zA-Z0-9_]+$/)` | `varchar(32)` |
+| `password`   | `@IsString()`, `@MinLength(8)`, `@MaxLength(128)`           | hash only — no DB constraint |
+| `newPassword`| `@IsString()`, `@MinLength(8)`, `@MaxLength(128)`           | hash only — no DB constraint |
+| `oldPassword`| `@IsString()`, `@IsNotEmpty()`                              | — |
+
+**Notes:**
+- `email` max 254 = RFC 5321 standard
+- `username` regex `^[a-zA-Z0-9_]+$` — alphanumeric + underscore only, no spaces or symbols
+- `password` max 128 — bcrypt silently truncates beyond 72 bytes; 128 is a safe upper bound
+- DB uses `varchar(N)` instead of `text` for constrained fields — enforces limits at DB level too
+
 ### Path traversal (File Manager)
 
 The File Manager (Phase 3h) reads/writes files inside `{MC_DATA_PATH}/{serverId}/`. Every path must be sanitized:
