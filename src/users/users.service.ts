@@ -1,6 +1,8 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
 import { eq, or } from 'drizzle-orm';
 import { EditUserDto } from 'src/auth/dto/editUser.dto';
+import { UpdatePasswordDTO } from 'src/auth/dto/updatePw.dto';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
 import { type Role, type User, users } from 'src/db/schema';
 
@@ -61,5 +63,34 @@ export class UsersService {
     }
 
     throw new BadRequestException('No changes');
+  }
+
+  async updatePassword(
+    userId: string,
+    dto: UpdatePasswordDTO,
+  ): Promise<Omit<User, 'passwordHash'>> {
+    const userData = await this.findById(userId);
+
+    if (!userData) {
+      throw new Error();
+    }
+
+    const passwordMatch = await bcrypt.compare(dto.oldPassword, userData.passwordHash);
+
+    const newPwHash = await bcrypt.hash(dto.newPassword, 10);
+
+    if (passwordMatch) {
+      const [updateResult] = await this.db
+        .update(users)
+        .set({ passwordHash: newPwHash })
+        .where(eq(users.id, userId))
+        .returning();
+
+      const { passwordHash: _, ...userNoPw } = updateResult;
+
+      return userNoPw;
+    }
+
+    throw new BadRequestException('Wrong credentials');
   }
 }

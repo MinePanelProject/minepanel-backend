@@ -20,6 +20,7 @@ import { AuthService, AuthTokens } from './auth.service';
 import { EditUserDto } from './dto/editUser.dto';
 import { LoginUserDto } from './dto/login.dto';
 import { CreateUserDto } from './dto/register.dto';
+import { UpdatePasswordDTO } from './dto/updatePw.dto';
 
 type JwtPayload = { id: string; username: string; role: string };
 
@@ -186,5 +187,14 @@ export class AuthController {
     const user = req.user as JwtPayload;
 
     return await this.authService.editUserProfile(user.id, editUser);
+  }
+
+  @ApiOperation({ summary: 'Update password' })
+  @HttpCode(HttpStatus.OK)
+  @Patch('password')
+  async updateUserPassword(@Req() req: Request, @Body() updatePw: UpdatePasswordDTO) {
+    const user = req.user as JwtPayload;
+
+    return await this.authService.updateUserPassword(user.id, updatePw);
   }
 }

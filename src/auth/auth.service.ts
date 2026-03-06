@@ -1,10 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Inject,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { ConflictException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { and, eq, getTableColumns } from 'drizzle-orm';
@@ -14,6 +8,7 @@ import { UsersService } from 'src/users/users.service';
 import { EditUserDto } from './dto/editUser.dto';
 import { LoginUserDto } from './dto/login.dto';
 import { CreateUserDto } from './dto/register.dto';
+import { UpdatePasswordDTO } from './dto/updatePw.dto';
 
 export interface AuthTokens {
   user: Omit<User, 'passwordHash'>;
@@ -166,5 +161,12 @@ export class AuthService {
 
   async editUserProfile(userId: string, dto: EditUserDto): Promise<Omit<User, 'passwordHash'>> {
     return await this.usersService.updateProfile(userId, dto);
+  }
+
+  async updateUserPassword(
+    userId: string,
+    dto: UpdatePasswordDTO,
+  ): Promise<Omit<User, 'passwordHash'>> {
+    return await this.usersService.updatePassword(userId, dto);
   }
 }
