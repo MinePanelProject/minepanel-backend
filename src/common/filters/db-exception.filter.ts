@@ -1,23 +1,31 @@
-import { ArgumentsHost, Catch, ExceptionFilter, HttpStatus, Logger } from '@nestjs/common';
+import {
+  ArgumentsHost,
+  Catch,
+  ExceptionFilter,
+  HttpException,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
 import { Response } from 'express';
-
-// postgres.js error shape
-interface PostgresError extends Error {
-  code: string;
-}
 
 @Catch()
 export class DbExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
+    const code = this.getPostgresCode(exception);
 
-    // Only handle postgres.js errors (they have a numeric-ish code like '23505')
-    if (!this.isPostgresError(exception)) return;
+    // Only handle postgres.js errors (they have a numeric-ish code like '23505'), the rest gets filtered and returned based on the status
+    if (!code) {
+      if (exception instanceof HttpException) {
+        return response.status(exception.getStatus()).json(exception.getResponse());
+      }
+      return response.status(500).json({ message: 'Internal server error' });
+    }
 
-    Logger.error(exception.message, exception.code, 'DbExceptionFilter');
+    Logger.error((exception as Error).message, code, 'DbExceptionFilter');
 
-    switch (exception.code) {
+    switch (code) {
       case '23505': // unique_violation
         response.status(HttpStatus.CONFLICT).json({ message: 'Resource already exists' });
         break;
@@ -35,12 +43,16 @@ export class DbExceptionFilter implements ExceptionFilter {
     }
   }
 
-  private isPostgresError(exception: unknown): exception is PostgresError {
-    return (
-      typeof exception === 'object' &&
-      exception !== null &&
-      'code' in exception &&
-      typeof (exception as PostgresError).code === 'string'
-    );
+  private getPostgresCode(exception: unknown): string | null {
+    if (typeof exception === 'object' && exception != null && 'cause' in exception) {
+      if (
+        typeof exception.cause === 'object' &&
+        exception.cause != null &&
+        'code' in exception.cause
+      ) {
+        return typeof exception.cause.code === 'string' ? exception.cause.code : null;
+      }
+    }
+    return null;
   }
 }
