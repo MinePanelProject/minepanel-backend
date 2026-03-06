@@ -1052,9 +1052,9 @@ e2e:
 4. Sessions management (list, revoke single, logout-all) ✅
 5. `PATCH /auth/profile` (edit profile) ✅
 6. `PATCH /auth/password` (change password) ✅
-7. Rate limiting (`@nestjs/throttler` on public endpoints)
-8. Security hardening (validation, DTO constraints, helmet config)
-9. Health check module (`GET /health` — db + docker ping)
+7. Rate limiting (`@nestjs/throttler` on public endpoints) ✅
+8. Security hardening (validation, DTO constraints, helmet config) ✅
+9. Health check (`GET /health` — db liveness) ✅
 10. Docker module (socket connection, container CRUD + host resource inspection)
 11. Server module:
     - create/start/stop/delete/list MC servers + resource checks
@@ -1063,7 +1063,9 @@ e2e:
     - Concurrent operation protection (atomic compare-and-swap via Postgres)
     - Transaction rollback on Docker failure
 12. Host metrics WebSocket (CPU, RAM, disk — real-time push to frontend)
-13. Dockerize the backend (docker-compose, migrations, env vars)
+13. Unit + integration tests (AuthService, UsersService, guards, critical routes)
+14. CI/CD pipeline (GitHub Actions: lint → test → build → push Docker image to GHCR)
+15. Dockerize the backend (docker-compose, migrations on startup, env vars)
 
 #### Resource check flows (Phase 1, inside ServersService)
 
