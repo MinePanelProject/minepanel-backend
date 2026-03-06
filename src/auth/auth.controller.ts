@@ -5,8 +5,8 @@ import {
   Get,
   HttpCode,
   HttpStatus,
-  Logger,
   Param,
+  Patch,
   Post,
   Req,
   Res,
@@ -17,10 +17,11 @@ import type { Request, Response } from 'express';
 import { Public } from 'src/common/decorators/public.decorator';
 import { User } from 'src/db/schema';
 import { AuthService, AuthTokens } from './auth.service';
+import { EditUserDto } from './dto/editUser.dto';
 import { LoginUserDto } from './dto/login.dto';
 import { CreateUserDto } from './dto/register.dto';
 
-type JwtPayload = { sub: string; username: string; role: string };
+type JwtPayload = { id: string; username: string; role: string };
 
 @ApiTags('auth')
 @Controller('auth')
@@ -86,11 +87,7 @@ export class AuthController {
     const refreshToken = req.cookies.refresh_token as AuthTokens['refreshToken'];
 
     // find and delete refresh token db record for the user
-    try {
-      await this.authService.logoutUser(user.sub, refreshToken);
-    } catch (error) {
-      Logger.error(error);
-    }
+    await this.authService.logoutUser(user.id, refreshToken);
 
     // set both tokens as invalid in cookies
     res.cookie('access_token', '', {
@@ -146,11 +143,7 @@ export class AuthController {
     const user = req.user as JwtPayload;
 
     // find and delete all refresh token db record for the user
-    try {
-      await this.authService.logoutAll(user.sub);
-    } catch (error) {
-      Logger.error(error);
-    }
+    await this.authService.logoutAll(user.id);
 
     // set both tokens as invalid in cookies
     res.cookie('access_token', '', {
@@ -174,11 +167,7 @@ export class AuthController {
   async getSessions(@Req() req: Request) {
     const user = req.user as JwtPayload;
 
-    try {
-      return await this.authService.getSessions(user.sub);
-    } catch (error) {
-      Logger.error(error);
-    }
+    return await this.authService.getSessions(user.id);
   }
 
   @ApiOperation({ summary: 'Revoke a specific session by token id' })
@@ -187,10 +176,15 @@ export class AuthController {
   async deleteSingleSession(@Req() req: Request, @Param('id') tokenId: string) {
     const user = req.user as JwtPayload;
 
-    try {
-      await this.authService.deleteSingleSession(user.sub, tokenId);
-    } catch (error) {
-      Logger.error(error);
-    }
+    await this.authService.deleteSingleSession(user.id, tokenId);
+  }
+
+  @ApiOperation({ summary: 'Update profile (link Minecraft account)' })
+  @HttpCode(HttpStatus.OK)
+  @Patch('profile')
+  async editUserProfile(@Req() req: Request, @Body() editUser: EditUserDto) {
+    const user = req.user as JwtPayload;
+
+    return await this.authService.editUserProfile(user.id, editUser);
   }
 }

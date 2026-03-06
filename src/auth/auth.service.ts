@@ -1,10 +1,17 @@
-import { ConflictException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { and, eq, getTableColumns } from 'drizzle-orm';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
 import { RefreshToken, refreshTokens, type User, users } from 'src/db/schema';
 import { UsersService } from 'src/users/users.service';
+import { EditUserDto } from './dto/editUser.dto';
 import { LoginUserDto } from './dto/login.dto';
 import { CreateUserDto } from './dto/register.dto';
 
@@ -155,5 +162,9 @@ export class AuthService {
     await this.db
       .delete(refreshTokens)
       .where(and(eq(refreshTokens.userId, userId), eq(refreshTokens.id, tokenId)));
+  }
+
+  async editUserProfile(userId: string, dto: EditUserDto): Promise<Omit<User, 'passwordHash'>> {
+    return await this.usersService.updateProfile(userId, dto);
   }
 }
