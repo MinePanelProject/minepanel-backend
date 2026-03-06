@@ -4,12 +4,14 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { sql } from 'drizzle-orm';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
 import { Public } from './common/decorators/public.decorator';
+import { DockerService } from './docker/docker.service';
 
 @ApiTags('api')
 @Controller()
 export class AppController {
   constructor(
     private configService: ConfigService,
+    private dockerService: DockerService,
     @Inject(DRIZZLE) private db: DrizzleDB,
   ) {}
 
@@ -29,11 +31,14 @@ export class AppController {
   @HttpCode(HttpStatus.OK)
   @Get('health')
   async getHealth() {
-    try {
-      await this.db.execute(sql`SELECT 1`);
-      return { db: 'ok' };
-    } catch (_error) {
-      return { db: 'error' };
-    }
+    const db = this.db
+      .execute(sql`SELECT 1`)
+      .then(() => 'ok' as const)
+      .catch(() => 'error' as const);
+    const docker = this.dockerService.ping().then((ok) => (ok ? 'ok' : 'error'));
+
+    const [dbOK, dockerOK] = await Promise.all([db, docker]);
+
+    return { db: dbOK, docker: dockerOK };
   }
 }

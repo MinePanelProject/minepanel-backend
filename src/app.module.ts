@@ -9,6 +9,7 @@ import { RolesGuard } from './auth/guards/roles.guard';
 import { DbModule } from './db/db.module';
 import { SetupModule } from './setup/setup.module';
 import { UsersModule } from './users/users.module';
+import { DockerModule } from './docker/docker.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { UsersModule } from './users/users.module';
     SetupModule,
     UsersModule,
     AuthModule,
+    DockerModule,
   ],
   controllers: [AppController],
   providers: [
