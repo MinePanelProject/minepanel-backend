@@ -13,10 +13,10 @@ MinePanel is a self-hosted Minecraft server management panel. A single `docker-c
 - **Role system**: three roles (`ADMIN`, `MOD`, `USER`) with PBAC granular permissions for MODs (per-server capabilities without full admin access)
 
 **Development phases:**
-- **Phase 1** — foundation: auth (JWT cookies), server lifecycle (create/start/stop/delete), Docker service, health check
+- **Phase 1** — v1.0 deployable: auth (JWT cookies, sessions, password change, rate limiting), server lifecycle (create/start/stop/delete/list), Docker service, health check, host metrics via WebSocket, security hardening, Docker deployment
 - **Phase 1.5** — access control: server visibility (OPEN/REQUEST/PRIVATE), MOD permissions, Google/GitHub OAuth, Minecraft account linking, magic links (SMTP optional), invite tokens
 - **Phase 2** — developer platform: audit log, API key authentication, outbound webhooks
-- **Phase 3** — operations: WebSocket real-time (stats, logs, players), RCON, backups, scheduled tasks, notifications, file manager, player management
+- **Phase 3** — operations: WebSocket real-time (logs, players), RCON, backups, scheduled tasks, notifications, file manager, player management
 - **Phase 4** — marketplace: plugin/mod browser (Modrinth, Hangar, CurseForge)
 - **Phase 5** — networking: Velocity proxy with auto-generated config, Bedrock server support
 
@@ -1026,22 +1026,26 @@ e2e:
 
 ## Implementation Phases
 
-### Phase 1 - Foundation
+### Phase 1 - Foundation (v1.0)
 
 1. Auth module (register, login, JWT via HttpOnly cookies, refresh, logout, guards) ✅
 2. Setup module (first-run wizard, admin creation) ✅
-3. RolesGuard + `@Roles()` decorator ← NEXT
-4. Health check module (`GET /health` — db + docker ping)
-5. Docker module (socket connection, container CRUD + host resource inspection)
-6. Server module:
-   - create/start/stop/delete MC servers + resource checks
-   - Graceful shutdown sequence (`stopServer()`)
-   - Startup reconciliation (`onModuleInit`)
-   - Concurrent operation protection (atomic compare-and-swap via Postgres)
-   - Transaction rollback on Docker failure
-   - Server deletion policy (auto-backup + 24h volume cleanup)
-7. Version module (`GET /versions` with 1h cache, `PATCH /servers/:id/version`)
-8. Dockerize the backend
+3. RolesGuard + `@Roles()` decorator ✅
+4. Sessions management (list, revoke single, logout-all) ✅
+5. `PATCH /auth/profile` (edit profile) ✅
+6. `PATCH /auth/password` (change password) ✅
+7. Rate limiting (`@nestjs/throttler` on public endpoints)
+8. Security hardening (validation, DTO constraints, helmet config)
+9. Health check module (`GET /health` — db + docker ping)
+10. Docker module (socket connection, container CRUD + host resource inspection)
+11. Server module:
+    - create/start/stop/delete/list MC servers + resource checks
+    - Graceful shutdown sequence (`stopServer()`)
+    - Startup reconciliation (`onModuleInit`)
+    - Concurrent operation protection (atomic compare-and-swap via Postgres)
+    - Transaction rollback on Docker failure
+12. Host metrics WebSocket (CPU, RAM, disk — real-time push to frontend)
+13. Dockerize the backend (docker-compose, migrations, env vars)
 
 #### Resource check flows (Phase 1, inside ServersService)
 
