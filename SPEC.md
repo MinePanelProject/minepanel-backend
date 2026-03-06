@@ -2339,3 +2339,11 @@ A custom logo displayed in the frontend when the user views the list of backend 
 | GET    | /panel/logo          | Public                      | Get panel logo (PNG, with ETag cache)    |
 | PUT    | /panel/logo          | ADMIN                       | Upload custom panel logo                 |
 | DELETE | /panel/logo          | ADMIN                       | Reset panel logo to default              |
+
+---
+
+## Technical Debt / Future Improvements
+
+### Database indexes
+- Add index on `refresh_tokens.user_id` — queried in every auth operation (logout, getSessions, refreshTokens). Low priority for self-hosted with few users, but correct practice for FK columns used in WHERE clauses.
+- Add index on `servers.user_id` when the servers module is implemented — same rationale.
