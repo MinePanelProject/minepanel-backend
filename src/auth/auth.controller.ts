@@ -13,6 +13,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { Public } from 'src/common/decorators/public.decorator';
 import { User } from 'src/db/schema';
@@ -30,6 +31,7 @@ export class AuthController {
   constructor(private authService: AuthService) {}
 
   @Public()
+  @Throttle({ default: { limit: 5, ttl: 10000 } })
   @ApiOperation({ summary: 'Register a new user' })
   @HttpCode(HttpStatus.CREATED)
   @Post('register')
@@ -42,6 +44,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle({ default: { limit: 5, ttl: 10000 } })
   @ApiOperation({ summary: 'Login and get JWT token' })
   @HttpCode(HttpStatus.OK)
   @Post('login')
@@ -107,6 +110,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle({ default: { limit: 5, ttl: 10000 } })
   @ApiOperation({ summary: 'Refresh jwt or refresh tokens' })
   @HttpCode(HttpStatus.OK)
   @Post('refresh')
