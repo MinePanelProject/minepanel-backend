@@ -1,5 +1,39 @@
 {
   "updatedAt": "2026-03-07",
+  "meta": {
+    "title": "MinePanel - Self-Hosted Minecraft Server Manager",
+    "tagline": "Self-hosted Minecraft server management, the right way.",
+    "description": "A single <code>docker compose up</code> brings up the entire stack on your own machine. No external services. No cloud lock-in. Full control.",
+    "github": "https://github.com/MinePanelProject"
+  },
+  "features": [
+    { "icon": "⚡", "title": "One-Command Deploy", "description": "The full stack - backend, database and MC servers - runs on your hardware with a single command. Zero external dependencies." },
+    { "icon": "🐳", "title": "Docker-Native", "description": "Each Minecraft server runs in its own isolated container. Rootless Docker supported by default - no root privileges required." },
+    { "icon": "🔗", "title": "Multi-Backend", "description": "The hosted frontend at minepanel.xyz connects to any number of independent self-hosted backends. Point it at your own instance URL." },
+    { "icon": "🛡️", "title": "Role System", "description": "Three roles: ADMIN, MOD, USER. MODs get granular per-server permissions without full admin access - built-in PBAC." },
+    { "icon": "📡", "title": "Real-Time Events", "description": "Live server stats, console logs, player joins/leaves, and host metrics pushed via WebSocket - no polling needed." },
+    { "icon": "🔒", "title": "Security First", "description": "JWT via HttpOnly cookies, rate limiting, Helmet security headers, input validation, Docker socket guardrails, and path-traversal protection." },
+    { "icon": "📱", "title": "Mobile App", "description": "KMP app for iOS and Android. Not just for admins - players get their own portal: server status, access requests, push notifications, and profile.", "coming": true, "color": "aqua" },
+    { "icon": "👤", "title": "Player Portal", "description": "Unlike other MC panels, MinePanel is built for players too. Browse your servers, request access, view your Minecraft profile and playtime - all in one place.", "coming": true, "color": "yellow" }
+  ],
+  "techStack": [
+    { "label": "TypeScript 5", "type": "lang" },
+    { "label": "NestJS v11", "type": "lang" },
+    { "label": "Node.js 20", "type": "lang" },
+    { "label": "Bun (runtime)", "type": "infra" },
+    { "label": "PostgreSQL 16", "type": "db" },
+    { "label": "Drizzle ORM", "type": "db" },
+    { "label": "Docker / Dockerode", "type": "infra" },
+    { "label": "JWT · HttpOnly Cookies", "type": "auth" },
+    { "label": "Socket.IO (WebSocket)", "type": "lang" },
+    { "label": "Helmet · Throttler", "type": "auth" },
+    { "label": "RCON Protocol", "type": "infra" },
+    { "label": "GitHub Actions CI/CD", "type": "infra" }
+  ],
+  "team": [
+    { "name": "Cristian", "username": "okazakee", "role": "Founder / Full-stack", "github": "https://github.com/okazakee" },
+    { "name": "Marco", "username": "MarcoBllfr", "role": "Mobile Dev", "github": "https://github.com/okazakee" }
+  ],
   "phases": [
     {
       "id": "1",
