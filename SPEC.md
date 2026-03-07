@@ -6,11 +6,22 @@ MinePanel is a self-hosted Minecraft server management panel. A single `docker-c
 
 **What it does:** the backend manages PostgreSQL for state, controls Minecraft server containers via the Docker socket, and exposes a REST + WebSocket API consumed by the frontend.
 
+**Ecosystem — three clients, one backend API:**
+
+| Client | Repo | Tech | Audience |
+|--------|------|------|----------|
+| Web dashboard | `minepanel-frontend` | SvelteKit (planned) | ADMIN, MOD, USER |
+| Mobile app | `minepanel-mobile` | KMP + Compose Multiplatform (iOS + Android) | USER, MOD |
+| Backend API | `minepanel-backend` (this repo) | NestJS + PostgreSQL | — |
+
+The backend is fully agnostic of the client. Role-based guards (`ADMIN` / `MOD` / `USER`) enforce access at the API level. Each client adapts its UI to the authenticated user's role — same API, different experiences.
+
 **Key design decisions:**
 - **Self-hosted first**: the entire stack (backend + database + MC servers) runs on the user's machine. The only external calls are optional (Discord webhooks, Mojang UUID API, Hangar/Modrinth for versions)
 - **Multi-backend**: the hosted frontend (`minepanel.xyz`) supports multiple independent self-hosted backends. Each user points the frontend at their own instance URL. Cross-origin cookies work via `SameSite=None; Secure` + strict CORS
 - **No external queue or cache**: Postgres is the only stateful dependency. No Redis, no BullMQ, no CDN — cron jobs run in-process via `@nestjs/schedule`, caches are in-memory
 - **Role system**: three roles (`ADMIN`, `MOD`, `USER`) with PBAC granular permissions for MODs (per-server capabilities without full admin access)
+- **Not admin-only**: unlike most MC panels, regular players have a dedicated portal — server status, access requests, player profile, push notifications (mobile)
 
 **Development phases:**
 - **Phase 1** — v1.0 deployable: auth (JWT cookies, sessions, password change, rate limiting), server lifecycle (create/start/stop/delete/list), Docker service, health check, host metrics via WebSocket, security hardening, Docker deployment

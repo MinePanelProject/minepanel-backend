@@ -131,6 +131,23 @@
         { "text": "GeyserMC plugin support (Bedrock via plugin)", "done": false },
         { "text": "Standalone Bedrock server (itzg/minecraft-bedrock-server)", "done": false }
       ]
+    },
+    {
+      "id": "6",
+      "label": "Phase 6",
+      "name": "Mobile App & Player Portal",
+      "status": "future",
+      "description": "KMP (Kotlin Multiplatform + Compose Multiplatform) app for iOS and Android. Unlike other MC panels, MinePanel targets players too — not just admins.",
+      "items": [
+        { "text": "KMP mobile app (iOS + Android)", "done": false },
+        { "text": "Player portal: server status, access requests, profile", "done": false },
+        { "text": "Push notifications (server online/offline, crash, whitelist approved)", "done": false },
+        { "text": "Quick server start/stop/restart (MOD/ADMIN)", "done": false },
+        { "text": "Live console with RCON input (MOD/ADMIN)", "done": false },
+        { "text": "Historical metrics charts (Phase 2 data)", "done": false },
+        { "text": "Player profile: MC skin, playtime, linked account", "done": false },
+        { "text": "Server widget for home screen", "done": false }
+      ]
     }
   ]
 }
