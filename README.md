@@ -1,117 +1,145 @@
-# minepanel-backend
+<div align="center">
+  <img src="https://minepanel.xyz/og.png" alt="MinePanel" width="100%" />
+</div>
 
-> ⚠️ Work in progress
+<br/>
 
-NestJS backend for **MinePanel** — a self-hosted, open-source Minecraft server management panel. Designed as a modern alternative to Pterodactyl and Crafty Controller, with a focus on simple self-hosting (`docker-compose up`) and a polished UX.
+<div align="center">
 
-The backend manages user authentication, spawns and controls Minecraft server containers via the Docker socket, and exposes a REST + WebSocket API consumed by the frontend.
+**Self-hosted Minecraft server management panel — one `docker compose up` away.**
 
-See [SPEC.md](./SPEC.md) for the full architecture specification and implementation roadmap.
+[minepanel.xyz](https://minepanel.xyz) · [SPEC.md](./SPEC.md) · [Deployment Guide](./docs/deployment.md)
+
+</div>
 
 ---
 
-## Tech Stack
+> [!WARNING]
+> **Phase 1 — Work in Progress.** Core features are under active development. The backend is not production-ready yet. See the [roadmap](https://minepanel.xyz/#roadmap) for current status.
 
-| Layer         | Technology                                      |
-|---------------|-------------------------------------------------|
-| Framework     | [NestJS](https://nestjs.com/) v11               |
-| Language      | TypeScript 5                                    |
-| Runtime       | Node.js 20 / [Bun](https://bun.sh/) (prod)     |
-| Database      | PostgreSQL 16                                   |
-| ORM           | [Drizzle ORM](https://orm.drizzle.team/) v0.45  |
-| Auth          | JWT (HttpOnly cookies) via `@nestjs/jwt`        |
-| Docker        | [Dockerode](https://github.com/apocas/dockerode) via Docker socket (rootless default) |
-| Validation    | `class-validator` + `class-transformer`         |
-| API docs      | Swagger / OpenAPI (`@nestjs/swagger`)           |
-| Linter        | [Biome](https://biomejs.dev/)                   |
-| Package mgr   | Bun                                             |
+---
+
+## What is MinePanel?
+
+MinePanel is an open-source, self-hosted Minecraft server management panel. It runs entirely on your own hardware via Docker — no cloud lock-in, no external services.
+
+The backend is a **NestJS REST + WebSocket API** that manages user authentication, spawns Minecraft server containers via the Docker socket, and exposes all panel operations to the frontend hosted at [minepanel.xyz](https://minepanel.xyz).
 
 ---
 
 ## Architecture
 
 ```
-docker-compose up -d
-┌────────────────────────────────────────┐
-│              Docker Host               │
-│                                        │
-│  minepanel-nestjs  ──── PostgreSQL     │
-│       │                                │
-│       │ ${DOCKER_SOCKET} (rootless)    │
-│       ▼                                │
-│  mc-server-1 (itzg/minecraft-server)  │
-│  mc-server-2 (itzg/minecraft-server)  │
-└────────────────────────────────────────┘
+docker compose up -d
+┌──────────────────────────────────────────────┐
+│                  Docker Host                  │
+│                                              │
+│  Caddy (HTTPS) ──► NestJS ──── PostgreSQL   │
+│                      │                       │
+│          ${DOCKER_SOCKET} (rootless)         │
+│                      ▼                       │
+│        mc-server-1 (itzg/minecraft-server)   │
+│        mc-server-2 (itzg/minecraft-server)   │
+└──────────────────────────────────────────────┘
 ```
 
-- NestJS runs inside Docker, mounts the Docker socket to manage MC containers
-- Each Minecraft server is an isolated container spawned on demand
-- MC server data lives in a shared volume at `{MC_DATA_PATH}/{serverId}/`
+- **Caddy** handles automatic HTTPS (Let's Encrypt) — just set `DOMAIN` in `.env`
+- **NestJS** mounts the Docker socket to spawn and control MC containers
+- Each Minecraft server runs in its own isolated container
+- MC data lives in `{MC_DATA_PATH}/{serverId}/`
 
 ---
 
-## Getting Started
+## Tech Stack
 
-### Prerequisites
+| Layer       | Technology                                                        |
+|-------------|-------------------------------------------------------------------|
+| Framework   | [NestJS](https://nestjs.com/) v11                                 |
+| Language    | TypeScript 5                                                      |
+| Runtime     | Node.js 20 / [Bun](https://bun.sh/) (prod)                       |
+| Database    | PostgreSQL 16 + [Drizzle ORM](https://orm.drizzle.team/)          |
+| Auth        | JWT via HttpOnly cookies (no Passport)                            |
+| Docker      | [Dockerode](https://github.com/apocas/dockerode) — rootless-first |
+| Proxy       | [Caddy](https://caddyserver.com/) — auto HTTPS, included in compose |
+| Validation  | `class-validator` + `class-transformer`                           |
+| API docs    | Swagger / OpenAPI at `/docs`                                      |
+| Linter      | [Biome](https://biomejs.dev/)                                     |
 
-- [Bun](https://bun.sh/) — package manager and prod runtime
-- [Docker](https://www.docker.com/) + Docker Compose
-- PostgreSQL 16 (or use the provided `docker-compose.dev.yml`)
+---
 
-### Development
+## Quick Deploy
+
+**Requirements:** a Linux server with Docker, a domain pointing to it, ports 80 and 443 open.
 
 ```bash
-# 1. Clone and install dependencies
-git clone https://github.com/your-org/minepanel-backend
+git clone https://github.com/MinePanelProject/minepanel-backend
 cd minepanel-backend
+cp .env.example .env
+```
+
+Edit `.env` — only 4 values required:
+
+```env
+DOMAIN=your-domain.com
+POSTGRES_PASSWORD=strong-random-password
+JWT_SECRET=long-random-string
+ENCRYPTION_KEY=long-random-string
+```
+
+```bash
+docker compose up -d
+```
+
+Caddy automatically provisions an HTTPS certificate. The panel is live at `https://your-domain.com`.
+
+→ Full guide: [docs/deployment.md](./docs/deployment.md)
+
+---
+
+## Development
+
+```bash
+# Install dependencies
 bun install
 
-# 2. Start PostgreSQL only
-docker-compose -f docker-compose.dev.yml up -d
+# Start PostgreSQL only
+docker compose -f docker-compose.dev.yml up -d
 
-# 3. Copy env and configure
+# Copy and configure env
 cp .env.example .env
 
-# 4. Push DB schema
+# Push DB schema
 bun db:push
 
-# 5. Start with hot reload
+# Start with hot reload
 bun start:dev
 ```
 
-API available at `http://localhost:3000`
-Swagger docs at `http://localhost:3000/api`
-
-### Production
-
-```bash
-cp .env.example .env
-# Edit .env with secure values
-
-docker-compose up -d
-```
+API: `http://localhost:3000/api`
+Swagger: `http://localhost:3000/docs`
 
 ---
 
 ## Environment Variables
 
-| Variable               | Description                          | Default                    |
-|------------------------|--------------------------------------|----------------------------|
-| `DATABASE_URL`         | PostgreSQL connection string         | required                   |
-| `JWT_SECRET`           | Secret for signing JWTs              | required                   |
-| `JWT_EXPIRES_IN`       | Access token TTL                     | `15m`                      |
-| `JWT_REFRESH_EXPIRES_IN` | Refresh token TTL                  | `7d`                       |
-| `PORT`                 | Backend listen port                  | `3000`                     |
-| `CORS_ORIGIN`          | Allowed CORS origin                  | `http://localhost:5173`    |
-| `DOCKER_NETWORK`       | Docker network for MC containers     | `minepanel_network`        |
-| `MC_DATA_PATH`         | Base path for MC server data volumes | `/mc-data`                 |
-| `POSTGRES_PASSWORD`    | Postgres password (docker-compose)   | `changeme`                 |
+See [`.env.example`](./.env.example) for the full list. Key variables:
+
+| Variable                | Description                                        | Default              |
+|-------------------------|----------------------------------------------------|----------------------|
+| `DOMAIN`                | Public domain — used by Caddy for HTTPS + CORS     | required in prod     |
+| `DATABASE_URL`          | PostgreSQL connection string                       | required             |
+| `JWT_SECRET`            | Secret for JWT signing                             | required             |
+| `ENCRYPTION_KEY`        | Key for RCON password encryption (AES-256-GCM)     | required             |
+| `REQUIRE_ADMIN_APPROVAL`| New users start as PENDING until admin approves    | `true`               |
+| `MC_PORT_MIN/MAX`       | Port range for Minecraft server containers         | `25565` / `25665`    |
+| `MIN_FREE_DISK_MB`      | Minimum free disk to allow server creation         | `2048`               |
+| `MAX_MEMORY_RATIO`      | Max fraction of host RAM allocatable to MC servers | `0.90`               |
 
 ---
 
 ## Database
 
-Schema defined in [`src/db/schema.ts`](./src/db/schema.ts) using Drizzle ORM.
+Schema defined in [`src/db/schema.ts`](./src/db/schema.ts).
 
 ```bash
 bun db:push      # sync schema to DB (dev)
@@ -124,10 +152,25 @@ bun db:studio    # open Drizzle Studio GUI
 
 ## API Overview
 
-| Group   | Endpoints                                                       |
-|---------|-----------------------------------------------------------------|
-| Setup   | `GET /setup/status` · `POST /setup/init`                        |
-| Auth    | `POST /auth/register` · `POST /auth/login` · `POST /auth/logout` · `POST /auth/refresh` · `GET /auth/profile` |
+Full docs at `/docs` (Swagger UI) when the server is running.
+
+| Group   | Endpoints                                                                                     |
+|---------|-----------------------------------------------------------------------------------------------|
+| Setup   | `GET /setup/status` · `POST /setup/init`                                                      |
+| Auth    | `POST /auth/register` · `POST /auth/login` · `POST /auth/refresh` · `POST /auth/logout` · `GET /auth/profile` · `GET /auth/sessions` · `PATCH /auth/profile` · `PATCH /auth/password` |
+| Health  | `GET /health`                                                                                 |
 | Servers | `POST /servers` · `GET /servers` · `GET /servers/:id` · `POST /servers/:id/start` · `POST /servers/:id/stop` · `DELETE /servers/:id` |
 
-Full endpoint documentation available at `/api` (Swagger UI).
+---
+
+## Roadmap
+
+Live progress at [minepanel.xyz/#roadmap](https://minepanel.xyz/#roadmap).
+
+See [SPEC.md](./SPEC.md) for the full architecture specification.
+
+---
+
+## License
+
+Not affiliated with Mojang Studios or Microsoft. Minecraft is a trademark of Mojang Synergies AB.
