@@ -17,7 +17,11 @@
         "useImportType": "off"
       },
       "complexity": {
-        "noStaticOnlyClass": "off"
+        "noStaticOnlyClass": "off",
+        "noForEach": "off"
+      },
+      "suspicious": {
+        "noExplicitAny": "off"
       }
     }
   },

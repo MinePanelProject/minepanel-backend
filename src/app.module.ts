@@ -7,11 +7,10 @@ import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { DbModule } from './db/db.module';
+import { DockerModule } from './docker/docker.module';
+import { ServersModule } from './servers/servers.module';
 import { SetupModule } from './setup/setup.module';
 import { UsersModule } from './users/users.module';
-import { DockerModule } from './docker/docker.module';
-import { ServersService } from './servers/servers.service';
-import { ServersModule } from './servers/servers.module';
 
 @Module({
   imports: [
@@ -45,7 +44,6 @@ import { ServersModule } from './servers/servers.module';
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
     },
-    ServersService,
   ],
 })
 export class AppModule {}
