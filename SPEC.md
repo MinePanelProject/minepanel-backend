@@ -8,7 +8,7 @@ MinePanel is a self-hosted Minecraft server management panel. A single `docker-c
 
 **Key design decisions:**
 - **Self-hosted first**: the entire stack (backend + database + MC servers) runs on the user's machine. The only external calls are optional (Discord webhooks, Mojang UUID API, Hangar/Modrinth for versions)
-- **Multi-backend**: the hosted frontend (`app.minepanel.io`) supports multiple independent self-hosted backends. Each user points the frontend at their own instance URL. Cross-origin cookies work via `SameSite=None; Secure` + strict CORS
+- **Multi-backend**: the hosted frontend (`minepanel.xyz`) supports multiple independent self-hosted backends. Each user points the frontend at their own instance URL. Cross-origin cookies work via `SameSite=None; Secure` + strict CORS
 - **No external queue or cache**: Postgres is the only stateful dependency. No Redis, no BullMQ, no CDN — cron jobs run in-process via `@nestjs/schedule`, caches are in-memory
 - **Role system**: three roles (`ADMIN`, `MOD`, `USER`) with PBAC granular permissions for MODs (per-server capabilities without full admin access)
 
@@ -693,7 +693,7 @@ New env vars:
 | ENCRYPTION_KEY         | 32-byte hex key for RCON password encryption (Phase 3b) | (required Phase 3b) |
 | STOP_WARN_SECONDS      | Seconds to warn players before graceful server shutdown | 30              |
 | PANEL_ASSETS_PATH        | Directory for panel-level static assets (logo, etc.)      | /panel-assets   |
-| REQUIRE_ADMIN_APPROVAL   | If true, new registrations start as PENDING (admin must approve) | false      |
+| REQUIRE_ADMIN_APPROVAL   | If true, new registrations start as PENDING (admin must approve) | true       |
 | SMTP_HOST                | SMTP server hostname (optional — enables email features)          | (optional) |
 | SMTP_PORT                | SMTP port                                                         | 587        |
 | SMTP_SECURE              | Use TLS (`true` for port 465, `false` for STARTTLS)               | false      |
@@ -770,9 +770,9 @@ Headers it sets automatically:
 
 ### CORS
 
-Already configured via `CORS_ORIGIN` env var. In prod, this should be set to the exact frontend URL (`https://app.minepanel.io`). Never `*` in prod.
+Already configured via `CORS_ORIGIN` env var. In prod, this should be set to the exact frontend URL (`https://minepanel.xyz`). Never `*` in prod.
 
-**`credentials: true` is required** — it allows the browser to include HttpOnly cookies on cross-origin requests from `app.minepanel.io` to the self-hosted backend.
+**`credentials: true` is required** — it allows the browser to include HttpOnly cookies on cross-origin requests from `minepanel.xyz` to the self-hosted backend.
 
 ```ts
 app.enableCors({
@@ -790,7 +790,7 @@ app.enableCors({
 | `sameSite` | `lax` | `none` | Richiesto per cross-origin (vedi nota) |
 | `path`     | `/`   | `/`   |                                      |
 
-> **Perché `SameSite=None` e non `Strict`?** Il frontend (`app.minepanel.io`) fa richieste `fetch()` cross-origin al backend self-hosted (`user.domain.com`). Con `SameSite=Strict` o `Lax` il browser non invia i cookie su richieste JavaScript cross-origin — l'autenticazione non funzionerebbe. `SameSite=None; Secure` è l'unica opzione per cookie HttpOnly su richieste cross-origin. La protezione CSRF è garantita da: policy CORS con `origin` specifico + `credentials: true`, e dal fatto che solo `app.minepanel.io` può fare richieste valide.
+> **Perché `SameSite=None` e non `Strict`?** Il frontend (`minepanel.xyz`) fa richieste `fetch()` cross-origin al backend self-hosted (`user.domain.com`). Con `SameSite=Strict` o `Lax` il browser non invia i cookie su richieste JavaScript cross-origin — l'autenticazione non funzionerebbe. `SameSite=None; Secure` è l'unica opzione per cookie HttpOnly su richieste cross-origin. La protezione CSRF è garantita da: policy CORS con `origin` specifico + `credentials: true`, e dal fatto che solo `minepanel.xyz` può fare richieste valide.
 
 ### Input validation
 
@@ -992,7 +992,7 @@ Traefik handles WebSocket automatically on `websecure` entrypoint.
 - [ ] Domain DNS points to the host
 - [ ] Reverse proxy running with valid TLS certificate
 - [ ] `NODE_ENV=production` in `.env` (enables `Secure` cookie flag)
-- [ ] `CORS_ORIGIN` set to the **exact** frontend URL (e.g. `https://app.minepanel.io`) — never `*`
+- [ ] `CORS_ORIGIN` set to the **exact** frontend URL (e.g. `https://minepanel.xyz`) — never `*`
 - [ ] `JWT_SECRET` is a long random string (not the placeholder)
 - [ ] `ENCRYPTION_KEY` is a 32-byte hex string (Phase 3b)
 - [ ] `POSTGRES_PASSWORD` changed from `changeme`
@@ -1270,14 +1270,14 @@ GET /auth/magic-link/verify?token={value}
 
 Magic links work alongside passwords — users with `passwordHash` can still login either way. OAuth-only users can also use magic links if their email is on record.
 
-**Open registration with email verification:**
+**Default registration mode (v1.0 — no SMTP):**
+`REQUIRE_ADMIN_APPROVAL=true` is the default. All new registrations start as `PENDING`. Admin approves manually via `PATCH /admin/users/:id/status`. `JwtAuthGuard` blocks `PENDING` users with 403. This is the only supported mode in v1.0 since there is no email sender.
+
+**Open registration with email verification (Phase 1.5 — requires SMTP):**
 When SMTP is configured and `REQUIRE_ADMIN_APPROVAL=false`, new registrations send a verification email (magic link to the registered address). Account starts as `PENDING` until the link is clicked.
 
 **Password recovery fallback (no SMTP):**
 Admin uses `POST /admin/users/:id/reset-password` → returns a one-time temporary password (plaintext, shown once). User logs in with it and immediately changes via `PATCH /auth/password`. Temporary password expires after 24h if unused.
-
-**Email verification fallback (no SMTP):**
-`UserStatus.PENDING` + `REQUIRE_ADMIN_APPROVAL=true` — admin approves registrations manually via `PATCH /admin/users/:id/status`. `JwtAuthGuard` blocks `PENDING` users with 403.
 
 #### API key authentication (Phase 2)
 
@@ -1337,14 +1337,14 @@ Features deferred from Phase 1 to avoid scope creep. Implement after Docker + Se
 
 #### OAuth (Google + GitHub)
 
-Social login via Google and GitHub using a **frontend-initiated token flow**. This is the only approach compatible with self-hosting: since the backend can run at any URL, it cannot register redirect URIs with Google/GitHub. Instead, the centrally hosted frontend (app.minepanel.io) owns the OAuth app registration and handles the browser-side flow, then passes the resulting token to the user's backend for verification.
+Social login via Google and GitHub using a **frontend-initiated token flow**. This is the only approach compatible with self-hosting: since the backend can run at any URL, it cannot register redirect URIs with Google/GitHub. Instead, the centrally hosted frontend (minepanel.xyz) owns the OAuth app registration and handles the browser-side flow, then passes the resulting token to the user's backend for verification.
 
 **Why not server-side redirect flow:**
-Google/GitHub require pre-registering exact redirect URIs in their developer console. A self-hosted backend at an arbitrary URL cannot be registered. The frontend is hosted at a fixed URL (`app.minepanel.io`), so it can hold the OAuth credentials on behalf of all users.
+Google/GitHub require pre-registering exact redirect URIs in their developer console. A self-hosted backend at an arbitrary URL cannot be registered. The frontend is hosted at a fixed URL (`minepanel.xyz`), so it can hold the OAuth credentials on behalf of all users.
 
 **Google flow:**
 ```
-Frontend (app.minepanel.io):
+Frontend (minepanel.xyz):
   1. opens Google popup / redirect using Google Identity SDK
   2. Google returns an ID token (signed JWT) to the frontend
 
@@ -1364,7 +1364,7 @@ Backend:
 
 **GitHub flow:**
 ```
-Frontend (app.minepanel.io):
+Frontend (minepanel.xyz):
   1. initiates GitHub OAuth via PKCE (or device flow)
   2. GitHub returns an access token to the frontend
 
@@ -1380,7 +1380,7 @@ Backend:
 
 **Key decisions:**
 - No server-side redirect, no OAuth app config needed on the self-hosted backend
-- Frontend holds Google/GitHub client credentials (registered once by us for app.minepanel.io)
+- Frontend holds Google/GitHub client credentials (registered once by us for minepanel.xyz)
 - Backend only makes token verification calls (simple HTTPS GET/POST, no redirect)
 - `passwordHash` is `null` for OAuth-only users — they cannot use email/password login
 - `googleId` / `githubId` are nullable unique fields on `User`
@@ -1448,7 +1448,7 @@ Microsoft/Minecraft linking is inherently server-side (4-step token chain, no br
 | MICROSOFT_CLIENT_SECRET | Azure app client secret              | (optional) |
 
 #### Server access model
-Panel registration is always global and open. Server access is controlled per-server independently.
+Panel registration access is controlled by `REQUIRE_ADMIN_APPROVAL` (default `true` — admin must approve new users). Server access is controlled per-server independently.
 
 Each server has an `accessType`:
 - `OPEN` — all panel users can see and access it, no approval needed
@@ -1511,10 +1511,19 @@ Guard logic order:
 - This means banned users cannot use their existing tokens (instant effect, no need to wait for JWT expiry)
 
 **Key decisions:**
-- Default: registration is open, all new users are `ACTIVE`
-- `PENDING` approval mode is opt-in — configurable via a setup setting (future)
+- Default (v1.0): `REQUIRE_ADMIN_APPROVAL=true` — all new users start as `PENDING`, admin must approve
+- Open registration (`REQUIRE_ADMIN_APPROVAL=false`) is opt-in and requires SMTP configured for email verification (Phase 1.5)
 - Admin can ban/unban via `PATCH /admin/users/:id/status`
 - Banned user's refresh tokens are NOT deleted — they simply can't be used while banned. On unban, access is restored immediately without re-login.
+
+**Future registration modes (post-Phase 1.5):**
+- **Captcha** — hCaptcha or Cloudflare Turnstile on the register endpoint to prevent automated spam. Backend verifies the challenge token server-side. Configurable via `CAPTCHA_SECRET` env var; if absent, captcha is skipped.
+- **Nostr login** — user signs a NIP-98 HTTP auth event with their private key; backend verifies the signature and maps the pubkey to a panel account. No password required. Opt-in alongside password auth.
+- **Admin-managed registration modes** — the admin can configure via panel UI which registration method is active:
+  - `ADMIN_APPROVAL` (default) — every new registration requires manual approval
+  - `OPEN` — users are immediately active (requires SMTP for email verification)
+  - `BOT_VERIFIED` — user must pass verification via a configurable bot (Discord role check, Telegram bot, email OTP, or custom webhook). The admin configures which bot and what criteria.
+  The default deployment ships with `ADMIN_APPROVAL` so that a fresh install is never accidentally open to the public.
 
 ### Phase 2 - Audit Log + Frontend
 
