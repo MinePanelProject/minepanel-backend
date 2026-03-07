@@ -678,7 +678,8 @@ New env vars:
 | JWT_EXPIRES_IN        | Access token TTL                   | 15m                              |
 | JWT_REFRESH_EXPIRES_IN| Refresh token TTL                  | 7d                               |
 | PORT                  | Backend listen port                | 3000                             |
-| CORS_ORIGIN           | Allowed CORS origin                | http://localhost:5173            |
+| DOMAIN                | Public domain (used by Caddy for HTTPS + sets CORS_ORIGIN automatically) | (required in prod) |
+| CORS_ORIGIN           | Allowed CORS origin (set automatically from DOMAIN in docker-compose) | http://localhost:5173 |
 | DOCKER_SOCKET         | Path to Docker socket (inside container) | /var/run/docker.sock        |
 | DOCKER_NETWORK        | Docker network for MC containers   | minepanel_network                |
 | MC_DATA_PATH          | Base path for MC server data       | /mc-data                         |
@@ -887,49 +888,29 @@ docker-compose up -d
 
 A reverse proxy with TLS termination is not optional. NestJS itself runs plain HTTP on port 3000; the reverse proxy handles HTTPS and forwards to it.
 
-### Recommended: Caddy (auto-HTTPS)
+### Default: Caddy (auto-HTTPS, included in docker-compose)
 
-Caddy is the easiest option for self-hosters — it obtains and renews Let's Encrypt certificates automatically, and proxies WebSocket connections without extra configuration.
+Caddy is **included by default** in `docker-compose.yml` — no extra setup required. It obtains and renews Let's Encrypt certificates automatically, handles HTTP→HTTPS redirect, and proxies WebSocket connections without extra configuration.
 
-**Option A — Caddy on the host** (simplest, no extra container):
+Set `DOMAIN` in `.env` and Caddy configures itself:
 
 ```
-# /etc/caddy/Caddyfile
-panel.yourdomain.com {
-    reverse_proxy localhost:3000
-}
-```
-
-Caddy handles TLS, HTTP→HTTPS redirect, and WebSocket upgrade automatically.
-
-**Option B — Caddy as a Docker container** (everything in docker-compose):
-
-Add to `docker-compose.yml`:
-```yaml
-caddy:
-  image: caddy:2-alpine
-  restart: unless-stopped
-  ports:
-    - "80:80"
-    - "443:443"
-  volumes:
-    - ./Caddyfile:/etc/caddy/Caddyfile:ro
-    - caddy_data:/data
-    - caddy_config:/config
-  networks:
-    - minepanel_network
-  depends_on:
-    - nestjs
-```
-
-`Caddyfile` (container-to-container, use service name not localhost):
-```
-panel.yourdomain.com {
+# Caddyfile (shipped with the project)
+{$DOMAIN} {
     reverse_proxy nestjs:3000
 }
 ```
 
-Add `caddy_data` and `caddy_config` to the `volumes:` block of docker-compose.
+The `docker-compose.yml` passes `DOMAIN` as an env var to the Caddy container. `CORS_ORIGIN` is automatically set to `https://${DOMAIN}` in the same compose file — no manual CORS configuration needed.
+
+**Host-based Caddy** (if you prefer Caddy on the host instead of in Docker):
+
+Remove the `caddy` service from `docker-compose.yml`, expose port 3000 on `nestjs`, then use a local Caddyfile:
+```
+your-domain.com {
+    reverse_proxy localhost:3000
+}
+```
 
 ### Alternative: nginx
 
