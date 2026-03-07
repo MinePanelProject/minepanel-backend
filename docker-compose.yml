@@ -1,28 +1,52 @@
-version: '3.8'
-
 services:
-  # NestJS Backend
+  caddy:
+    image: caddy:alpine
+    container_name: minepanel-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      - DOMAIN=${DOMAIN}
+    depends_on:
+      - nestjs
+    networks:
+      - minepanel_network
+
   nestjs:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: minepanel-backend
     restart: unless-stopped
-    ports:
-      - "3000:3000"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${XDG_RUNTIME_DIR:-/var/run}/docker.sock:/var/run/docker.sock
       - mc-data:/mc-data
+      - ${PANEL_ASSETS_PATH:-/panel-assets}:/panel-assets
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=postgresql://minepanel:${POSTGRES_PASSWORD:-changeme}@postgres:5432/minepanel
-      - JWT_SECRET=${JWT_SECRET:-please-change-this-in-production}
-      - JWT_EXPIRES_IN=15m
-      - JWT_REFRESH_EXPIRES_IN=7d
+      - DATABASE_URL=postgresql://minepanel:${POSTGRES_PASSWORD}@postgres:5432/minepanel
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-15m}
+      - JWT_REFRESH_EXPIRES_IN=${JWT_REFRESH_EXPIRES_IN:-7d}
       - PORT=3000
-      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+      - CORS_ORIGIN=https://${DOMAIN}
+      - REQUIRE_ADMIN_APPROVAL=${REQUIRE_ADMIN_APPROVAL:-true}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - DOCKER_NETWORK=minepanel_network
+      - DOCKER_SOCKET=/var/run/docker.sock
       - MC_DATA_PATH=/mc-data
+      - MC_PORT_MIN=${MC_PORT_MIN:-25565}
+      - MC_PORT_MAX=${MC_PORT_MAX:-25665}
+      - MIN_FREE_DISK_MB=${MIN_FREE_DISK_MB:-2048}
+      - MAX_MEMORY_RATIO=${MAX_MEMORY_RATIO:-0.90}
+      - PANEL_NAME=${PANEL_NAME:-MinePanel}
+      - PANEL_ASSETS_PATH=/panel-assets
     depends_on:
       postgres:
         condition: service_healthy
@@ -35,18 +59,15 @@ services:
       retries: 3
       start_period: 40s
 
-  # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
     container_name: minepanel-postgres
     restart: unless-stopped
-    ports:
-      - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     environment:
       - POSTGRES_USER=minepanel
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=minepanel
     networks:
       - minepanel_network
@@ -66,3 +87,7 @@ volumes:
     name: minepanel-postgres-data
   mc-data:
     name: minepanel-mc-data
+  caddy-data:
+    name: minepanel-caddy-data
+  caddy-config:
+    name: minepanel-caddy-config
