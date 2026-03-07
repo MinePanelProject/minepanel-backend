@@ -1,21 +1,23 @@
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { CustomLogger } from './common/custom-logger';
 import { DbExceptionFilter } from './common/filters/db-exception.filter';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const logger = new CustomLogger();
+  const app = await NestFactory.create(AppModule, { logger });
   const configService = app.get(ConfigService);
 
   const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET', 'JWT_EXPIRES_IN'];
 
   for (const envVar of requiredEnvVars) {
     if (!configService.get(envVar)) {
-      Logger.error(`Missing required environment variable: ${envVar}`, 'Bootstrap');
+      logger.error(`Missing required environment variable: ${envVar}`, 'Bootstrap');
       process.exit(1);
     }
   }

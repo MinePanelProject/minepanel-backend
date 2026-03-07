@@ -1,0 +1,136 @@
+{
+  "updatedAt": "2026-03-07",
+  "phases": [
+    {
+      "id": "1",
+      "label": "Phase 1",
+      "name": "Foundation — v1.0",
+      "status": "wip",
+      "description": "The core deployable release. Everything needed to spin up and manage Minecraft servers from a single docker-compose on your own machine.",
+      "progress": 52,
+      "progressLabel": "~52% complete",
+      "items": [
+        { "text": "JWT auth via HttpOnly cookies", "done": true },
+        { "text": "Register & login endpoints", "done": true },
+        { "text": "Token refresh & logout", "done": true },
+        { "text": "Session management (list & revoke)", "done": true },
+        { "text": "Password change", "done": true },
+        { "text": "Rate limiting (strict / standard / relaxed)", "done": true },
+        { "text": "Security hardening (Helmet, validation, DTO constraints)", "done": true },
+        { "text": "Health check endpoint", "done": true },
+        { "text": "First-run setup wizard (admin creation)", "done": true },
+        { "text": "Roles guard (ADMIN / MOD / USER)", "done": true },
+        { "text": "Docker service (socket, container CRUD)", "done": false },
+        { "text": "Server lifecycle (create, start, stop, restart, delete)", "done": false },
+        { "text": "Graceful shutdown with RCON warning", "done": false },
+        { "text": "Resource checks (RAM & disk guardrails)", "done": false },
+        { "text": "Startup reconciliation (DB vs Docker state sync)", "done": false },
+        { "text": "Concurrent operation protection (Postgres atomic CAS)", "done": false },
+        { "text": "Host metrics via WebSocket (CPU, RAM, disk)", "done": false },
+        { "text": "Unit + integration tests", "done": false },
+        { "text": "CI/CD pipeline (GitHub Actions \u2192 GHCR)", "done": false },
+        { "text": "Docker deployment (docker-compose + Caddy auto-HTTPS, migrations on boot)", "done": false }
+      ]
+    },
+    {
+      "id": "1.5",
+      "label": "Phase 1.5",
+      "name": "Access Control & OAuth",
+      "status": "planned",
+      "description": "Fine-grained access control, social login, Minecraft account linking, and per-server visibility modes.",
+      "progress": 0,
+      "progressLabel": "0% — starts after Phase 1",
+      "items": [
+        { "text": "Google OAuth (frontend-initiated token flow)", "done": false },
+        { "text": "GitHub OAuth (frontend-initiated token flow)", "done": false },
+        { "text": "Minecraft account linking (Microsoft OAuth premium flow)", "done": false },
+        { "text": "Offline player UUID linking", "done": false },
+        { "text": "Magic link login (passwordless — requires SMTP)", "done": false },
+        { "text": "Invite tokens & registration approval modes", "done": false },
+        { "text": "Server visibility: OPEN / REQUEST / PRIVATE", "done": false },
+        { "text": "Access request & approval workflow", "done": false },
+        { "text": "MOD granular permissions (PBAC per server)", "done": false },
+        { "text": "PermissionsGuard + @RequiresPermission decorator", "done": false },
+        { "text": "User status: PENDING / ACTIVE / BANNED enforcement", "done": false },
+        { "text": "Admin user management endpoints", "done": false }
+      ]
+    },
+    {
+      "id": "2",
+      "label": "Phase 2",
+      "name": "Developer Platform",
+      "status": "planned",
+      "description": "Audit log, API key authentication for programmatic access, and outbound webhooks for external integrations.",
+      "progress": 0,
+      "progressLabel": "0% — starts after Phase 1.5",
+      "items": [
+        { "text": "Audit log (interceptor, append-only, filterable)", "done": false },
+        { "text": "API key auth (mpk_ prefix, hashed, Bearer header)", "done": false },
+        { "text": "Outbound webhooks (HMAC-signed, retry policy)", "done": false },
+        { "text": "Subscribable events (server.crashed, backup.completed, \u2026)", "done": false },
+        { "text": "System event feed (DOCKER / SERVERS / SCHEDULER)", "done": false },
+        { "text": "Docker image pull via panel UI", "done": false },
+        { "text": "GET /system/stats admin endpoint", "done": false },
+        { "text": "Frontend \u2014 minepanel-frontend repo kickoff", "done": false }
+      ]
+    },
+    {
+      "id": "3",
+      "label": "Phase 3",
+      "name": "Operations & Management",
+      "status": "planned",
+      "description": "The full operations suite — everything you'd expect from a mature server panel, all running locally on your hardware.",
+      "progress": 0,
+      "progressLabel": "0% — starts after Phase 2",
+      "items": [
+        { "text": "WebSocket real-time (logs, player events, server stats)", "done": false },
+        { "text": "RCON service + connection pool", "done": false },
+        { "text": "Server console (send commands via RCON / docker exec)", "done": false },
+        { "text": "Backup system (manual + restore + streaming download)", "done": false },
+        { "text": "Retention policy (auto-delete oldest backups)", "done": false },
+        { "text": "Scheduled tasks (AUTO_BACKUP, AUTO_RESTART — cron)", "done": false },
+        { "text": "In-panel notifications (crash, high RAM, low disk)", "done": false },
+        { "text": "Discord webhook notifications per server", "done": false },
+        { "text": "Plugin marketplace (Modrinth + Hangar APIs)", "done": false },
+        { "text": "Plugin install, update, enable/disable", "done": false },
+        { "text": "Plugin config file editor", "done": false },
+        { "text": "File manager (browse, edit, upload, download)", "done": false },
+        { "text": "Path-traversal protection", "done": false },
+        { "text": "Player management (whitelist, bans, ops, kick)", "done": false },
+        { "text": "Timed bans with auto-expiry via RCON pardon", "done": false },
+        { "text": "UUID resolution (Mojang API + offline UUID.v3)", "done": false },
+        { "text": "Admin permissions dashboard (PBAC UI)", "done": false }
+      ]
+    },
+    {
+      "id": "4",
+      "label": "Phase 4",
+      "name": "Server Wizard & Presets",
+      "status": "future",
+      "description": "Polished server creation flow — Quick Start presets, advanced mode, and a mod picker for Forge/Fabric servers. The RPG \"class selection\" of server creation.",
+      "items": [
+        { "text": "Quick Start presets (Survival SMP, Creative, Minigame, \u2026)", "done": false },
+        { "text": "Advanced creation mode (all fields exposed)", "done": false },
+        { "text": "Mod picker (Modrinth + CurseForge for Forge/Fabric)", "done": false },
+        { "text": "Mod-loader compatibility validation", "done": false },
+        { "text": "Pre-install mods before first server start", "done": false },
+        { "text": "ServerMod tracking in DB", "done": false }
+      ]
+    },
+    {
+      "id": "5",
+      "label": "Phase 5",
+      "name": "Networking & Bedrock",
+      "status": "future",
+      "description": "Network multiple servers through a Velocity proxy with auto-generated config, and add support for Bedrock Edition players via GeyserMC or standalone bedrock servers.",
+      "items": [
+        { "text": "Velocity proxy (auto-generated velocity.toml)", "done": false },
+        { "text": "Backend server registration in proxy", "done": false },
+        { "text": "Modern forwarding auto-patch for Paper/Purpur", "done": false },
+        { "text": "Proxy start/stop/log events via WebSocket", "done": false },
+        { "text": "GeyserMC plugin support (Bedrock via plugin)", "done": false },
+        { "text": "Standalone Bedrock server (itzg/minecraft-bedrock-server)", "done": false }
+      ]
+    }
+  ]
+}
