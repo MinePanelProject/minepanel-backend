@@ -552,6 +552,9 @@ Server must be STOPPED — returns 409 if running.
    (no manual JAR management needed)
 ```
 
+> **Phase 2 — Docker image update via panel:**
+> The `itzg/minecraft-server` Docker image itself must be updated manually by the self-hoster in v1.0 (`docker pull itzg/minecraft-server:latest` + container recreate). Phase 2 will expose `POST /admin/docker/pull-image` that triggers `docker.pull('itzg/minecraft-server:latest')` via Dockerode, with progress streamed via WebSocket. All server containers are recreated sequentially after the pull completes.
+
 **Provider change** (e.g. Vanilla → Paper): out of scope for 1.0. World format compatibility between providers is not guaranteed and requires user-managed migration.
 
 ### Pagination
@@ -586,9 +589,9 @@ All errors follow NestJS's default `HttpException` format:
 
 ## Docker Service
 
-The NestJS container connects to the host Docker daemon via the Docker socket. The socket path is configurable via the `DOCKER_SOCKET` environment variable, with **rootless Docker as the default** (`/run/user/1000/docker.sock`). This avoids requiring root privileges and follows security best practices.
+The NestJS container connects to the host Docker daemon via the Docker socket. **Rootless Docker is the default** — no root privileges required. The socket is always mounted to `/var/run/docker.sock` **inside** the container; only the host-side path in `docker-compose.yml` changes.
 
-`DockerService` reads the socket path from `ConfigService` at startup — it is never hardcoded. The `docker-compose.yml` mounts the socket path defined in `.env` into the container.
+`DockerService` reads the socket path from `ConfigService` at startup (`DOCKER_SOCKET`, default `/var/run/docker.sock` inside container) — it is never hardcoded.
 
 It uses Dockerode to:
 
@@ -616,15 +619,17 @@ Each MC server gets:
 
 ### Socket path reference
 
-| Setup              | `DOCKER_SOCKET` value                    |
-|--------------------|------------------------------------------|
-| Rootless Docker    | `/run/user/1000/docker.sock` (default)   |
-| Root Docker        | `/var/run/docker.sock`                   |
-| Custom / Podman    | any valid socket path                    |
+The `docker-compose.yml` uses `${XDG_RUNTIME_DIR}/docker.sock` as the host-side socket path — `XDG_RUNTIME_DIR` is automatically set by Linux to `/run/user/<UID>` for the current user. No manual UID configuration needed.
 
-> The UID in the rootless path (`1000`) matches the default non-root user. If the host user has a different UID, adjust accordingly in `.env`.
+| Setup           | Host-side volume mount in compose                          | `DOCKER_SOCKET` (in container) |
+|-----------------|------------------------------------------------------------|--------------------------------|
+| Rootless Docker | `${XDG_RUNTIME_DIR}/docker.sock:/var/run/docker.sock`      | `/var/run/docker.sock`         |
+| Root Docker     | `/var/run/docker.sock:/var/run/docker.sock`                | `/var/run/docker.sock`         |
+| Rootless Podman | `${XDG_RUNTIME_DIR}/podman/podman.sock:/var/run/docker.sock` | `/var/run/docker.sock`       |
 
-> **Podman compatibility:** Podman exposes a Docker-compatible REST API via its own socket. Users who prefer Podman can set `DOCKER_SOCKET=/run/user/1000/podman.sock` — no code changes needed. Rootless Podman and rootless Docker have equivalent security posture for this use case; switching is a user preference, not a requirement.
+> **Default (zero-touch):** rootless Docker. The `docker-compose.yml` ships with `${XDG_RUNTIME_DIR}/docker.sock` — works for any user without knowing their UID. Root Docker users change only the host-side path in the compose volume.
+
+> **Podman compatibility:** Podman's Docker-compatible socket can be mounted to `/var/run/docker.sock` inside the container — no code changes needed.
 
 ### Host resource inspection
 
@@ -674,7 +679,7 @@ New env vars:
 | JWT_REFRESH_EXPIRES_IN| Refresh token TTL                  | 7d                               |
 | PORT                  | Backend listen port                | 3000                             |
 | CORS_ORIGIN           | Allowed CORS origin                | http://localhost:5173            |
-| DOCKER_SOCKET         | Path to Docker socket              | /run/user/1000/docker.sock       |
+| DOCKER_SOCKET         | Path to Docker socket (inside container) | /var/run/docker.sock        |
 | DOCKER_NETWORK        | Docker network for MC containers   | minepanel_network                |
 | MC_DATA_PATH          | Base path for MC server data       | /mc-data                         |
 | MC_PORT_MIN           | Minimum allowed MC server port     | 25565                            |

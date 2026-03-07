@@ -10,6 +10,8 @@ import { DbModule } from './db/db.module';
 import { SetupModule } from './setup/setup.module';
 import { UsersModule } from './users/users.module';
 import { DockerModule } from './docker/docker.module';
+import { ServersService } from './servers/servers.service';
+import { ServersModule } from './servers/servers.module';
 
 @Module({
   imports: [
@@ -27,6 +29,7 @@ import { DockerModule } from './docker/docker.module';
     UsersModule,
     AuthModule,
     DockerModule,
+    ServersModule,
   ],
   controllers: [AppController],
   providers: [
@@ -42,6 +45,7 @@ import { DockerModule } from './docker/docker.module';
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
     },
+    ServersService,
   ],
 })
 export class AppModule {}
