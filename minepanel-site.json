@@ -32,7 +32,8 @@
   ],
   "team": [
     { "name": "Cristian", "username": "okazakee", "role": "Founder / Full-stack", "github": "https://github.com/okazakee" },
-    { "name": "Marco", "username": "MarcoBllfr", "role": "Mobile Dev", "github": "https://github.com/okazakee" }
+    { "name": "Marco", "username": "MarcoBllfr", "role": "Mobile Dev", "github": "https://github.com/okazakee" },
+    { "name": "Giulia", "username": "hikari.i", "role": "Designer UI/UX", "github": "" }
   ],
   "phases": [
     {
