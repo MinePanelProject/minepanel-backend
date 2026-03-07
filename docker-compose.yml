@@ -3,6 +3,7 @@ services:
     image: caddy:alpine
     container_name: minepanel-caddy
     restart: unless-stopped
+    profiles: ["caddy"]
     ports:
       - "80:80"
       - "443:443"
@@ -24,6 +25,8 @@ services:
       dockerfile: Dockerfile
     container_name: minepanel-backend
     restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
     volumes:
       - ${XDG_RUNTIME_DIR:-/var/run}/docker.sock:/var/run/docker.sock
       - mc-data:/mc-data
@@ -35,7 +38,7 @@ services:
       - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-15m}
       - JWT_REFRESH_EXPIRES_IN=${JWT_REFRESH_EXPIRES_IN:-7d}
       - PORT=3000
-      - CORS_ORIGIN=https://${DOMAIN}
+      - CORS_ORIGIN=${CORS_ORIGIN:-https://minepanel.xyz}
       - REQUIRE_ADMIN_APPROVAL=${REQUIRE_ADMIN_APPROVAL:-true}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - DOCKER_NETWORK=minepanel_network
