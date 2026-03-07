@@ -15,10 +15,11 @@ MinePanel is a self-hosted Minecraft server management panel. A single `docker-c
 **Development phases:**
 - **Phase 1** — v1.0 deployable: auth (JWT cookies, sessions, password change, rate limiting), server lifecycle (create/start/stop/delete/list), Docker service, health check, host metrics via WebSocket, security hardening, Docker deployment
 - **Phase 1.5** — access control: server visibility (OPEN/REQUEST/PRIVATE), MOD permissions, Google/GitHub OAuth, Minecraft account linking, magic links (SMTP optional), invite tokens
-- **Phase 2** — developer platform: audit log, API key authentication, outbound webhooks
-- **Phase 3** — operations: WebSocket real-time (logs, players), RCON, backups, scheduled tasks, notifications, file manager, player management
-- **Phase 4** — marketplace: plugin/mod browser (Modrinth, Hangar, CurseForge)
+- **Phase 2** — developer platform: audit log, API key authentication, outbound webhooks, historical metrics
+- **Phase 3** — operations: WebSocket real-time (logs, players), RCON, backups (local + cloud S3/GCS/SFTP), scheduled tasks, notifications, file manager, player management
+- **Phase 4** — marketplace: plugin/mod browser (Modrinth, Hangar, CurseForge), server wizard presets, template clone
 - **Phase 5** — networking: Velocity proxy with auto-generated config, Bedrock server support
+- **Phase 6** — mobile app: KMP (Kotlin Multiplatform + Compose Multiplatform) app with push notifications, quick server control, player portal
 
 ---
 
@@ -695,6 +696,7 @@ New env vars:
 | STOP_WARN_SECONDS      | Seconds to warn players before graceful server shutdown | 30              |
 | PANEL_ASSETS_PATH        | Directory for panel-level static assets (logo, etc.)      | /panel-assets   |
 | REQUIRE_ADMIN_APPROVAL   | If true, new registrations start as PENDING (admin must approve) | true       |
+| INSECURE_COOKIES         | Allow HttpOnly cookies over plain HTTP (LAN/local only)         | false      |
 | SMTP_HOST                | SMTP server hostname (optional — enables email features)          | (optional) |
 | SMTP_PORT                | SMTP port                                                         | 587        |
 | SMTP_SECURE              | Use TLS (`true` for port 465, `false` for STARTTLS)               | false      |
@@ -878,9 +880,52 @@ bun start:dev
 cp .env.example .env
 # Edit .env with secure passwords/secrets
 
-docker-compose up -d
-# NestJS + Postgres both run in containers
+docker compose up -d
+# NestJS + Postgres + Caddy (HTTPS) run in containers
+# Or run ./setup.sh (Linux), ./setup-mac.sh (macOS), ./setup.ps1 (Windows)
+# for the interactive setup wizard that auto-generates secrets
 ```
+
+### Multi-architecture support
+
+The NestJS Docker image is built as a multi-platform manifest:
+- `linux/amd64` — standard x86 servers and VMs
+- `linux/arm64` — Raspberry Pi 4/5, Apple Silicon (via Docker Desktop), AWS Graviton
+
+Build with: `docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/minepanelproject/minepanel-backend .`
+
+The `itzg/minecraft-server` image also supports ARM64 natively — no extra config needed.
+
+### HTTP-only mode (no domain / local network)
+
+When Caddy is not used (`./setup.sh` with empty domain), the panel runs on plain HTTP port 3000. In this mode, cookies must have `Secure=false`, which is already handled by `NODE_ENV=development`.
+
+For LAN/local deployments over HTTP in production, set `INSECURE_COOKIES=true` in `.env`:
+```
+INSECURE_COOKIES=true   # allows HttpOnly cookies over HTTP (LAN only — never expose to internet)
+```
+The `JwtAuthService` checks this flag and sets `secure: false` on cookies regardless of `NODE_ENV`.
+
+> Never set `INSECURE_COOKIES=true` on a server exposed to the public internet — cookies will be readable over plain HTTP by network observers.
+
+### Optional: Docker Socket Proxy
+
+Direct Docker socket access (`/var/run/docker.sock`) grants the NestJS container root-equivalent privileges on the host. For hardened deployments, use [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) to restrict what API calls are allowed:
+
+```yaml
+socket-proxy:
+  image: tecnativa/docker-socket-proxy
+  environment:
+    CONTAINERS: 1
+    IMAGES: 1
+    NETWORKS: 1
+    VOLUMES: 1
+    POST: 1
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock:ro
+```
+
+Then set `DOCKER_SOCKET=tcp://socket-proxy:2375` in NestJS env. This limits the attack surface if the NestJS container is compromised.
 
 ### HTTPS — mandatory in production
 
@@ -1673,6 +1718,15 @@ No external services needed — NestJS reads and writes directly to `{MC_DATA_PA
 - Download — secure endpoint to download a backup archive
 - Retention policy — keep last N backups, auto-delete older ones (configurable per server, default: 5)
 
+**Cloud backup destinations (Phase 3c extension):**
+Configurable per server. Local storage is always the default. Remote destinations are optional and additive (local backup is always kept):
+- `LOCAL` — default, `{MC_DATA_PATH}/{serverId}/backups/`
+- `S3` — any S3-compatible endpoint (AWS, Cloudflare R2, MinIO). Requires `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_BUCKET`, `AWS_ENDPOINT` (optional for non-AWS).
+- `GCS` — Google Cloud Storage bucket. Requires `GCS_BUCKET`, `GCS_CREDENTIALS_JSON`.
+- `SFTP` — remote server via SSH. Requires `SFTP_HOST`, `SFTP_USER`, `SFTP_KEY` or `SFTP_PASSWORD`, `SFTP_PATH`.
+
+Cloud destination config is stored per-server in a `BackupDestination` table. Upload happens after local tar.gz is created. If upload fails, the local backup is still kept and a warning notification is emitted.
+
 **Backup flow:**
 ```
 POST /servers/:id/backups
@@ -2306,6 +2360,59 @@ A fully independent Bedrock Edition server using `itzg/minecraft-bedrock-server`
 | Proxy support    | Velocity (Phase 5a)                | Not applicable                          |
 
 No new DB tables — `ServerProvider.BEDROCK` reuses the existing `Server` schema. The `rconPassword` field remains NULL for Bedrock servers.
+
+---
+
+## Phase 6 — Mobile App & Player Portal
+
+### Key differentiator
+
+Unlike existing MC panels (admin-only tools), MinePanel targets both **operators** (admins/mods who run servers) and **players** (users who play on those servers). The mobile app and player portal make this explicit.
+
+### Mobile app (KMP (Kotlin Multiplatform + Compose Multiplatform))
+
+A single cross-platform app (iOS + Android) that connects to any MinePanel backend instance — same multi-backend model as the web frontend.
+
+**Player features:**
+- Browse servers they have access to — live status, player count, TPS
+- Push notifications: server online/offline, crash alerts, whitelist approved
+- Request access to `REQUEST`-visibility servers
+- View own player profile: playtime, linked Minecraft account, ban history
+
+**Mod features:**
+- Quick server start/stop/restart
+- Live console with RCON command input
+- Player list with kick/ban actions
+- Notification when server RAM > threshold
+
+**Admin features:**
+- Full server lifecycle management
+- Resource overview (host CPU, RAM, disk)
+- User management (approve pending registrations)
+
+### Player Portal (web, Phase 6)
+
+A user-facing section of the frontend distinct from the admin dashboard:
+
+- **My Servers** — servers the user has access to, with status cards
+- **Player Profile** — Minecraft skin (via Crafatar API), linked UUID, playtime stats (requires event tracking from Phase 3a WebSocket), sessions history
+- **Access Requests** — track pending/approved/denied requests to `REQUEST` servers
+- **Notifications** — in-panel notification feed
+
+### Historical metrics (Phase 2 extension, feeds Phase 6)
+
+Currently metrics are real-time only (WebSocket push). Historical tracking adds:
+- `MetricSnapshot` table: `serverId`, `timestamp`, `cpuPct`, `ramMb`, `playerCount`, `tps`
+- Snapshots written every 60s by a background task while server is `RUNNING`
+- Retention: keep last 30 days by default
+- API: `GET /servers/:id/metrics?from=&to=&resolution=5m` for frontend charts
+- Mobile app shows sparklines per server
+
+### Template clone (Phase 4 extension)
+
+Admin can clone an existing server config (all settings, installed plugins, world seed) into a new server. The world data is NOT cloned by default (optional). Useful for staging → production promotions or quick SMP → creative variants.
+
+`POST /servers/:id/clone` — creates a new `STOPPED` server with identical config. Returns the new server object.
 
 ---
 
