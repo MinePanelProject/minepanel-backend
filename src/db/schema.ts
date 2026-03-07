@@ -17,6 +17,13 @@ export const serverStatusEnum = pgEnum('server_status', [
   'STOPPING',
   'ERROR',
 ]);
+export const DifficultyEnum = pgEnum('server_difficulty', ['PEACEFUL', 'EASY', 'NORMAL', 'HARD']);
+export const GamemodeEnum = pgEnum('server_gamemode', [
+  'SURVIVAL',
+  'CREATIVE',
+  'ADVENTURE',
+  'SPECTATOR',
+]);
 
 // --- Tables ---
 
@@ -70,10 +77,17 @@ export const servers = pgTable('servers', {
   containerId: text('container_id').unique(),
   status: serverStatusEnum('status').default('STOPPED').notNull(),
   maxPlayers: integer('max_players').default(20).notNull(),
-  difficulty: text('difficulty').default('normal').notNull(),
-  gamemode: text('gamemode').default('survival').notNull(),
+  difficulty: DifficultyEnum('difficulty').default('NORMAL').notNull(),
+  gamemode: GamemodeEnum('gamemode').default('SURVIVAL').notNull(),
   pvp: boolean('pvp').default(true).notNull(),
+  memoryLimitMb: integer('memory_limit_mb').default(2048).notNull(),
+  motd: text('motd'),
+  levelSeed: text('level_seed'),
+  onlineMode: boolean('online_mode').default(true).notNull(),
+  viewDistance: integer('view_distance').default(10).notNull(),
+  allowFlight: boolean('allow_flight').default(false).notNull(),
   worldPath: text('world_path'),
+  rconPassword: text('rcon_password'),
   ownerId: text('owner_id')
     .notNull()
     .references(() => users.id),
@@ -93,3 +107,5 @@ export type Server = typeof servers.$inferSelect;
 export type Role = (typeof roleEnum.enumValues)[number];
 export type ServerProvider = (typeof serverProviderEnum.enumValues)[number];
 export type ServerStatus = (typeof serverStatusEnum.enumValues)[number];
+export type Difficulty = (typeof DifficultyEnum.enumValues)[number];
+export type Gamemode = (typeof GamemodeEnum.enumValues)[number];
