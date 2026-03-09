@@ -188,18 +188,24 @@ src/
 **User**
 | Field         | Type     | Notes                                      |
 |---------------|----------|--------------------------------------------|
-| id            | String   | cuid, PK                                   |
-| email         | String   | unique                                     |
-| username      | String   | unique                                     |
-| passwordHash  | String?  | null for OAuth-only accounts               |
-| role          | Role     | default: USER                              |
-| googleId           | String?  | unique, set on Google OAuth login          |
-| githubId           | String?  | unique, set on GitHub OAuth login          |
-| status             | UserStatus | default: ACTIVE                          |
-| minecraftUUID      | String?  | unique                                     |
-| minecraftName      | String?  |                                            |
-| minecraftVerified  | Boolean  | default: false — true = premium (Microsoft OAuth verified) |
-| createdAt     | DateTime |                                            |
+| id                    | String     | cuid, PK                                                      |
+| email                 | String     | unique, varchar(254)                                          |
+| username              | String     | unique, varchar(32)                                           |
+| passwordHash          | String?    | null for OAuth-only accounts                                  |
+| role                  | Role       | default: USER                                                 |
+| status                | UserStatus | default: ACTIVE (v1.0) — PENDING if REQUIRE_ADMIN_APPROVAL    |
+| totpSecret            | String?    | TOTP secret key (encrypted at rest) — null if 2FA not set up |
+| totpEnabled           | Boolean    | default: false — true only after confirm step                 |
+| totpBackupCodes       | String?    | JSON array of hashed backup codes (8 codes, single-use)       |
+| tempPasswordHash      | String?    | bcrypt hash of admin-generated temp password                  |
+| tempPasswordExpiresAt | DateTime?  | 24h TTL; null if no temp password active                      |
+| mustChangePassword    | Boolean    | default: false — true forces password change before any other action |
+| googleId              | String?    | unique, set on Google OAuth login (Phase 1.5)                 |
+| githubId              | String?    | unique, set on GitHub OAuth login (Phase 1.5)                 |
+| minecraftUUID         | String?    | unique (Phase 1.5)                                            |
+| minecraftName         | String?    | (Phase 1.5)                                                   |
+| minecraftVerified     | Boolean    | default: false — true = premium verified (Phase 1.5)          |
+| createdAt             | DateTime   |                                                               |
 | updatedAt     | DateTime |                                            |
 | servers       | Server[]       | relation                             |
 | refreshTokens | RefreshToken[] | relation                             |
@@ -318,23 +324,27 @@ src/
 
 | Method | Path                    | Auth | Description                                    |
 |--------|-------------------------|------|------------------------------------------------|
-| POST   | /auth/register          | No   | Register user                                  |
-| POST   | /auth/login             | No   | Login, sets HttpOnly cookies (JWT)             |
-| POST   | /auth/refresh           | No   | Refresh access token via HttpOnly cookie       |
+| POST   | /auth/register          | No   | Register user (starts PENDING if REQUIRE_ADMIN_APPROVAL=true) |
+| POST   | /auth/login             | No   | Login — returns JWT or 2FA challenge if TOTP enabled          |
+| POST   | /auth/2fa/verify        | Pre-auth token | Verify TOTP code after login, issue full JWT         |
+| POST   | /auth/2fa/setup         | JWT  | Generate TOTP secret + QR URI (returns secret, not yet active)|
+| POST   | /auth/2fa/confirm       | JWT  | Confirm first TOTP code — activates 2FA, returns backup codes |
+| DELETE | /auth/2fa/disable       | JWT  | Disable 2FA (requires current TOTP code or backup code)       |
+| POST   | /auth/refresh           | No   | Refresh access token, rotates refresh token                   |
 | POST   | /auth/logout            | JWT  | Revoke current refresh token, clear cookies    |
-| POST   | /auth/logout-all        | JWT  | Revoke all refresh tokens (all sessions)       |
+| POST   | /auth/logout-all        | JWT  | Revoke all refresh tokens, invalidate all sessions            |
 | GET    | /auth/profile           | JWT  | Get current user                               |
-| PATCH  | /auth/profile           | JWT  | Update profile (link Minecraft account)        |
-| PATCH  | /auth/password          | JWT  | Change own password (requires current password)|
+| PATCH  | /auth/profile           | JWT  | Update profile (username, email)               |
+| PATCH  | /auth/password          | JWT  | Change own password (requires current password, rotates all sessions) |
 | GET    | /auth/sessions          | JWT  | List own active sessions (refresh tokens)      |
 | DELETE | /auth/sessions/:id      | JWT  | Revoke a specific session by token id          |
-| POST   | /auth/magic-link        | No   | Request magic link — sends OTP email (requires SMTP) |
-| GET    | /auth/magic-link/verify | No   | Verify magic link token, issue JWT cookies           |
-| POST   | /auth/google/token      | No   | Verify Google ID token from frontend, issue JWT      |
-| POST   | /auth/github/token      | No   | Verify GitHub token from frontend, issue JWT         |
-| GET    | /auth/minecraft         | JWT  | Start Microsoft OAuth for Minecraft linking      |
-| GET    | /auth/minecraft/callback| JWT  | Handle Microsoft callback, store verified UUID   |
-| PATCH  | /auth/profile/minecraft | JWT  | Manual Minecraft link (offline/non-premium)      |
+| POST   | /auth/magic-link        | No   | Request magic link — sends OTP email (requires SMTP, Phase 1.5) |
+| GET    | /auth/magic-link/verify | No   | Verify magic link token, issue JWT cookies (Phase 1.5)        |
+| POST   | /auth/google/token      | No   | Verify Google ID token from frontend, issue JWT (Phase 1.5)   |
+| POST   | /auth/github/token      | No   | Verify GitHub token from frontend, issue JWT (Phase 1.5)      |
+| GET    | /auth/minecraft         | JWT  | Start Microsoft OAuth for Minecraft linking (Phase 1.5)       |
+| GET    | /auth/minecraft/callback| JWT  | Handle Microsoft callback, store verified UUID (Phase 1.5)    |
+| PATCH  | /auth/profile/minecraft | JWT  | Manual Minecraft link (offline/non-premium, Phase 1.5)        |
 
 ### Users
 
@@ -473,12 +483,20 @@ Events are written by the relevant service directly (no interceptor needed — t
 | POST   | /servers/:id/access-requests/:userId/approve | ADMIN     | Approve a user's access request                     |
 | DELETE | /servers/:id/access-requests/:userId         | ADMIN     | Reject or revoke access                             |
 
+### Admin (v1.0)
+
+| Method | Path                             | Auth  | Description                              |
+|--------|----------------------------------|-------|------------------------------------------|
+| GET    | /admin/users                          | ADMIN | List all users (filterable by status, role)               |
+| PATCH  | /admin/users/:id/status               | ADMIN | Approve (PENDING→ACTIVE) / ban / unban a user             |
+| PATCH  | /admin/users/:id/role                 | ADMIN | Change user role — protected: cannot demote last ADMIN    |
+| POST   | /admin/users/:id/reset-password       | ADMIN | Generate one-time temp password (24h TTL, force-change on login) |
+| DELETE | /admin/users/:id/2fa                  | ADMIN | Disable 2FA for a user (emergency recovery)               |
+
 ### Admin (Phase 1.5)
 
 | Method | Path                             | Auth  | Description                              |
 |--------|----------------------------------|-------|------------------------------------------|
-| PATCH  | /admin/users/:id/status               | ADMIN | Ban / unban / set PENDING on a user                       |
-| POST   | /admin/users/:id/reset-password       | ADMIN | Reset user password — returns one-time temporary password |
 | GET    | /admin/users/:id/permissions          | ADMIN | List MOD permissions for a user                           |
 | POST   | /admin/users/:id/permissions          | ADMIN | Assign a permission to a MOD                              |
 | DELETE | /admin/users/:id/permissions/:permId  | ADMIN | Revoke a permission from a MOD                            |
@@ -1313,8 +1331,62 @@ Magic links work alongside passwords — users with `passwordHash` can still log
 **Open registration with email verification (Phase 1.5 — requires SMTP):**
 When SMTP is configured and `REQUIRE_ADMIN_APPROVAL=false`, new registrations send a verification email (magic link to the registered address). Account starts as `PENDING` until the link is clicked.
 
-**Password recovery fallback (no SMTP):**
-Admin uses `POST /admin/users/:id/reset-password` → returns a one-time temporary password (plaintext, shown once). User logs in with it and immediately changes via `PATCH /auth/password`. Temporary password expires after 24h if unused.
+**Password recovery (no SMTP):**
+Admin uses `POST /admin/users/:id/reset-password` → returns a one-time temporary password (plaintext, shown once). Stored as `tempPasswordHash` in users table. TTL: 24h (`tempPasswordExpiresAt`). On login with temp password: `mustChangePassword` is set to `true` on the user. `JwtAuthGuard` blocks all endpoints except `PATCH /auth/password` until the flag is cleared.
+
+#### 2FA — TOTP (v1.0)
+
+Time-based One-Time Password (RFC 6238). No external service required — works with any authenticator app (Google Authenticator, Authy, 1Password, etc.). Library: `otplib`.
+
+**Setup flow:**
+```
+POST /auth/2fa/setup        → generates secret, returns { secret, qrUri } — NOT yet active
+POST /auth/2fa/confirm      → verifies first TOTP code, sets totpEnabled=true, returns { backupCodes: string[] }
+```
+Backup codes: 8 single-use random codes (hex), hashed with bcrypt and stored as JSON array in `totpBackupCodes`. Shown plaintext **once** at confirm. Each used code is removed from the array.
+
+**Login flow with 2FA:**
+```
+POST /auth/login
+  → password correct + totpEnabled=true
+  → return 200 { requiresTwoFactor: true, preAuthToken: "<short-lived JWT>" }
+  (preAuthToken: signed, 5min TTL, custom claim { type: 'pre-auth', sub: userId })
+
+POST /auth/2fa/verify       { code: "123456" }
+  → validate preAuthToken (type must be 'pre-auth')
+  → verify TOTP code (accept ±1 window for clock drift) OR match a backup code
+  → on backup code: remove it from the array
+  → issue full JWT cookies (same as normal login)
+```
+Rate limiting on `/auth/2fa/verify`: 5 attempts per 10 minutes per IP + per user. Lockout 15 minutes after 5 failures.
+
+**Disable flow:**
+```
+DELETE /auth/2fa/disable    { code: "123456" }   → requires valid TOTP code or backup code
+DELETE /admin/users/:id/2fa                       → ADMIN only, emergency — no code required
+```
+
+**Security notes:**
+- `totpSecret` is stored encrypted (AES-256-GCM via `ENCRYPTION_KEY`) — same mechanism as `rconPassword`
+- TOTP window: ±1 (30s tolerance for clock drift)
+- Backup codes: hashed, single-use, removed on use
+
+#### Security hardening — auth layer (v1.0)
+
+**Account enumeration prevention:**
+`POST /auth/login` always returns the same 401 response body whether the user doesn't exist or the password is wrong. Timing attack prevention: always run `bcrypt.compare` even if user not found (compare against a dummy hash) to keep response time constant.
+
+**Refresh token rotation:**
+On every `POST /auth/refresh`: the old refresh token is revoked and a new one is issued. If a stolen refresh token is used after the legitimate client already rotated it, the attempt fails immediately (token no longer in DB).
+
+**Session invalidation on password change:**
+`PATCH /auth/password` (successful): all refresh tokens for the user are deleted except the current session. User stays logged in on the device that changed the password; all other sessions are terminated.
+
+**Last admin protection:**
+`PATCH /admin/users/:id/role` and `PATCH /admin/users/:id/status` must check: if the target user is the last ADMIN, reject with 409. This prevents accidental panel lockout.
+
+**`mustChangePassword` enforcement:**
+`JwtAuthGuard` checks `mustChangePassword` on the user record. If true, returns 403 with `{ error: 'PasswordChangeRequired' }` on every endpoint except `PATCH /auth/password`. Frontend must redirect to change-password screen.
 
 #### API key authentication (Phase 2)
 
@@ -1362,7 +1434,8 @@ Body: { event, timestamp, data: { ...event-specific fields } }
 #### Known implementation deltas (to fix)
 
 - **`auth.controller.ts` imports `User` from `@prisma/client`** — bug, should import from `src/db/schema`. Prisma is not used in this project.
-- **`schema.ts` is missing Phase 1.5 fields** — `users.googleId`, `users.githubId`, `users.status` (UserStatus enum), `users.minecraftVerified`; `servers.accessType`, `servers.onlineMode`, `servers.rconPassword`, `servers.discordWebhook`. These will be added as Drizzle migrations when Phase 1.5 starts.
+- **`schema.ts` is missing v1.0 auth fields** — `users.status` (UserStatus enum: ACTIVE/PENDING/BANNED), `users.totpSecret`, `users.totpEnabled`, `users.totpBackupCodes`, `users.tempPasswordHash`, `users.tempPasswordExpiresAt`, `users.mustChangePassword`. Add these before implementing the admin approval and 2FA flows.
+- **`schema.ts` is missing Phase 1.5 fields** — `users.googleId`, `users.githubId`, `users.minecraftVerified`; `servers.accessType`, `servers.discordWebhook`. These will be added as Drizzle migrations when Phase 1.5 starts.
 - **`users.passwordHash` is `notNull()` in schema** but spec requires `nullable` (OAuth-only users have no password). Fix before Phase 1.5 OAuth work.
 - **`ValidationPipe` missing `forbidNonWhitelisted: true`** in current `main.ts`. Add to reject requests with unknown fields entirely.
 - **`main.ts` CORS missing `credentials: true`** — required for cross-origin cookie sending. Fix before any frontend integration.
