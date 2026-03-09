@@ -57,6 +57,7 @@ export class SetupService {
       createUser.email,
       createUser.username,
       passwordHash,
+      'ACTIVE',
       'ADMIN',
     );
 

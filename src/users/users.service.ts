@@ -1,10 +1,10 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { eq, or } from 'drizzle-orm';
+import { and, eq, ne, or } from 'drizzle-orm';
 import { EditUserDto } from 'src/auth/dto/editUser.dto';
 import { UpdatePasswordDTO } from 'src/auth/dto/updatePw.dto';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
-import { type Role, type User, users } from 'src/db/schema';
+import { type Role, refreshTokens, type User, type UserStatus, users } from 'src/db/schema';
 
 @Injectable()
 export class UsersService {
@@ -14,12 +14,14 @@ export class UsersService {
     email: string,
     username: string,
     passwordHash: string,
+    status: UserStatus,
     role?: Role,
   ): Promise<boolean> {
     await this.db.insert(users).values({
       email,
       username,
       passwordHash,
+      status,
       ...(role ? { role } : {}),
     });
     return true;
@@ -68,6 +70,7 @@ export class UsersService {
   async updatePassword(
     userId: string,
     dto: UpdatePasswordDTO,
+    refreshToken: string,
   ): Promise<Omit<User, 'passwordHash'>> {
     const userData = await this.findById(userId);
 
@@ -77,9 +80,9 @@ export class UsersService {
 
     const passwordMatch = await bcrypt.compare(dto.oldPassword, userData.passwordHash);
 
-    const newPwHash = await bcrypt.hash(dto.newPassword, 10);
-
     if (passwordMatch) {
+      const newPwHash = await bcrypt.hash(dto.newPassword, 10);
+
       const [updateResult] = await this.db
         .update(users)
         .set({ passwordHash: newPwHash })
@@ -87,6 +90,27 @@ export class UsersService {
         .returning();
 
       const { passwordHash: _, ...userNoPw } = updateResult;
+
+      const storedTokens = await this.db
+        .select()
+        .from(refreshTokens)
+        .where(eq(refreshTokens.userId, userId));
+
+      let currentTokenId: string | null = null;
+      for (const t of storedTokens) {
+        if (await bcrypt.compare(refreshToken, t.token)) {
+          currentTokenId = t.id;
+          break;
+        }
+      }
+
+      if (currentTokenId) {
+        await this.db
+          .delete(refreshTokens)
+          .where(and(eq(refreshTokens.userId, userId), ne(refreshTokens.id, currentTokenId)));
+      } else {
+        await this.db.delete(refreshTokens).where(eq(refreshTokens.userId, userId));
+      }
 
       return userNoPw;
     }

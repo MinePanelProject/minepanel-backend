@@ -199,6 +199,8 @@ export class AuthController {
   async updateUserPassword(@Req() req: Request, @Body() updatePw: UpdatePasswordDTO) {
     const user = req.user as JwtPayload;
 
-    return await this.authService.updateUserPassword(user.id, updatePw);
+    const refreshToken = req.cookies.refresh_token as AuthTokens['refreshToken'];
+
+    return await this.authService.updateUserPassword(user.id, updatePw, refreshToken);
   }
 }

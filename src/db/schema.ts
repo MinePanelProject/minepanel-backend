@@ -25,6 +25,8 @@ export const GamemodeEnum = pgEnum('server_gamemode', [
   'SPECTATOR',
 ]);
 
+export const userStatusEnum = pgEnum('user_status', ['ACTIVE', 'PENDING', 'BANNED']);
+
 // --- Tables ---
 
 export const users = pgTable('users', {
@@ -35,6 +37,13 @@ export const users = pgTable('users', {
   username: varchar('username', { length: 32 }).notNull().unique(),
   passwordHash: text('password_hash').notNull(),
   role: roleEnum('role').default('USER').notNull(),
+  status: userStatusEnum('status').default('ACTIVE').notNull(),
+  totpSecret: text('totp_secret'),
+  totpEnabled: boolean('totp_enabled').default(false).notNull(),
+  totpBackupCodes: text('totp_backup_codes'),
+  tempPasswordHash: text('temp_password_hash'),
+  tempPasswordExpiresAt: timestamp('temp_password_expires_at'),
+  mustChangePassword: boolean('must_change_password').default(false).notNull(),
   minecraftUUID: text('minecraft_uuid').unique(),
   minecraftName: text('minecraft_name'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -109,3 +118,4 @@ export type ServerProvider = (typeof serverProviderEnum.enumValues)[number];
 export type ServerStatus = (typeof serverStatusEnum.enumValues)[number];
 export type Difficulty = (typeof DifficultyEnum.enumValues)[number];
 export type Gamemode = (typeof GamemodeEnum.enumValues)[number];
+export type UserStatus = (typeof userStatusEnum.enumValues)[number];

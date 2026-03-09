@@ -1,4 +1,5 @@
 import { ConflictException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { and, eq, getTableColumns } from 'drizzle-orm';
@@ -22,6 +23,7 @@ export class AuthService {
     private readonly usersService: UsersService,
     private jwtService: JwtService,
     @Inject(DRIZZLE) private db: DrizzleDB,
+    private configService: ConfigService,
   ) {}
 
   async registerUser(createUser: CreateUserDto): Promise<boolean> {
@@ -34,7 +36,15 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(createUser.password, 10);
-    await this.usersService.createUser(createUser.email, createUser.username, passwordHash);
+
+    const requireApproval = this.configService.get<string>('REQUIRE_ADMIN_APPROVAL') === 'true';
+
+    await this.usersService.createUser(
+      createUser.email,
+      createUser.username,
+      passwordHash,
+      requireApproval ? 'PENDING' : 'ACTIVE',
+    );
 
     return true;
   }
@@ -42,15 +52,12 @@ export class AuthService {
   async loginUser(loginUser: LoginUserDto): Promise<AuthTokens> {
     const user = await this.usersService.findByIdentifier(loginUser.identifier);
 
-    if (!user) {
-      throw new UnauthorizedException('Wrong credentials');
-    }
+    const passwordMatches = await bcrypt.compare(
+      loginUser.password,
+      user?.passwordHash ?? '$2b$10$dummyhashtopreventtimingattack000000000000000',
+    );
 
-    const passwordMatches = await bcrypt.compare(loginUser.password, user.passwordHash);
-
-    if (!passwordMatches) {
-      throw new UnauthorizedException('Wrong credentials');
-    }
+    if (!user || !passwordMatches) throw new UnauthorizedException('Wrong credentials');
 
     const accessToken = await this.jwtService.signAsync({
       sub: user.id,
@@ -112,9 +119,6 @@ export class AuthService {
       const matches = await bcrypt.compare(refreshToken, tokenEntry.token);
       if (!matches) continue;
 
-      const timeRemainingMs = new Date(tokenEntry.expiresAt).getTime() - Date.now();
-      const expiringWithinOneDay = timeRemainingMs <= 86_400_000;
-
       const [user] = await this.db.select().from(users).where(eq(users.id, userId)).limit(1);
       if (!user) throw new UnauthorizedException();
 
@@ -124,22 +128,20 @@ export class AuthService {
         role: user.role,
       });
 
-      if (expiringWithinOneDay) {
-        await this.db.delete(refreshTokens).where(eq(refreshTokens.id, tokenEntry.id));
+      await this.db.delete(refreshTokens).where(eq(refreshTokens.id, tokenEntry.id));
 
-        const newRefreshToken = await this.jwtService.signAsync(
-          { sub: user.id },
-          { expiresIn: '7d' },
-        );
+      const newRefreshToken = await this.jwtService.signAsync(
+        { sub: user.id },
+        { expiresIn: '7d' },
+      );
 
-        const hashedNew = await bcrypt.hash(newRefreshToken, 10);
-        await this.storeRefreshToken(user.id, hashedNew);
+      const hashedNew = await bcrypt.hash(newRefreshToken, 10);
+      await this.storeRefreshToken(user.id, hashedNew);
 
-        return { accessToken: newAccessToken, refreshToken: newRefreshToken };
-      }
-
-      return { accessToken: newAccessToken };
+      return { accessToken: newAccessToken, refreshToken: newRefreshToken };
     }
+
+    throw new UnauthorizedException();
   }
 
   async getSessions(userId: string): Promise<Omit<RefreshToken, 'token'>[]> {
@@ -166,7 +168,8 @@ export class AuthService {
   async updateUserPassword(
     userId: string,
     dto: UpdatePasswordDTO,
+    refreshToken: AuthTokens['refreshToken'],
   ): Promise<Omit<User, 'passwordHash'>> {
-    return await this.usersService.updatePassword(userId, dto);
+    return await this.usersService.updatePassword(userId, dto, refreshToken);
   }
 }
