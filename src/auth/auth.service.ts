@@ -1,8 +1,16 @@
-import { ConflictException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { and, eq, getTableColumns } from 'drizzle-orm';
+import { generateSecret, generateURI, verifySync } from 'otplib';
+import { decrypt, encrypt } from 'src/common/crypto.util';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
 import { RefreshToken, refreshTokens, type User, users } from 'src/db/schema';
 import { UsersService } from 'src/users/users.service';
@@ -17,14 +25,22 @@ export interface AuthTokens {
   refreshToken: string;
 }
 
+export type LoginResponse =
+  | { requiresTwoFactor: true; preAuthToken: string }
+  | { user: Omit<User, 'passwordHash'>; accessToken: string; refreshToken: string };
+
 @Injectable()
 export class AuthService {
+  private readonly encryptionKey: string;
+
   constructor(
     private readonly usersService: UsersService,
     private jwtService: JwtService,
     @Inject(DRIZZLE) private db: DrizzleDB,
     private configService: ConfigService,
-  ) {}
+  ) {
+    this.encryptionKey = this.configService.get<string>('ENCRYPTION_KEY')!;
+  }
 
   async registerUser(createUser: CreateUserDto): Promise<boolean> {
     const userExists = await this.usersService.findByIdentifier(
@@ -49,7 +65,7 @@ export class AuthService {
     return true;
   }
 
-  async loginUser(loginUser: LoginUserDto): Promise<AuthTokens> {
+  async loginUser(loginUser: LoginUserDto): Promise<LoginResponse> {
     const user = await this.usersService.findByIdentifier(loginUser.identifier);
 
     const passwordMatches = await bcrypt.compare(
@@ -58,6 +74,18 @@ export class AuthService {
     );
 
     if (!user || !passwordMatches) throw new UnauthorizedException('Wrong credentials');
+
+    if (user.totpEnabled) {
+      const preAuthToken = await this.jwtService.signAsync(
+        {
+          sub: user.id,
+          type: 'pre-auth',
+        },
+        { expiresIn: '5m' },
+      );
+
+      return { requiresTwoFactor: true, preAuthToken };
+    }
 
     const accessToken = await this.jwtService.signAsync({
       sub: user.id,
@@ -171,5 +199,100 @@ export class AuthService {
     refreshToken: AuthTokens['refreshToken'],
   ): Promise<Omit<User, 'passwordHash'>> {
     return await this.usersService.updatePassword(userId, dto, refreshToken);
+  }
+
+  async setup2FA(userId: string) {
+    const user = await this.usersService.findById(userId);
+
+    if (!user) {
+      throw new UnauthorizedException();
+    }
+
+    if (user.totpEnabled) {
+      throw new BadRequestException();
+    }
+
+    const secret = generateSecret();
+
+    const qrUri = generateURI({ issuer: 'MinePanel', label: user.email, secret });
+
+    const encryptedSecret = encrypt(secret, this.encryptionKey);
+
+    await this.db.update(users).set({ totpSecret: encryptedSecret }).where(eq(users.id, userId));
+
+    return { secret, uri: qrUri };
+  }
+
+  async confirm2FA(userId: string, token: string) {
+    const user = await this.usersService.findById(userId);
+
+    if (!user) {
+      throw new UnauthorizedException();
+    }
+
+    if (!user.totpSecret) {
+      throw new BadRequestException();
+    }
+
+    const secret = decrypt(user.totpSecret, this.encryptionKey);
+
+    const isValid = verifySync({ secret, token, epochTolerance: 1 });
+
+    if (!isValid) {
+      throw new BadRequestException();
+    }
+
+    await this.db.update(users).set({ totpEnabled: true }).where(eq(users.id, userId));
+
+    return true;
+  }
+
+  async verify2FA(userId: string, token: string) {
+    const user = await this.usersService.findById(userId);
+
+    if (!user) {
+      throw new UnauthorizedException();
+    }
+
+    if (!user.totpSecret) {
+      throw new BadRequestException();
+    }
+
+    const secret = decrypt(user.totpSecret, this.encryptionKey);
+
+    const isValid = verifySync({ secret, token, epochTolerance: 1 });
+
+    if (!isValid) {
+      throw new BadRequestException();
+    }
+
+    return true;
+  }
+
+  async disable2FA(userId: string, token: string) {
+    const user = await this.usersService.findById(userId);
+
+    if (!user) {
+      throw new UnauthorizedException();
+    }
+
+    if (!user.totpSecret) {
+      throw new BadRequestException();
+    }
+
+    const secret = decrypt(user.totpSecret, this.encryptionKey);
+
+    const isValid = verifySync({ secret, token, epochTolerance: 1 });
+
+    if (!isValid) {
+      throw new BadRequestException();
+    }
+
+    await this.db
+      .update(users)
+      .set({ totpEnabled: false, totpSecret: null })
+      .where(eq(users.id, userId));
+
+    return true;
   }
 }

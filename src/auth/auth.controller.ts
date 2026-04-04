@@ -17,7 +17,8 @@ import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { Public } from 'src/common/decorators/public.decorator';
 import { User } from 'src/db/schema';
-import { AuthService, AuthTokens } from './auth.service';
+import { AuthService, AuthTokens, LoginResponse } from './auth.service';
+import { TwoFactorTokenDto } from './dto/2fa.dto';
 import { EditUserDto } from './dto/editUser.dto';
 import { LoginUserDto } from './dto/login.dto';
 import { CreateUserDto } from './dto/register.dto';
@@ -51,8 +52,12 @@ export class AuthController {
   async login(
     @Body() loginUser: LoginUserDto,
     @Res({ passthrough: true }) res: Response,
-  ): Promise<Omit<User, 'passwordHash'>> {
+  ): Promise<LoginResponse> {
     const user = await this.authService.loginUser(loginUser);
+
+    if ('requiresTwoFactor' in user) {
+      return { requiresTwoFactor: true, preAuthToken: user.preAuthToken };
+    }
 
     const accessToken = user.accessToken;
     const refreshToken = user.refreshToken;
@@ -71,7 +76,7 @@ export class AuthController {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
     });
 
-    return user.user;
+    return user as LoginResponse;
   }
 
   @ApiOperation({ summary: 'Get profile data' })
@@ -202,5 +207,41 @@ export class AuthController {
     const refreshToken = req.cookies.refresh_token as AuthTokens['refreshToken'];
 
     return await this.authService.updateUserPassword(user.id, updatePw, refreshToken);
+  }
+
+  @ApiOperation({ summary: 'Setup 2FA - generates secret and QR URI' })
+  @HttpCode(HttpStatus.OK)
+  @Post('2fa/setup')
+  async setup2FA(@Req() req: Request) {
+    const user = req.user as JwtPayload;
+
+    return await this.authService.setup2FA(user.id);
+  }
+
+  @ApiOperation({ summary: 'Confirm 2FA - verify first TOTP code to activate' })
+  @HttpCode(HttpStatus.OK)
+  @Post('2fa/confirm')
+  async confirm2FA(@Req() req: Request, @Body() body: TwoFactorTokenDto) {
+    const user = req.user as JwtPayload;
+
+    return await this.authService.confirm2FA(user.id, body.token);
+  }
+
+  @ApiOperation({ summary: 'Verify 2FA - validate TOTP code with pre-auth token' })
+  @HttpCode(HttpStatus.OK)
+  @Post('2fa/verify')
+  async verify2FA(@Req() req: Request, @Body() body: TwoFactorTokenDto) {
+    const user = req.user as JwtPayload;
+
+    return await this.authService.verify2FA(user.id, body.token);
+  }
+
+  @ApiOperation({ summary: 'Disable 2FA - requires valid TOTP code' })
+  @HttpCode(HttpStatus.OK)
+  @Delete('2fa/disable')
+  async disable2FA(@Req() req: Request, @Body() body: TwoFactorTokenDto) {
+    const user = req.user as JwtPayload;
+
+    return await this.authService.disable2FA(user.id, body.token);
   }
 }
