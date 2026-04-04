@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
@@ -242,9 +243,27 @@ export class AuthService {
       throw new BadRequestException();
     }
 
-    await this.db.update(users).set({ totpEnabled: true }).where(eq(users.id, userId));
+    const backupCodes: string[] = [];
 
-    return true;
+    for (let i = 0; i < 8; i++) {
+      const pt1 = crypto.randomBytes(4).toString('hex');
+      const pt2 = crypto.randomBytes(4).toString('hex');
+
+      const code = `${pt1}-${pt2}`;
+
+      backupCodes.push(code);
+    }
+
+    const hashedCodes = await Promise.all(backupCodes.map((code) => bcrypt.hash(code, 10)));
+
+    const JsonBackupCodes = JSON.stringify(hashedCodes);
+
+    await this.db
+      .update(users)
+      .set({ totpBackupCodes: JsonBackupCodes, totpEnabled: true })
+      .where(eq(users.id, userId));
+
+    return { backupCodes };
   }
 
   async verify2FA(userId: string, token: string) {
@@ -263,7 +282,8 @@ export class AuthService {
     const isValid = verifySync({ secret, token, epochTolerance: 1 });
 
     if (!isValid) {
-      throw new BadRequestException();
+      const usedBackup = await this.verifyAndConsumeBackupCode(user, token);
+      if (!usedBackup) throw new BadRequestException();
     }
 
     return true;
@@ -285,7 +305,8 @@ export class AuthService {
     const isValid = verifySync({ secret, token, epochTolerance: 1 });
 
     if (!isValid) {
-      throw new BadRequestException();
+      const usedBackup = await this.verifyAndConsumeBackupCode(user, token);
+      if (!usedBackup) throw new BadRequestException();
     }
 
     await this.db
@@ -294,5 +315,28 @@ export class AuthService {
       .where(eq(users.id, userId));
 
     return true;
+  }
+
+  async verifyAndConsumeBackupCode(user: User, token: string) {
+    if (!user.totpBackupCodes) return false;
+
+    const codes = JSON.parse(user.totpBackupCodes);
+
+    for (const hashedCode of codes) {
+      const matches = await bcrypt.compare(token, hashedCode);
+      if (matches) {
+        const filteredCodes = codes.filter((matchedCode) => matchedCode !== hashedCode);
+        const clearedCodes = JSON.stringify(filteredCodes);
+
+        await this.db
+          .update(users)
+          .set({ totpBackupCodes: clearedCodes })
+          .where(eq(users.id, user.id));
+
+        return true;
+      }
+    }
+
+    return false;
   }
 }
