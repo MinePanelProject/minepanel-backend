@@ -5,6 +5,7 @@ import { DbModule } from 'src/db/db.module';
 import { UsersModule } from 'src/users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { PreAuthGuard } from './guards/pre-auth.guard';
 
 @Module({
   imports: [
@@ -20,6 +21,6 @@ import { AuthService } from './auth.service';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService],
+  providers: [AuthService, PreAuthGuard],
 })
 export class AuthModule {}

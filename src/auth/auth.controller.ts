@@ -11,18 +11,20 @@ import {
   Req,
   Res,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { Public } from 'src/common/decorators/public.decorator';
-import { User } from 'src/db/schema';
-import { AuthService, AuthTokens, LoginResponse } from './auth.service';
+import { type PublicUser } from 'src/users/public-user';
+import { AuthService, type AuthTokens, type TwoFactorChallenge } from './auth.service';
 import { TwoFactorTokenDto } from './dto/2fa.dto';
 import { EditUserDto } from './dto/editUser.dto';
 import { LoginUserDto } from './dto/login.dto';
 import { CreateUserDto } from './dto/register.dto';
 import { UpdatePasswordDTO } from './dto/updatePw.dto';
+import { PreAuthGuard, type PreAuthRequest } from './guards/pre-auth.guard';
 
 type JwtPayload = { id: string; username: string; role: string };
 
@@ -52,31 +54,15 @@ export class AuthController {
   async login(
     @Body() loginUser: LoginUserDto,
     @Res({ passthrough: true }) res: Response,
-  ): Promise<LoginResponse> {
-    const user = await this.authService.loginUser(loginUser);
+  ): Promise<PublicUser | TwoFactorChallenge> {
+    const loginResult = await this.authService.loginUser(loginUser);
 
-    if ('requiresTwoFactor' in user) {
-      return { requiresTwoFactor: true, preAuthToken: user.preAuthToken };
+    if ('requiresTwoFactor' in loginResult) {
+      return loginResult;
     }
 
-    const accessToken = user.accessToken;
-    const refreshToken = user.refreshToken;
-
-    res.cookie('access_token', accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 15 * 60 * 1000, // 15 minutes in ms
-    });
-
-    res.cookie('refresh_token', refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
-    });
-
-    return user as LoginResponse;
+    this.setAuthCookies(res, loginResult);
+    return loginResult.user;
   }
 
   @ApiOperation({ summary: 'Get profile data' })
@@ -227,13 +213,20 @@ export class AuthController {
     return await this.authService.confirm2FA(user.id, body.token);
   }
 
-  @ApiOperation({ summary: 'Verify 2FA - validate TOTP code with pre-auth token' })
+  @Public()
+  @UseGuards(PreAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 10 * 60 * 1000 } })
+  @ApiOperation({ summary: 'Verify 2FA challenge and issue a session' })
   @HttpCode(HttpStatus.OK)
   @Post('2fa/verify')
-  async verify2FA(@Req() req: Request, @Body() body: TwoFactorTokenDto) {
-    const user = req.user as JwtPayload;
-
-    return await this.authService.verify2FA(user.id, body.token);
+  async verify2FA(
+    @Req() req: PreAuthRequest,
+    @Body() body: TwoFactorTokenDto,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<PublicUser> {
+    const session = await this.authService.completeTwoFactorLogin(req.preAuth!.sub, body.token);
+    this.setAuthCookies(res, session);
+    return session.user;
   }
 
   @ApiOperation({ summary: 'Disable 2FA - requires valid TOTP code' })
@@ -243,5 +236,19 @@ export class AuthController {
     const user = req.user as JwtPayload;
 
     return await this.authService.disable2FA(user.id, body.token);
+  }
+  private setAuthCookies(res: Response, tokens: Pick<AuthTokens, 'accessToken' | 'refreshToken'>) {
+    res.cookie('access_token', tokens.accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 15 * 60 * 1000,
+    });
+    res.cookie('refresh_token', tokens.refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
   }
 }

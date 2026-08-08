@@ -5,6 +5,7 @@ import { EditUserDto } from 'src/auth/dto/editUser.dto';
 import { UpdatePasswordDTO } from 'src/auth/dto/updatePw.dto';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
 import { type Role, refreshTokens, type User, type UserStatus, users } from 'src/db/schema';
+import { type PublicUser, toPublicUser } from './public-user';
 
 @Injectable()
 export class UsersService {
@@ -41,7 +42,7 @@ export class UsersService {
     return user ?? null;
   }
 
-  async updateProfile(userId: string, dto: EditUserDto): Promise<Omit<User, 'passwordHash'>> {
+  async updateProfile(userId: string, dto: EditUserDto): Promise<PublicUser> {
     const userData = await this.findById(userId);
 
     const updateData = Object.fromEntries(Object.entries(dto).filter(([_, v]) => v !== undefined));
@@ -59,9 +60,7 @@ export class UsersService {
         .where(eq(users.id, userId))
         .returning();
 
-      const { passwordHash: _, ...userNoPw } = updateResult;
-
-      return userNoPw;
+      return toPublicUser(updateResult);
     }
 
     throw new BadRequestException('No changes');
@@ -71,7 +70,7 @@ export class UsersService {
     userId: string,
     dto: UpdatePasswordDTO,
     refreshToken: string,
-  ): Promise<Omit<User, 'passwordHash'>> {
+  ): Promise<PublicUser> {
     const userData = await this.findById(userId);
 
     if (!userData) {
@@ -89,8 +88,7 @@ export class UsersService {
         .where(eq(users.id, userId))
         .returning();
 
-      const { passwordHash: _, ...userNoPw } = updateResult;
-
+      const userNoPw = toPublicUser(updateResult);
       const storedTokens = await this.db
         .select()
         .from(refreshTokens)

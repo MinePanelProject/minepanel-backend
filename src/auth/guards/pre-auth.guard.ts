@@ -1,0 +1,49 @@
+import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import type { Request } from 'express';
+
+type PreAuthPayload = { sub: string; type: 'pre-auth' };
+type PreAuthRequest = Request & { preAuth?: PreAuthPayload };
+
+@Injectable()
+export class PreAuthGuard implements CanActivate {
+  constructor(private readonly jwtService: JwtService) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest<PreAuthRequest>();
+    const authorization = request.headers.authorization;
+
+    const authorizationParts = authorization?.split(' ');
+    if (
+      !authorizationParts ||
+      authorizationParts.length !== 2 ||
+      authorizationParts[0].toLowerCase() !== 'bearer' ||
+      authorizationParts[1].length === 0 ||
+      /\s/.test(authorizationParts[1])
+    ) {
+      throw new UnauthorizedException();
+    }
+    const bearerToken = authorizationParts[1];
+
+    try {
+      const payload = await this.jwtService.verifyAsync<PreAuthPayload>(bearerToken);
+      if (
+        payload.type !== 'pre-auth' ||
+        typeof payload.sub !== 'string' ||
+        payload.sub.trim().length === 0
+      ) {
+        throw new UnauthorizedException();
+      }
+
+      request.preAuth = payload;
+      return true;
+    } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+      throw new UnauthorizedException();
+    }
+  }
+}
+
+export type { PreAuthRequest };

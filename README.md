@@ -83,7 +83,8 @@ Edit `.env` — only 4 values required:
 DOMAIN=your-domain.com
 POSTGRES_PASSWORD=strong-random-password
 JWT_SECRET=long-random-string
-ENCRYPTION_KEY=long-random-string
+# Generate exactly 32 random bytes encoded as 64 hexadecimal characters: openssl rand -hex 32
+ENCRYPTION_KEY=64-hex-character-output
 ```
 
 ```bash
@@ -129,7 +130,7 @@ See [`.env.example`](./.env.example) for the full list. Key variables:
 | `DOMAIN`                | Public domain — used by Caddy for HTTPS + CORS     | required in prod     |
 | `DATABASE_URL`          | PostgreSQL connection string                       | required             |
 | `JWT_SECRET`            | Secret for JWT signing                             | required             |
-| `ENCRYPTION_KEY`        | Key for RCON password encryption (AES-256-GCM)     | required             |
+| `ENCRYPTION_KEY`        | 32 random bytes encoded as 64 hexadecimal characters; generate with `openssl rand -hex 32` | required |
 | `REQUIRE_ADMIN_APPROVAL`| New users start as PENDING until admin approves    | `true`               |
 | `MC_PORT_MIN/MAX`       | Port range for Minecraft server containers         | `25565` / `25665`    |
 | `MIN_FREE_DISK_MB`      | Minimum free disk to allow server creation         | `2048`               |

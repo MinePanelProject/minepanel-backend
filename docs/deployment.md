@@ -21,7 +21,7 @@ Edit `.env` and set:
 | `DOMAIN` | Your domain (e.g. `api.yourdomain.com`) |
 | `POSTGRES_PASSWORD` | Strong random password for the database |
 | `JWT_SECRET` | Long random string for JWT signing |
-| `ENCRYPTION_KEY` | Long random string for RCON password encryption |
+| `ENCRYPTION_KEY` | Exactly 32 random bytes encoded as 64 hexadecimal characters. Generate with `openssl rand -hex 32`. |
 
 Then:
 
@@ -44,7 +44,7 @@ Key variables:
 | `DOMAIN` | — | **Required.** Caddy uses this for HTTPS and CORS. |
 | `POSTGRES_PASSWORD` | — | **Required.** Never use the default in production. |
 | `JWT_SECRET` | — | **Required.** Min 32 chars recommended. |
-| `ENCRYPTION_KEY` | — | **Required.** Used for RCON password encryption. |
+| `ENCRYPTION_KEY` | — | **Required.** Exactly 32 random bytes encoded as 64 hexadecimal characters; generate with `openssl rand -hex 32`. |
 | `REQUIRE_ADMIN_APPROVAL` | `true` | New users start as PENDING until admin approves. |
 | `MC_PORT_MIN` / `MC_PORT_MAX` | `25565` / `25665` | Port range for Minecraft server containers. |
 | `MIN_FREE_DISK_MB` | `2048` | Minimum free disk required to create a new server. |
