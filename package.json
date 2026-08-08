@@ -5,6 +5,10 @@
   "author": "",
   "private": true,
   "license": "UNLICENSED",
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "packageManager": "bun@1.3.14",
   "scripts": {
     "build": "nest build",
     "format": "biome format --write .",
@@ -14,10 +18,12 @@
     "start:prod": "bun dist/src/main.js",
     "lint": "biome check --write .",
     "lint:unsafe": "biome check --write --unsafe .",
+    "lint:ci": "biome check .",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "test:ci": "jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
