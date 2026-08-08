@@ -8,6 +8,13 @@
       "when": 1772616295601,
       "tag": "0000_noisy_proteus",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786209106038,
+      "tag": "0001_silky_energizer",
+      "breakpoints": true
     }
   ]
 }

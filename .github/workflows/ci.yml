@@ -36,3 +36,37 @@ jobs:
 
       - name: Unit tests (in-band)
         run: bun run test:ci
+
+  migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: minepanel
+          POSTGRES_PASSWORD: minepanel
+          POSTGRES_DB: minepanel
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U minepanel"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://minepanel:minepanel@localhost:5432/minepanel
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Apply full migration chain (fresh database)
+        run: bun run db:migrate
