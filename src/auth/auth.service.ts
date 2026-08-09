@@ -12,7 +12,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
-import { and, eq, getTableColumns } from 'drizzle-orm';
+import { and, eq, getTableColumns, gt } from 'drizzle-orm';
 import { generateSecret, generateURI, verifySync } from 'otplib';
 import { decrypt, encrypt } from 'src/common/crypto.util';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
@@ -41,6 +41,7 @@ export type TwoFactorChallenge = { requiresTwoFactor: true; preAuthToken: string
 export type LoginResponse = AuthTokens | TwoFactorChallenge;
 
 type TwoFactorFailure = { failures: number; firstFailureAt: number; lockedUntil?: number };
+type PasswordUpdateResult = { user: PublicUser; session?: AuthTokens };
 
 @Injectable()
 export class AuthService {
@@ -85,30 +86,77 @@ export class AuthService {
 
   async loginUser(loginUser: LoginUserDto): Promise<LoginResponse> {
     const user = await this.usersService.findByIdentifier(loginUser.identifier);
-    const passwordMatches = await bcrypt.compare(
-      loginUser.password,
-      user?.passwordHash ?? DUMMY_PASSWORD_HASH,
-    );
 
-    if (!user || !passwordMatches) {
+    // Always run exactly two bcrypt comparisons so timing does not reveal
+    // whether the account exists or currently holds a temporary reset.
+    const primaryHash = user?.passwordHash ?? DUMMY_PASSWORD_HASH;
+    const primaryMatches = await bcrypt.compare(loginUser.password, primaryHash);
+
+    const tempHash =
+      user?.tempPasswordHash &&
+      user.tempPasswordExpiresAt &&
+      user.tempPasswordExpiresAt.getTime() > Date.now()
+        ? user.tempPasswordHash
+        : DUMMY_PASSWORD_HASH;
+    const tempMatches = await bcrypt.compare(loginUser.password, tempHash);
+
+    if (!user || (!primaryMatches && !tempMatches)) {
       throw new UnauthorizedException('Wrong credentials');
     }
 
     this.assertLoginAllowed(user);
 
-    if (user.totpEnabled) {
-      const preAuthToken = await this.jwtService.signAsync(
-        { sub: user.id, type: 'pre-auth' },
-        { expiresIn: '5m' },
-      );
+    // While forced recovery is active the temporary credential is the only
+    // credential that may start a session; a matching primary password gets
+    // the same generic failure as any other wrong password.
+    if (user.mustChangePassword) {
+      if (!tempMatches) {
+        throw new UnauthorizedException('Wrong credentials');
+      }
 
-      return { requiresTwoFactor: true, preAuthToken };
+      if (user.totpEnabled) {
+        const preAuthToken = await this.jwtService.signAsync(
+          {
+            sub: user.id,
+            type: 'pre-auth',
+            temporaryAuth: true,
+            temporaryCredentialFingerprint: crypto
+              .createHash('sha256')
+              .update(user.tempPasswordHash!)
+              .digest('hex'),
+          },
+          { expiresIn: '5m' },
+        );
+
+        return { requiresTwoFactor: true, preAuthToken };
+      }
+
+      await this.consumeTempPassword(user);
+      return this.issueSession(user, true);
     }
 
-    return this.issueSession(user);
+    if (primaryMatches) {
+      if (user.totpEnabled) {
+        const preAuthToken = await this.jwtService.signAsync(
+          { sub: user.id, type: 'pre-auth' },
+          { expiresIn: '5m' },
+        );
+
+        return { requiresTwoFactor: true, preAuthToken };
+      }
+
+      return this.issueSession(user);
+    }
+
+    throw new UnauthorizedException('Wrong credentials');
   }
 
-  async completeTwoFactorLogin(userId: string, token: string): Promise<AuthTokens> {
+  async completeTwoFactorLogin(
+    userId: string,
+    token: string,
+    temporaryAuth = false,
+    temporaryCredentialFingerprint?: string,
+  ): Promise<AuthTokens> {
     const user = await this.usersService.findById(userId);
     if (!user || !user.totpEnabled || !user.totpSecret) {
       throw new UnauthorizedException();
@@ -116,6 +164,28 @@ export class AuthService {
 
     this.assertLoginAllowed(user);
     this.assertTwoFactorNotLocked(user.id);
+
+    // a completed 2FA flow must match the account's current recovery state:
+    // a stale normal pre-auth challenge cannot finish after an admin reset
+    if (user.mustChangePassword !== temporaryAuth) {
+      throw new UnauthorizedException();
+    }
+
+    // bind a temporary flow to the exact credential that was matched at login
+    // before any 2FA failure accounting or backup-code mutation, so a pre-auth
+    // token invalidated by a newer reset or by consumption can neither lock
+    // recovery nor burn a backup code
+    if (
+      temporaryAuth &&
+      (!temporaryCredentialFingerprint ||
+        !user.tempPasswordHash ||
+        !user.tempPasswordExpiresAt ||
+        user.tempPasswordExpiresAt.getTime() <= Date.now() ||
+        crypto.createHash('sha256').update(user.tempPasswordHash).digest('hex') !==
+          temporaryCredentialFingerprint)
+    ) {
+      throw new UnauthorizedException();
+    }
 
     const isValidTotp = this.isValidTotp(user, token);
     const usedBackupCode = isValidTotp ? false : await this.verifyAndConsumeBackupCode(user, token);
@@ -126,7 +196,11 @@ export class AuthService {
     }
 
     this.twoFactorFailures.delete(user.id);
-    return this.issueSession(user);
+    if (temporaryAuth) {
+      await this.consumeTempPassword(user);
+    }
+
+    return this.issueSession(user, temporaryAuth);
   }
 
   async logoutUser(userId: string, refreshToken: AuthTokens['refreshToken']) {
@@ -157,7 +231,17 @@ export class AuthService {
   }
 
   async refreshTokens(refreshToken: AuthTokens['refreshToken']) {
-    const decoded = await this.jwtService.verifyAsync<{ sub: string }>(refreshToken);
+    const decoded = await this.jwtService.verifyAsync<{
+      sub: string;
+      type?: string;
+      temporaryAuth?: boolean;
+    }>(refreshToken);
+
+    // the token type pins its purpose: only a refresh token may rotate
+    if (decoded.type !== 'refresh') {
+      throw new UnauthorizedException();
+    }
+
     const userId = decoded.sub;
 
     const storedTokens = await this.db
@@ -176,20 +260,25 @@ export class AuthService {
       }
 
       const [user] = await this.db.select().from(users).where(eq(users.id, userId)).limit(1);
-      if (!user) {
+      // the token origin must match the account's current recovery state even
+      // when a stale matching refresh row still exists in the database
+      if (!user || user.mustChangePassword !== (decoded.temporaryAuth === true)) {
         throw new UnauthorizedException();
       }
 
+      const temporaryAuth = decoded.temporaryAuth === true;
       const newAccessToken = await this.jwtService.signAsync({
         sub: user.id,
+        type: 'access',
         username: user.username,
         role: user.role,
+        ...(temporaryAuth ? { temporaryAuth: true } : {}),
       });
 
       await this.db.delete(refreshTokens).where(eq(refreshTokens.id, tokenEntry.id));
 
       const newRefreshToken = await this.jwtService.signAsync(
-        { sub: user.id },
+        { sub: user.id, type: 'refresh', ...(temporaryAuth ? { temporaryAuth: true } : {}) },
         { expiresIn: '7d' },
       );
       const hashedNew = await bcrypt.hash(newRefreshToken, 10);
@@ -224,8 +313,21 @@ export class AuthService {
     userId: string,
     dto: UpdatePasswordDTO,
     refreshToken: AuthTokens['refreshToken'],
-  ): Promise<PublicUser> {
-    return this.usersService.updatePassword(userId, dto, refreshToken);
+    temporaryAuth = false,
+  ): Promise<PasswordUpdateResult> {
+    const user = await this.usersService.updatePassword(userId, dto, refreshToken, temporaryAuth);
+
+    if (!temporaryAuth) {
+      return { user };
+    }
+
+    const updatedUser = await this.usersService.findById(userId);
+    if (!updatedUser) {
+      throw new UnauthorizedException();
+    }
+
+    const session = await this.issueSession(updatedUser);
+    return { user: session.user, session };
   }
 
   async setup2FA(userId: string) {
@@ -304,17 +406,45 @@ export class AuthService {
     return true;
   }
 
-  private async issueSession(user: User): Promise<AuthTokens> {
+  private async issueSession(user: User, temporaryAuth = false): Promise<AuthTokens> {
     const accessToken = await this.jwtService.signAsync({
       sub: user.id,
+      type: 'access',
       username: user.username,
       role: user.role,
+      ...(temporaryAuth ? { temporaryAuth: true } : {}),
     });
-    const refreshToken = await this.jwtService.signAsync({ sub: user.id }, { expiresIn: '7d' });
+    const refreshToken = await this.jwtService.signAsync(
+      { sub: user.id, type: 'refresh', ...(temporaryAuth ? { temporaryAuth: true } : {}) },
+      { expiresIn: '7d' },
+    );
 
     await this.storeRefreshToken(user.id, await bcrypt.hash(refreshToken, 10));
 
     return { user: toPublicUser(user), accessToken, refreshToken };
+  }
+
+  private async consumeTempPassword(user: User): Promise<void> {
+    if (!user.tempPasswordHash || !user.tempPasswordExpiresAt) {
+      throw new UnauthorizedException('Wrong credentials');
+    }
+
+    const [consumed] = await this.db
+      .update(users)
+      .set({ tempPasswordExpiresAt: null })
+      .where(
+        and(
+          eq(users.id, user.id),
+          eq(users.mustChangePassword, true),
+          eq(users.tempPasswordHash, user.tempPasswordHash),
+          gt(users.tempPasswordExpiresAt, new Date()),
+        ),
+      )
+      .returning({ id: users.id });
+
+    if (!consumed) {
+      throw new UnauthorizedException('Wrong credentials');
+    }
   }
 
   private assertLoginAllowed(user: User): void {

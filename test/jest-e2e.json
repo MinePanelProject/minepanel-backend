@@ -5,5 +5,9 @@
   "testRegex": ".e2e-spec.ts$",
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
+  },
+  "transformIgnorePatterns": ["node_modules/(?!(otplib|@otplib|@scure|@noble)/)"],
+  "moduleNameMapper": {
+    "^src/(.*)$": "<rootDir>/../src/$1"
   }
 }

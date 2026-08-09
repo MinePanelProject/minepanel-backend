@@ -2,7 +2,12 @@ import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 
-type PreAuthPayload = { sub: string; type: 'pre-auth' };
+type PreAuthPayload = {
+  sub: string;
+  type: 'pre-auth';
+  temporaryAuth?: boolean;
+  temporaryCredentialFingerprint?: string;
+};
 type PreAuthRequest = Request & { preAuth?: PreAuthPayload };
 
 @Injectable()
@@ -30,7 +35,11 @@ export class PreAuthGuard implements CanActivate {
       if (
         payload.type !== 'pre-auth' ||
         typeof payload.sub !== 'string' ||
-        payload.sub.trim().length === 0
+        payload.sub.trim().length === 0 ||
+        (payload.temporaryAuth !== undefined && payload.temporaryAuth !== true) ||
+        (payload.temporaryAuth === true &&
+          !/^[\da-f]{64}$/i.test(payload.temporaryCredentialFingerprint ?? '')) ||
+        (payload.temporaryAuth !== true && payload.temporaryCredentialFingerprint !== undefined)
       ) {
         throw new UnauthorizedException();
       }

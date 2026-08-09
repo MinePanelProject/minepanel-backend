@@ -26,7 +26,7 @@ import { CreateUserDto } from './dto/register.dto';
 import { UpdatePasswordDTO } from './dto/updatePw.dto';
 import { PreAuthGuard, type PreAuthRequest } from './guards/pre-auth.guard';
 
-type JwtPayload = { id: string; username: string; role: string };
+type JwtPayload = { id: string; username: string; role: string; temporaryAuth?: boolean };
 
 @ApiTags('auth')
 @Controller('auth')
@@ -187,12 +187,26 @@ export class AuthController {
   @ApiOperation({ summary: 'Update password' })
   @HttpCode(HttpStatus.OK)
   @Patch('password')
-  async updateUserPassword(@Req() req: Request, @Body() updatePw: UpdatePasswordDTO) {
+  async updateUserPassword(
+    @Req() req: Request,
+    @Body() updatePw: UpdatePasswordDTO,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     const user = req.user as JwtPayload;
 
     const refreshToken = req.cookies.refresh_token as AuthTokens['refreshToken'];
+    const result = await this.authService.updateUserPassword(
+      user.id,
+      updatePw,
+      refreshToken,
+      user.temporaryAuth === true,
+    );
 
-    return await this.authService.updateUserPassword(user.id, updatePw, refreshToken);
+    if (result.session) {
+      this.setAuthCookies(res, result.session);
+    }
+
+    return result.user;
   }
 
   @ApiOperation({ summary: 'Setup 2FA - generates secret and QR URI' })
@@ -224,7 +238,15 @@ export class AuthController {
     @Body() body: TwoFactorTokenDto,
     @Res({ passthrough: true }) res: Response,
   ): Promise<PublicUser> {
-    const session = await this.authService.completeTwoFactorLogin(req.preAuth!.sub, body.token);
+    const preAuth = req.preAuth!;
+    const session = preAuth.temporaryAuth
+      ? await this.authService.completeTwoFactorLogin(
+          preAuth.sub,
+          body.token,
+          true,
+          preAuth.temporaryCredentialFingerprint,
+        )
+      : await this.authService.completeTwoFactorLogin(preAuth.sub, body.token);
     this.setAuthCookies(res, session);
     return session.user;
   }

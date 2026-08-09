@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { AdminModule } from './admin/admin.module';
 import { AppController } from './app.controller';
 import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
@@ -27,6 +28,7 @@ import { UsersModule } from './users/users.module';
     SetupModule,
     UsersModule,
     AuthModule,
+    AdminModule,
     DockerModule,
     ServersModule,
   ],

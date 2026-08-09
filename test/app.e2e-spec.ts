@@ -16,7 +16,16 @@ describe('AppController (e2e)', () => {
     await app.init();
   });
 
-  it('/ (GET)', () => {
-    return request(app.getHttpServer()).get('/').expect(200).expect('Hello World!');
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it('/health (GET) reports database and docker reachability', () => {
+    return request(app.getHttpServer())
+      .get('/health')
+      .expect(200)
+      .expect((res) => {
+        expect(res.body).toEqual({ db: expect.any(String), docker: expect.any(String) });
+      });
   });
 });

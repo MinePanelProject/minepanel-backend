@@ -39,13 +39,30 @@ export class JwtAuthGuard implements CanActivate {
         sub: string;
         username: string;
         role: string;
+        type?: string;
+        temporaryAuth?: boolean;
       }>(token);
 
-      // Get status and mustChangePassword
+      // the token type pins its purpose: a refresh or pre-auth token is
+      // never a valid access token, reject before touching the database
+      if (payload.type !== 'access') {
+        throw new UnauthorizedException();
+      }
+
+      // Database is the authority for status and role so bans and role
+      // changes take effect immediately, without waiting for the JWT to expire
       const [user] = await this.db
-        .select({ status: users.status, mustChangePassword: users.mustChangePassword })
+        .select({
+          status: users.status,
+          role: users.role,
+          mustChangePassword: users.mustChangePassword,
+        })
         .from(users)
         .where(eq(users.id, payload.sub));
+
+      if (!user) {
+        throw new UnauthorizedException();
+      }
 
       if (user.status === 'PENDING') {
         throw new ForbiddenException({ error: 'AccountPending' });
@@ -55,14 +72,30 @@ export class JwtAuthGuard implements CanActivate {
         throw new ForbiddenException({ error: 'AccountBanned' });
       }
 
-      if (
-        user.mustChangePassword &&
-        !context.switchToHttp().getRequest().url.includes('/api/auth/password')
-      ) {
-        throw new ForbiddenException({ error: 'PasswordChangeRequired' });
+      if (user.mustChangePassword) {
+        const isPasswordChangeRoute =
+          request.method === 'PATCH' && request.path === '/api/auth/password';
+
+        // during forced recovery an ordinary access token is rejected on every
+        // route; only a temporary-auth token may pass, and only on the exact
+        // password-change route
+        if (payload.temporaryAuth !== true) {
+          throw new UnauthorizedException();
+        }
+
+        if (!isPasswordChangeRoute) {
+          throw new ForbiddenException({ error: 'PasswordChangeRequired' });
+        }
+      } else if (payload.temporaryAuth) {
+        throw new UnauthorizedException();
       }
 
-      request.user = { id: payload.sub, username: payload.username, role: payload.role };
+      request.user = {
+        id: payload.sub,
+        username: payload.username,
+        role: user.role,
+        ...(payload.temporaryAuth ? { temporaryAuth: true } : {}),
+      };
     } catch (error) {
       if (error instanceof ForbiddenException) throw error;
       throw new UnauthorizedException();
