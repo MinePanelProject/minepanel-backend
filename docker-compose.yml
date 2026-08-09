@@ -29,8 +29,7 @@ services:
       - "${PORT:-3000}:3000"
     volumes:
       - ${XDG_RUNTIME_DIR:-/var/run}/docker.sock:/var/run/docker.sock
-      - mc-data:/mc-data
-      - ${PANEL_ASSETS_PATH:-/panel-assets}:/panel-assets
+      - ${MC_DATA_PATH_HOST-${HOME:?HOME must be set for the default MC data root}/.minepanel/mc-data}:${MC_DATA_PATH_HOST-${HOME:?HOME must be set for the default MC data root}/.minepanel/mc-data}
     environment:
       - NODE_ENV=production
       - DATABASE_URL=postgresql://minepanel:${POSTGRES_PASSWORD}@postgres:5432/minepanel
@@ -43,13 +42,12 @@ services:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - DOCKER_NETWORK=minepanel_network
       - DOCKER_SOCKET=/var/run/docker.sock
-      - MC_DATA_PATH=/mc-data
+      - MC_DATA_PATH=${MC_DATA_PATH_HOST-${HOME:?HOME must be set for the default MC data root}/.minepanel/mc-data}
       - MC_PORT_MIN=${MC_PORT_MIN:-25565}
       - MC_PORT_MAX=${MC_PORT_MAX:-25665}
       - MIN_FREE_DISK_MB=${MIN_FREE_DISK_MB:-2048}
       - MAX_MEMORY_RATIO=${MAX_MEMORY_RATIO:-0.90}
       - PANEL_NAME=${PANEL_NAME:-MinePanel}
-      - PANEL_ASSETS_PATH=/panel-assets
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,8 +86,6 @@ networks:
 volumes:
   postgres-data:
     name: minepanel-postgres-data
-  mc-data:
-    name: minepanel-mc-data
   caddy-data:
     name: minepanel-caddy-data
   caddy-config:

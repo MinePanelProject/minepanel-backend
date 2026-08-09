@@ -47,8 +47,18 @@ Key variables:
 | `ENCRYPTION_KEY` | — | **Required.** Exactly 32 random bytes encoded as 64 hexadecimal characters; generate with `openssl rand -hex 32`. |
 | `REQUIRE_ADMIN_APPROVAL` | `true` | New users start as PENDING until admin approves. |
 | `MC_PORT_MIN` / `MC_PORT_MAX` | `25565` / `25665` | Port range for Minecraft server containers. |
+| `MC_DATA_PATH_HOST` | `$HOME/.minepanel/mc-data` | Host data root (Compose only; default `$HOME/.minepanel/mc-data`). |
+| `MC_DATA_PATH` | `/mc-data` | Minecraft data root (direct backend execution only; Compose injects `MC_DATA_PATH_HOST`). |
 | `MIN_FREE_DISK_MB` | `2048` | Minimum free disk required to create a new server. |
 | `MAX_MEMORY_RATIO` | `0.90` | Max fraction of host RAM allocatable to MC servers. |
+
+### Minecraft data directory
+
+The default host data root is `$HOME/.minepanel/mc-data`. It is created by Compose under a user-writable parent — no `sudo` is needed on rootless Docker.
+
+Existing installs on `/srv/...` or the old `minepanel-mc-data` named volume keep their location by setting `MC_DATA_PATH_HOST` to their absolute path. This is an **upgrade-only** migration: copy the old volume contents into the chosen host root once, before cutover. Fresh installs do nothing.
+
+Root-docker operators should pre-create and `chown` the root for the Minecraft container runtime user. On SELinux, label the directory per local policy — do NOT put `:Z` inside `MC_DATA_PATH_HOST`.
 
 ## Reverse Proxy
 

@@ -96,7 +96,6 @@ DOMAIN=${DOMAIN}
 PORT=3000
 NODE_ENV=production
 PANEL_NAME="MinePanel"
-PANEL_ASSETS_PATH="/panel-assets"
 
 DOCKER_SOCKET="/var/run/docker.sock"
 DOCKER_NETWORK="minepanel_network"

@@ -23,9 +23,14 @@ describe('AppController (e2e)', () => {
   it('/health (GET) reports database and docker reachability', () => {
     return request(app.getHttpServer())
       .get('/health')
-      .expect(200)
       .expect((res) => {
-        expect(res.body).toEqual({ db: expect.any(String), docker: expect.any(String) });
+        expect([200, 503]).toContain(res.status);
+        expect(res.body).toEqual({
+          status: expect.any(String),
+          db: expect.any(String),
+          docker: expect.any(String),
+          version: expect.any(String),
+        });
       });
   });
 });

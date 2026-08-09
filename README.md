@@ -133,6 +133,8 @@ See [`.env.example`](./.env.example) for the full list. Key variables:
 | `ENCRYPTION_KEY`        | 32 random bytes encoded as 64 hexadecimal characters; generate with `openssl rand -hex 32` | required |
 | `REQUIRE_ADMIN_APPROVAL`| New users start as PENDING until admin approves    | `true`               |
 | `MC_PORT_MIN/MAX`       | Port range for Minecraft server containers         | `25565` / `25665`    |
+| `MC_DATA_PATH_HOST`     | Host data root (Compose only; default `$HOME/.minepanel/mc-data`) | `$HOME/.minepanel/mc-data` |
+| `MC_DATA_PATH`          | Minecraft data root (direct backend execution only; Compose injects `MC_DATA_PATH_HOST`) | `/mc-data` |
 | `MIN_FREE_DISK_MB`      | Minimum free disk to allow server creation         | `2048`               |
 | `MAX_MEMORY_RATIO`      | Max fraction of host RAM allocatable to MC servers | `0.90`               |
 

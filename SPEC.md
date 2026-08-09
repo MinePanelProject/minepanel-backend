@@ -46,8 +46,7 @@ User runs: docker-compose up -d
 │  │  minepanel-nestjs (container)                        │   │
 │  │  - NestJS backend                  Port: 3000:3000   │   │
 │  │  - Socket: ${DOCKER_SOCKET} (rootless default)       │   │
-│  │  - Volume: mc-data/  (shared with MC containers)     │   │
-│  │  - Volume: panel-assets/ (logo, static assets)       │   │
+│  │  - Volume: MC_DATA_PATH host dir (bind, shared)      │   │
 │  │  - Network: minepanel_network                        │   │
 │  └──────────────────┬───────────────────────────────────┘   │
 │                     │ Postgres                               │
@@ -62,12 +61,12 @@ User runs: docker-compose up -d
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │  mc-{id}-1  (itzg/minecraft-server)  Port: 2556x     │   │
-│  │  - Volume: mc-data/{serverId}:/data  (shared)        │   │
+│  │  - Volume: {MC_DATA_PATH}/{serverId}:/data (bind)   │   │
 │  │  - Network: minepanel_network                        │   │
 │  └──────────────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │  mc-{id}-2  (itzg/minecraft-server)  Port: 2556x     │   │
-│  │  - Volume: mc-data/{serverId}:/data  (shared)        │   │
+│  │  - Volume: {MC_DATA_PATH}/{serverId}:/data (bind)   │   │
 │  │  - Network: minepanel_network                        │   │
 │  └──────────────────────────────────────────────────────┘   │
 │                                                              │
@@ -420,7 +419,7 @@ Docker healthcheck (in `docker-compose.yml`):
 healthcheck:
   test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
   interval: 30s
-  timeout: 5s
+  timeout: 10s
   retries: 3
 ```
 
@@ -632,7 +631,7 @@ It uses Dockerode to:
 - **Execute commands** inside containers (e.g., MC console commands)
 
 Each MC server gets:
-- Its own subdirectory under the shared `mc-data` volume
+- Its own subdirectory under the shared host data directory `MC_DATA_PATH`
 - A unique host port mapped to container port 25565
 - Attached to `minepanel_network` for inter-container communication
 - A configurable memory limit (default 2048 MB, min 512 MB) — see below
@@ -681,7 +680,7 @@ The Docker socket gives the NestJS app the ability to create arbitrary container
 
 | Constraint       | Rule                                                              |
 |------------------|-------------------------------------------------------------------|
-| Port range       | Only ports in `MC_PORT_RANGE_MIN`–`MC_PORT_RANGE_MAX` (default: 25565–25665) |
+| Port range       | Only ports in `MC_PORT_MIN`–`MC_PORT_MAX` (default: 25565–25665) |
 | Volume mounts    | Only `{MC_DATA_PATH}/{serverId}:/data` — no user-controlled paths |
 | Env vars         | Whitelist of known MC server vars (`EULA`, `TYPE`, `VERSION`, etc.) |
 | Network          | Always forced to `DOCKER_NETWORK` — never user-specified          |
@@ -708,14 +707,15 @@ New env vars:
 | JWT_EXPIRES_IN        | Access token TTL                   | 15m                              |
 | JWT_REFRESH_EXPIRES_IN| Refresh token TTL                  | 7d                               |
 | PORT                  | Backend listen port                | 3000                             |
-| DOMAIN                | Public domain (used by Caddy for HTTPS + sets CORS_ORIGIN automatically) | (required in prod) |
-| CORS_ORIGIN           | Allowed CORS origin (set automatically from DOMAIN in docker-compose) | http://localhost:5173 |
+| DOMAIN                | Public domain (used by Caddy for HTTPS; set CORS_ORIGIN separately) | (required in prod) |
+| CORS_ORIGIN           | Allowed CORS origin (compose default `https://minepanel.xyz`) | http://localhost:5173 |
 | DOCKER_SOCKET         | Path to Docker socket (inside container) | /var/run/docker.sock        |
 | DOCKER_NETWORK        | Docker network for MC containers   | minepanel_network                |
-| MC_DATA_PATH          | Base path for MC server data       | /mc-data                         |
+| MC_DATA_PATH_HOST     | Host data root (compose interpolation only) | $HOME/.minepanel/mc-data  |
+| MC_DATA_PATH          | Base path for MC server data (direct backend execution only; Compose injects `MC_DATA_PATH_HOST`) | /mc-data |
 | MC_PORT_MIN           | Minimum allowed MC server port     | 25565                            |
 | MC_PORT_MAX           | Maximum allowed MC server port     | 25665                            |
-| MIN_FREE_DISK_MB      | Min free disk (MB) on MC_DATA_PATH to allow create/start | 5120     |
+| MIN_FREE_DISK_MB      | Min free disk (MB) on MC_DATA_PATH to allow create/start | 2048     |
 | MAX_MEMORY_RATIO      | Max fraction of host RAM to allocate to MC servers (0–1) | 0.90     |
 | POSTGRES_PASSWORD      | Postgres password (docker-compose) | changeme                        |
 | MICROSOFT_CLIENT_ID    | Azure app client ID (MC linking)   | (optional)                      |
@@ -723,7 +723,7 @@ New env vars:
 | PANEL_NAME             | Display name shown in frontend listing | MinePanel                   |
 | ENCRYPTION_KEY         | 32-byte hex key for RCON password encryption (Phase 3b) | (required Phase 3b) |
 | STOP_WARN_SECONDS      | Seconds to warn players before graceful server shutdown | 30              |
-| PANEL_ASSETS_PATH        | Directory for panel-level static assets (logo, etc.)      | /panel-assets   |
+| PANEL_ASSETS_PATH        | Directory for panel-level static assets (planned — no mount in current compose) | /panel-assets   |
 | REQUIRE_ADMIN_APPROVAL   | If true, new registrations start as PENDING (admin must approve) | true       |
 | INSECURE_COOKIES         | Allow HttpOnly cookies over plain HTTP (LAN/local only)         | false      |
 | SMTP_HOST                | SMTP server hostname (optional — enables email features)          | (optional) |
@@ -733,7 +733,7 @@ New env vars:
 | SMTP_PASS                | SMTP password                                                     | (optional) |
 | SMTP_FROM                | From address for outgoing emails (e.g. `noreply@yourdomain.com`) | (optional) |
 
-> `PANEL_ASSETS_PATH` must be bind-mounted into the NestJS container in `docker-compose.yml`: `- ${PANEL_ASSETS_PATH}:/panel-assets`. The directory is created automatically on first write if it does not exist.
+> The `PANEL_ASSETS_PATH` bind mount is added with the `/panel/logo` slice; when it lands, the host directory must exist or be created by Compose. The current compose file does not mount it.
 
 ---
 
@@ -939,22 +939,7 @@ The `JwtAuthService` checks this flag and sets `secure: false` on cookies regard
 
 ### Optional: Docker Socket Proxy
 
-Direct Docker socket access (`/var/run/docker.sock`) grants the NestJS container root-equivalent privileges on the host. For hardened deployments, use [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) to restrict what API calls are allowed:
-
-```yaml
-socket-proxy:
-  image: tecnativa/docker-socket-proxy
-  environment:
-    CONTAINERS: 1
-    IMAGES: 1
-    NETWORKS: 1
-    VOLUMES: 1
-    POST: 1
-  volumes:
-    - /var/run/docker.sock:/var/run/docker.sock:ro
-```
-
-Then set `DOCKER_SOCKET=tcp://socket-proxy:2375` in NestJS env. This limits the attack surface if the NestJS container is compromised.
+Direct Docker socket access (`/var/run/docker.sock`) grants the NestJS container root-equivalent privileges on the host. The backend enforces a **local Unix socket** transport: `DOCKER_SOCKET` must be a socket path mounted into the container, and remote TCP endpoints (e.g. `tcp://socket-proxy:2375`) are unsupported and would leave Docker unreachable. A restricted socket proxy such as [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) (which exposes TCP) therefore cannot be used directly; it would need an additional TCP-to-Unix relay whose socket is mounted at the configured `DOCKER_SOCKET` path. This is a future hardening option — the default deployment mounts the host socket directly.
 
 ### HTTPS — mandatory in production
 
@@ -975,7 +960,7 @@ Set `DOMAIN` in `.env` and Caddy configures itself:
 }
 ```
 
-The `docker-compose.yml` passes `DOMAIN` as an env var to the Caddy container. `CORS_ORIGIN` is automatically set to `https://${DOMAIN}` in the same compose file — no manual CORS configuration needed.
+The `docker-compose.yml` passes `DOMAIN` as an env var to the Caddy container. `CORS_ORIGIN` is NOT derived from `DOMAIN`: the compose file uses `CORS_ORIGIN=${CORS_ORIGIN:-https://minepanel.xyz}`, so operators set it manually to the exact frontend URL (e.g. `https://minepanel.xyz`).
 
 **Host-based Caddy** (if you prefer Caddy on the host instead of in Docker):
 
@@ -1174,7 +1159,7 @@ The frontend uses `details.resource` to show a specific error ("Not enough RAM",
 
 | Variable          | Description                                    | Default |
 |-------------------|------------------------------------------------|---------|
-| MIN_FREE_DISK_MB  | Min free disk on MC_DATA_PATH to allow ops     | 5120    |
+| MIN_FREE_DISK_MB  | Min free disk on MC_DATA_PATH to allow ops     | 2048    |
 | MAX_MEMORY_RATIO  | Max fraction of host RAM to allocate (0–1)     | 0.90    |
 
 #### Startup reconciliation (Phase 1, inside ServersService)

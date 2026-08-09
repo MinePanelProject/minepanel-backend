@@ -1,5 +1,7 @@
+import { HttpStatus } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, type TestingModule } from '@nestjs/testing';
+import type { Response } from 'express';
 import { DRIZZLE } from 'src/db/db.module';
 import { AppController } from './app.controller';
 import { DockerService } from './docker/docker.service';
@@ -34,16 +36,47 @@ describe('AppController', () => {
   });
 
   it('reports ok for a healthy database and docker daemon', async () => {
+    getConfig.mockReturnValue('1.0');
     executeDb.mockResolvedValue(undefined);
     pingDocker.mockResolvedValue(true);
+    const res = { status: jest.fn().mockReturnThis() } as unknown as Response;
 
-    await expect(controller.getHealth()).resolves.toEqual({ db: 'ok', docker: 'ok' });
+    await expect(controller.getHealth(res)).resolves.toEqual({
+      status: 'ok',
+      db: 'ok',
+      docker: 'ok',
+      version: '1.0',
+    });
+    expect(res.status).toHaveBeenCalledWith(HttpStatus.OK);
   });
 
-  it('reports error when the database query or docker ping fails', async () => {
+  it('reports degraded when the database query fails', async () => {
+    getConfig.mockReturnValue('1.0');
     executeDb.mockRejectedValue(new Error('db down'));
-    pingDocker.mockResolvedValue(false);
+    pingDocker.mockResolvedValue(true);
+    const res = { status: jest.fn().mockReturnThis() } as unknown as Response;
 
-    await expect(controller.getHealth()).resolves.toEqual({ db: 'error', docker: 'error' });
+    await expect(controller.getHealth(res)).resolves.toEqual({
+      status: 'degraded',
+      db: 'error',
+      docker: 'ok',
+      version: '1.0',
+    });
+    expect(res.status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+  });
+
+  it('reports degraded when the docker ping fails', async () => {
+    getConfig.mockReturnValue('1.0');
+    executeDb.mockResolvedValue(undefined);
+    pingDocker.mockResolvedValue(false);
+    const res = { status: jest.fn().mockReturnThis() } as unknown as Response;
+
+    await expect(controller.getHealth(res)).resolves.toEqual({
+      status: 'degraded',
+      db: 'ok',
+      docker: 'error',
+      version: '1.0',
+    });
+    expect(res.status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
   });
 });

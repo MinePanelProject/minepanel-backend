@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-MinePanel backend is a self-hosted Minecraft server management panel API. It is a NestJS 11 application written entirely in TypeScript 5 (ES2022, `nodenext`), running on Node 20 in development and Bun in production. It exposes a REST API (global prefix `api`, plus a public `/health` route and Swagger at `/docs`) that manages user authentication — JWT access tokens and hashed refresh tokens delivered via HttpOnly cookies, with TOTP two-factor authentication — and will spawn/control Minecraft server containers through the Docker socket via Dockerode. Persistence is PostgreSQL 16 accessed through Drizzle ORM with a single hand-written schema file. The application is organized as small feature modules (`auth`, `users`, `setup`, `servers`, `docker`, `db`) coordinated by a root `AppModule`, with shared utilities in `src/common`.
+MinePanel backend is a self-hosted Minecraft server management panel API. It is a NestJS 11 application written entirely in TypeScript 5 (ES2022, `nodenext`), running on Node 20 in development and Bun in production. It exposes a REST API (global prefix `api`, plus a public `/health` route and Swagger at `/docs`) that manages user authentication — JWT access tokens and hashed refresh tokens delivered via HttpOnly cookies, with TOTP two-factor authentication — and spawns/controls Minecraft server containers through the Docker socket via Dockerode (server lifecycle endpoints are planned). Persistence is PostgreSQL 16 accessed through Drizzle ORM with a single hand-written schema file. The application is organized as small feature modules (`auth`, `users`, `setup`, `servers`, `docker`, `db`) coordinated by a root `AppModule`, with shared utilities in `src/common`.
 
 ## 2. Repository Structure
 
@@ -20,7 +20,7 @@ src/
   setup/                     # first-run bootstrap: status + first-admin registration
   servers/                   # WIP stub — module wired, controller/service skeletal
     dto/create-server.dto.ts # fully validated server creation DTO
-  docker/                    # Dockerode provider factory + DockerService (ping)
+  docker/                    # Dockerode provider factory + DockerService (create/start/stop/remove/inspect, host resources, ping)
   db/                        # DRIZZLE provider factory (postgres-js) + schema.ts
     schema.ts                # ALL Drizzle tables, enums, inferred types live here
   common/                    # shared, cross-module code only
@@ -206,7 +206,7 @@ try {
 ```
 
 - Bare `catch { return false; }` (no binding) is acceptable only when the failure has a defined fallback value (Docker ping, backup-code JSON parsing). Never swallow an exception and continue without an alternate return path.
-- Startup invariants (missing env vars, DB unreachable, Docker unreachable) log via `Logger` and call `process.exit(1)` — done in `main.ts`, `DbModule`, and `DockerModule` factories; do not add new `process.exit` call sites elsewhere.
+- Startup invariants: missing critical secrets or an unrecoverable database connection fail fast — `main.ts` and `DbModule` log via `Logger` and call `process.exit(1)`. Docker unavailability at startup is NOT fatal: `DockerModule` logs the unreachable daemon and continues in degraded mode (health reports 503, Docker operations throw 503). Do not add new `process.exit` call sites elsewhere.
 - Password verification always runs `bcrypt.compare(input, user?.passwordHash ?? DUMMY_PASSWORD_HASH)` — never reveal whether a user exists.
 
 ## 11. Comments and Docstrings
