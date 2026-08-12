@@ -11,7 +11,7 @@
     { "icon": "🐳", "title": "Docker-Native", "description": "Each Minecraft server runs in its own isolated container. Rootless Docker supported by default - no root privileges required." },
     { "icon": "🔗", "title": "Multi-Backend", "description": "The hosted frontend at minepanel.xyz connects to any number of independent self-hosted backends. Point it at your own instance URL." },
     { "icon": "🛡️", "title": "Role System", "description": "Three roles: ADMIN, MOD, USER. MODs get granular per-server permissions without full admin access - built-in PBAC." },
-    { "icon": "📡", "title": "Real-Time Events", "description": "Live server stats, console logs, player joins/leaves, and host metrics pushed via WebSocket - no polling needed." },
+    { "icon": "📡", "title": "Real-Time Events", "description": "Host metrics (CPU, RAM, disk) pushed to admins via WebSocket. Live per-server stats, console logs, and player events land in later phases." },
     { "icon": "🔒", "title": "Security First", "description": "JWT via HttpOnly cookies, rate limiting, Helmet security headers, input validation, Docker socket guardrails, and path-traversal protection." },
     { "icon": "📱", "title": "Mobile App", "description": "KMP app for iOS and Android. Not just for admins - players get their own portal: server status, access requests, push notifications, and profile.", "coming": true, "color": "aqua" },
     { "icon": "👤", "title": "Player Portal", "description": "Unlike other MC panels, MinePanel is built for players too. Browse your servers, request access, view your Minecraft profile and playtime - all in one place.", "coming": true, "color": "yellow" }
@@ -42,8 +42,8 @@
       "name": "Foundation — v1.0",
       "status": "wip",
       "description": "The core deployable release. Everything needed to spin up and manage Minecraft servers from a single docker-compose on your own machine.",
-      "progress": 85,
-      "progressLabel": "~85% complete",
+      "progress": 93,
+      "progressLabel": "~93% complete",
       "items": [
         { "text": "JWT auth via HttpOnly cookies", "done": true },
         { "text": "Register & login endpoints", "done": true },
@@ -68,8 +68,8 @@
         { "text": "Resource checks (RAM & disk guardrails)", "done": true },
         { "text": "Startup reconciliation (DB vs Docker state sync)", "done": true },
         { "text": "Concurrent operation protection (Postgres atomic CAS)", "done": true },
-        { "text": "Host metrics via WebSocket (CPU, RAM, disk)", "done": false },
-        { "text": "Unit + integration tests", "done": false },
+        { "text": "Host metrics via WebSocket (CPU, RAM, disk)", "done": true },
+        { "text": "Unit + integration tests", "done": true },
         { "text": "CI/CD pipeline (GitHub Actions \u2192 GHCR)", "done": false },
         { "text": "Docker deployment (docker-compose + Caddy auto-HTTPS, migrations on boot)", "done": false }
       ]

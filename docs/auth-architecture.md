@@ -14,8 +14,7 @@
 
 ### Why both?
 
-- Access token is used for every request — fast, stateless, no DB hit
-- Refresh token is used only when the access token expires — hits DB, allows revocation
+- Access token is verified on every request (JWT signature/expiry via the shared `AccessTokenService`) and DB-current role/status are re-read so bans/demotions take effect immediately; refresh tokens hit the DB for rotation/revocation
 
 ---
 
@@ -38,7 +37,7 @@ server  →  returns user data (no tokens in body)
 ```
 browser →  sends request with cookies automatically
 server  →  JwtAuthGuard reads access_token cookie directly
-server  →  jwtService.verifyAsync(token) — verifies signature + expiry
+server  →  AccessTokenService.verify(token) — shared verifier for HTTP + WebSocket
 server  →  sets req.user = { id, username, role }
 server  →  controller runs
 ```
@@ -68,9 +67,8 @@ server  →  clears both cookies (maxAge: 0)
 
 ```
 client  →  sends request (access_token cookie)
-server  →  guard runs, validates JWT, sets req.user
-server  →  controller returns req.user (already decoded by guard)
-          no DB hit needed
+server  →  shared AccessTokenService verifies JWT and re-reads DB-current role/status, sets req.user
+server  →  controller returns req.user (populated by the guard)
 ```
 
 ---
@@ -85,11 +83,17 @@ request comes in
 JwtAuthGuard.canActivate()
   → checks if route has @Public()  →  if yes: allow through
   → if no: reads access_token cookie directly
-      → jwtService.verifyAsync(token) with JWT_SECRET
+      → AccessTokenService.verify(token) — shared verifier for HTTP + WebSocket
       → sets req.user = { id, username, role }
 ↓
 controller receives request with req.user populated
 ```
+
+## Shared access-token verifier
+
+`AccessTokenService` is the single authority for access-token verification used by both the HTTP guard and the WebSocket gateway. It validates the JWT signature, enforces `type === 'access'`, requires a safe `exp`, and queries PostgreSQL for the user's current `status`, `role`, and `mustChangePassword`. It returns a typed principal and never knows about HTTP routes or Socket.IO rooms.
+
+The HTTP `JwtAuthGuard` is the only place that owns the temporary-password route exception: a `temporaryAuth` access token is accepted only for `PATCH /api/auth/password`, and only while `mustChangePassword` is true. The WebSocket gateway rejects every temporary/recovery session silently.
 
 ---
 

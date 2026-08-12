@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import { Readable } from 'node:stream';
 import {
   BadRequestException,
@@ -114,6 +115,33 @@ describe('DockerService', () => {
     fakeDocker.ping.mockRejectedValue(new Error('daemon unreachable'));
 
     await expect(service.ping()).resolves.toBe(false);
+  });
+
+  it.each([
+    [0, 0],
+    [1024 * 1024 + 123, 1],
+    [3 * 1024 * 1024 + 999, 3],
+  ])('returns host free memory in floored MiB for %d bytes', (bytes, expected) => {
+    const freeMemorySpy = jest.spyOn(os, 'freemem').mockReturnValue(bytes);
+
+    expect(service.getHostFreeMemoryMb()).toBe(expected);
+
+    freeMemorySpy.mockRestore();
+  });
+
+  it.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    -1,
+    Number.MAX_SAFE_INTEGER + 1,
+    1.5,
+  ])('returns null for malformed host free memory %p without throwing', (bytes) => {
+    const freeMemorySpy = jest.spyOn(os, 'freemem').mockReturnValue(bytes);
+
+    expect(() => service.getHostFreeMemoryMb()).not.toThrow();
+    expect(service.getHostFreeMemoryMb()).toBeNull();
+
+    freeMemorySpy.mockRestore();
   });
 
   describe('createContainer', () => {

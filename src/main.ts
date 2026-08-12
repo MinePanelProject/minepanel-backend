@@ -5,8 +5,11 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { getCanonicalCorsOrigin } from './common/cors-origin';
 import { CustomLogger } from './common/custom-logger';
 import { DbExceptionFilter } from './common/filters/db-exception.filter';
+import { SocketIoAdapter } from './gateway/socket-io.adapter';
+import { SocketReservationService } from './gateway/socket-reservation.service';
 
 async function bootstrap() {
   const logger = new CustomLogger();
@@ -32,10 +35,16 @@ async function bootstrap() {
 
   app.useGlobalFilters(new DbExceptionFilter());
 
+  const canonicalOrigin = getCanonicalCorsOrigin(configService);
+
   app.enableCors({
-    origin: configService.get<string>('CORS_ORIGIN', 'http://localhost:5173'),
+    origin: canonicalOrigin,
     credentials: true,
   });
+
+  app.useWebSocketAdapter(
+    new SocketIoAdapter(app.get(SocketReservationService), configService, app.getHttpServer()),
+  );
 
   app.setGlobalPrefix('api', { exclude: ['/health'] });
 

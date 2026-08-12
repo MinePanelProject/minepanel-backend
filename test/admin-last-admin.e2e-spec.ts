@@ -1,48 +1,51 @@
-import crypto from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { ConflictException } from '@nestjs/common';
-import { and, count, eq } from 'drizzle-orm';
+import { and, count, eq, inArray } from 'drizzle-orm';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { AdminService } from '../src/admin/admin.service';
 import type { DrizzleDB } from '../src/db/db.module';
 import * as schema from '../src/db/schema';
+import { assertSafeTestDatabase } from './test-database';
 
-// Requires a live PostgreSQL 16 with the drizzle migrations applied
-// (bun run db:migrate) and an explicitly isolated TEST_DATABASE_URL pointing
-// at it: this suite truncates shared tables before every test, so it must
-// never run against the ambient DATABASE_URL. Not part of CI.
+// Requires a live PostgreSQL 16 with migrations applied to TEST_DATABASE_URL.
+// Containment is fixture-ID only: this suite never truncates, never mutates
+// rows it did not create, and never issues server-level DDL. The last-admin
+// boundary tests additionally require that NO other ACTIVE ADMIN rows exist on
+// the test server (they assert their population precondition and fail loudly
+// with a reset hint otherwise — they never modify foreign rows).
 describe('AdminService last-admin protection (PostgreSQL integration)', () => {
   let sql: postgres.Sql;
   let db: PostgresJsDatabase<typeof schema>;
   let service: AdminService;
 
-  beforeAll(async () => {
-    const connectionString = process.env.TEST_DATABASE_URL;
-    if (!connectionString) {
-      throw new Error(
-        'TEST_DATABASE_URL is required to run the destructive integration suite; ' +
-          'it must point at an isolated test database, not DATABASE_URL',
-      );
-    }
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('refusing to run the destructive integration suite against production');
-    }
+  let trackedUserIds: string[];
+  let baselineActiveAdmins: number;
 
+  beforeAll(async () => {
+    const connectionString = assertSafeTestDatabase();
     sql = postgres(connectionString, { max: 10 });
     db = drizzle(sql, { schema });
     service = new AdminService(db as unknown as DrizzleDB);
+    baselineActiveAdmins = await countActiveAdmins();
   });
 
   afterAll(async () => {
     await sql.end();
   });
 
-  beforeEach(async () => {
-    await sql`TRUNCATE refresh_tokens, users CASCADE`;
+  beforeEach(() => {
+    trackedUserIds = [];
+  });
+
+  afterEach(async () => {
+    if (trackedUserIds.length > 0) {
+      await db.delete(schema.users).where(inArray(schema.users.id, trackedUserIds));
+    }
   });
 
   const createUser = async (overrides: Partial<schema.NewUser> = {}): Promise<schema.User> => {
-    const suffix = crypto.randomBytes(4).toString('hex');
+    const suffix = randomBytes(4).toString('hex');
     const [user] = await db
       .insert(schema.users)
       .values({
@@ -54,6 +57,7 @@ describe('AdminService last-admin protection (PostgreSQL integration)', () => {
         ...overrides,
       })
       .returning();
+    trackedUserIds.push(user.id);
     return user;
   };
 
@@ -66,6 +70,11 @@ describe('AdminService last-admin protection (PostgreSQL integration)', () => {
   };
 
   it('rejects exactly one of two concurrent bans of the final active admins', async () => {
+    // The invariant boundary fires only when the suite's two admins are the
+    // only active admins. This suite never mutates rows it did not create, so
+    // a dirty test server (leftover ACTIVE ADMINs from crashed runs) makes the
+    // boundary unverifiable — fail loudly instead of skipping coverage.
+    expect(baselineActiveAdmins).toBe(0);
     const adminA = await createUser({ role: 'ADMIN', status: 'ACTIVE' });
     const adminB = await createUser({ role: 'ADMIN', status: 'ACTIVE' });
 
@@ -84,6 +93,7 @@ describe('AdminService last-admin protection (PostgreSQL integration)', () => {
   });
 
   it('keeps at least one active admin under heavy concurrent demotions and bans', async () => {
+    expect(baselineActiveAdmins).toBe(0);
     const adminA = await createUser({ role: 'ADMIN', status: 'ACTIVE' });
     const adminB = await createUser({ role: 'ADMIN', status: 'ACTIVE' });
     await createUser({ role: 'MOD', status: 'ACTIVE' });

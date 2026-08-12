@@ -12,7 +12,7 @@ The socket path is configurable via `DOCKER_SOCKET` (default: `/var/run/docker.s
 
 > **Implemented (Phase 1 slice):** socket connection, ping, hardened container create/start/stop/remove, container inspect, host RAM/CPU via `docker.info`, host disk via `fs.statfs`, server lifecycle endpoints (`ServersService`) with atomic CAS state transitions, resource guardrails, startup reconciliation, managed-container recovery, and RCON-aware graceful stop with player warning.
 >
-> **Deferred:** container stats, log streaming, WebSocket metrics, external RCON service/pool, console command endpoints, encrypted `rconPassword` persistence.
+> **Deferred:** container stats, log streaming, external RCON service/pool, console command endpoints, encrypted `rconPassword` persistence.
 
 ```
 NestJS backend
@@ -62,8 +62,11 @@ removeContainer(containerId: string): Promise<void>
 inspectContainer(containerId: string): Promise<ContainerInspectState>
 getHostInfo(): Promise<{ totalRamMb: number | null; cpuCount: number | null }>
 getHostDiskInfo(): Promise<{ totalDiskMb: number | null; freeDiskMb: number | null }>
+getHostFreeMemoryMb(): number | null   // node:os.freemem() floor to MiB
 ping(): Promise<boolean>
 ```
+
+Host metrics (`totalRamMb`, `usedRamMb`, `freeDiskMb`, `cpuCount`) are delivered to ADMIN WebSocket clients as the `system.stats` event every 10 seconds. See [docs/realtime.md](./realtime.md).
 
 Deferred (future slices):
 
@@ -216,7 +219,7 @@ Every reconciliation write compares the full observed snapshot (`status`, `conta
 
 ### Deferred to later slices
 
-- WebSocket metrics, log streaming, and real-time container stats.
+- Per-container stats, log streaming, and real-time container events (host `system.stats` is delivered — see [docs/realtime.md](./realtime.md)).
 - External RCON service, connection pool, console command endpoints, and encrypted `rconPassword` persistence.
 - Per-server PBAC / `ServerAccess` filtering.
 - Backups, world/version management, and delayed volume cleanup.

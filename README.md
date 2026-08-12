@@ -8,7 +8,7 @@
 
 **Self-hosted Minecraft server management panel — one `docker compose up` away.**
 
-[minepanel.xyz](https://minepanel.xyz) · [SPEC.md](./SPEC.md) · [Deployment Guide](./docs/deployment.md)
+[minepanel.xyz](https://minepanel.xyz) · [SPEC.md](./SPEC.md) · [Deployment Guide](./docs/deployment.md) · [Real-Time API](./docs/realtime.md)
 
 </div>
 
@@ -157,13 +157,14 @@ bun db:studio    # open Drizzle Studio GUI
 
 Full docs at `/docs` (Swagger UI) when the server is running.
 
-| Group   | Endpoints                                                                                     |
-|---------|-----------------------------------------------------------------------------------------------|
-| Setup   | `GET /setup/status` · `POST /setup/init`                                                      |
-| Auth    | `POST /auth/register` · `POST /auth/login` · `POST /auth/refresh` · `POST /auth/logout` · `GET /auth/profile` · `GET /auth/sessions` · `PATCH /auth/profile` · `PATCH /auth/password` |
-| Admin   | `GET /admin/users` · `PATCH /admin/users/:id/status` · `PATCH /admin/users/:id/role` · `POST /admin/users/:id/reset-password` · `DELETE /admin/users/:id/2fa` |
-| Health  | `GET /health`                                                                                 |
-| Servers | `POST /servers` · `GET /servers` · `GET /servers/:id` · `POST /servers/:id/start` · `POST /servers/:id/stop` · `POST /servers/:id/restart` · `DELETE /servers/:id` |
+| Group      | Endpoints                                                                                     |
+|------------|-----------------------------------------------------------------------------------------------|
+| Setup      | `GET /setup/status` · `POST /setup/init`                                                      |
+| Auth       | `POST /auth/register` · `POST /auth/login` · `POST /auth/refresh` · `POST /auth/logout` · `GET /auth/profile` · `GET /auth/sessions` · `PATCH /auth/profile` · `PATCH /auth/password` |
+| Admin      | `GET /admin/users` · `PATCH /admin/users/:id/status` · `PATCH /admin/users/:id/role` · `POST /admin/users/:id/reset-password` · `DELETE /admin/users/:id/2fa` |
+| Health     | `GET /health`                                                                                 |
+| Servers    | `POST /servers` · `GET /servers` · `GET /servers/:id` · `POST /servers/:id/start` · `POST /servers/:id/stop` · `POST /servers/:id/restart` · `DELETE /servers/:id` |
+| WebSocket  | `system.stats` — host metrics for ADMIN sockets only ([docs/realtime.md](./docs/realtime.md)) |
 
 ---
 

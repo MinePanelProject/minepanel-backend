@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { DbModule } from 'src/db/db.module';
 import { UsersModule } from 'src/users/users.module';
+import { AccessTokenService } from './access-token.service';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { PreAuthGuard } from './guards/pre-auth.guard';
@@ -21,6 +22,7 @@ import { PreAuthGuard } from './guards/pre-auth.guard';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, PreAuthGuard],
+  providers: [AuthService, PreAuthGuard, AccessTokenService],
+  exports: [AccessTokenService],
 })
 export class AuthModule {}

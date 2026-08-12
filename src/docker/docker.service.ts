@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 import {
@@ -388,6 +389,26 @@ export class DockerService {
       };
     } catch (error) {
       this.handleDockerError(error, 'host');
+    }
+  }
+
+  getHostFreeMemoryMb(): number | null {
+    try {
+      const bytes = os.freemem();
+
+      if (
+        typeof bytes !== 'number' ||
+        !Number.isFinite(bytes) ||
+        !Number.isInteger(bytes) ||
+        bytes < 0 ||
+        bytes > Number.MAX_SAFE_INTEGER
+      ) {
+        return null;
+      }
+
+      return Math.floor(bytes / 1024 / 1024);
+    } catch {
+      return null;
     }
   }
 

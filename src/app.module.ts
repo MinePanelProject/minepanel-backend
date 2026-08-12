@@ -9,6 +9,7 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { DbModule } from './db/db.module';
 import { DockerModule } from './docker/docker.module';
+import { GatewayModule } from './gateway/gateway.module';
 import { ServersModule } from './servers/servers.module';
 import { SetupModule } from './setup/setup.module';
 import { UsersModule } from './users/users.module';
@@ -31,6 +32,7 @@ import { UsersModule } from './users/users.module';
     AdminModule,
     DockerModule,
     ServersModule,
+    GatewayModule,
   ],
   controllers: [AppController],
   providers: [

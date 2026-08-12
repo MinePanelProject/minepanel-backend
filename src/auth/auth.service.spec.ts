@@ -4,7 +4,6 @@ import type { ConfigService } from '@nestjs/config';
 import type { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { verifySync } from 'otplib';
-import type { DrizzleDB } from 'src/db/db.module';
 import type { User } from 'src/db/schema';
 import type { UsersService } from 'src/users/users.service';
 import { AuthService } from './auth.service';
@@ -19,6 +18,7 @@ jest.mock('bcrypt', () => {
   return {
     ...actual,
     compare: jest.fn((data: string, hash: string) => actual.compare(data, hash)),
+    hash: jest.fn((data: string, rounds?: number) => actual.hash(data, rounds)),
   };
 });
 
@@ -612,5 +612,36 @@ describe('AuthService', () => {
           { get: jest.fn().mockReturnValue('not-a-key') } as unknown as ConfigService,
         ),
     ).toThrow('Invalid ENCRYPTION_KEY');
+  });
+
+  it('rejects a wrong password without issuing or storing a session', async () => {
+    createService(makeUser({ totpEnabled: false }));
+
+    await expect(
+      service.loginUser({ identifier: 'player', password: 'definitely-wrong' }),
+    ).rejects.toMatchObject({
+      response: { message: 'Wrong credentials', statusCode: 401 },
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(jwtService.signAsync).not.toHaveBeenCalled();
+  });
+  it('rejects duplicate username or email before hashing or inserting', async () => {
+    createService(makeUser());
+    const hashSpy = bcrypt.hash as jest.Mock;
+    hashSpy.mockClear();
+    const createUser = jest.fn();
+    usersService = { ...usersService, createUser } as unknown as UsersService;
+
+    await expect(
+      service.registerUser({
+        email: 'user@example.com',
+        username: 'player',
+        password: 'Password123!',
+      }),
+    ).rejects.toMatchObject({
+      response: { message: 'User already exists', statusCode: 409 },
+    });
+    expect(hashSpy).not.toHaveBeenCalled();
+    expect(createUser).not.toHaveBeenCalled();
   });
 });

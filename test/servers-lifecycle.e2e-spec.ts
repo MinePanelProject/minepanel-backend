@@ -30,37 +30,7 @@ import {
 } from '../src/docker/docker.service';
 import { ServersModule } from '../src/servers/servers.module';
 
-const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
-
-const canonicalDatabaseTarget = (value: string): string => {
-  const parsed = new URL(value);
-  const host = parsed.hostname.toLowerCase();
-  // localhost / 127.0.0.1 / ::1 / 0.0.0.0 are the same target
-  const canonicalHost =
-    host === 'localhost' || host === '::1' || host === '0.0.0.0' ? '127.0.0.1' : host;
-  const port = parsed.port || '5432';
-  const database = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
-  return `${canonicalHost}:${port}/${database}`;
-};
-
-const assertSafeTestEnvironment = (): string => {
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error('refusing to run the lifecycle e2e suite in production');
-  }
-  if (!TEST_DATABASE_URL) {
-    throw new Error('TEST_DATABASE_URL is required for the lifecycle e2e suite');
-  }
-
-  const ambientDatabaseUrl = process.env.DATABASE_URL;
-  if (
-    ambientDatabaseUrl &&
-    canonicalDatabaseTarget(TEST_DATABASE_URL) === canonicalDatabaseTarget(ambientDatabaseUrl)
-  ) {
-    throw new Error('TEST_DATABASE_URL must target a different database than DATABASE_URL');
-  }
-
-  return TEST_DATABASE_URL;
-};
+import { assertSafeTestDatabase } from './test-database';
 
 type TestUser = schema.User;
 type TestServer = schema.Server;
@@ -293,7 +263,7 @@ describe('Servers lifecycle (PostgreSQL e2e)', () => {
   beforeAll(async () => {
     originalStopWarnSeconds = process.env.STOP_WARN_SECONDS;
     process.env.STOP_WARN_SECONDS = '0';
-    const connectionString = assertSafeTestEnvironment();
+    const connectionString = assertSafeTestDatabase();
     sql = postgres(connectionString, { max: 8 });
     await sql`SELECT 1`;
     db = drizzle(sql, { schema });
