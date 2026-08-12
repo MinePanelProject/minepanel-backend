@@ -18,11 +18,11 @@ WORKDIR /app
 
 COPY package.json bun.lock ./
 # --omit=peer drops drizzle-orm's optional peers that Bun would otherwise
-# install; the prisma/grpc/protobufjs remnants are unused by the app and are
-# pruned so the final image carries no Prisma code and no protobufjs (CVE).
-# The CI image-content check asserts these never return.
+# install; @grpc/grpc-js (needed by dockerode) and its protobufjs subtree stay.
+# protobufjs is pinned via overrides to the CVE-fixed 7.5.5. Only @prisma is
+# pruned — it is never imported by the app.
 RUN bun install --frozen-lockfile --production --omit=peer \
- && rm -rf node_modules/@grpc node_modules/@protobufjs node_modules/protobufjs node_modules/@prisma
+ && rm -rf node_modules/@prisma
 
 # ── Stage 3: final runtime image ──────────────────────────────────────────────
 FROM oven/bun:1.3.14-alpine AS final
