@@ -204,9 +204,9 @@ jobs:
             test ! -d /app/test &&
             test ! -d /app/prisma &&
             test ! -d /app/node_modules/@prisma &&
-            test ! -d /app/node_modules/protobufjs &&
-            test ! -d /app/node_modules/@grpc &&
             test ! -f /app/node_modules/.bin/drizzle-kit &&
+            test -d /app/node_modules/@grpc/grpc-js &&
+            test -d /app/node_modules/protobufjs &&
             test -d /app/drizzle &&
             echo "image contents ok"
           '
