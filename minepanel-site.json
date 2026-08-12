@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-08-08",
+  "updatedAt": "2026-08-12",
   "meta": {
     "title": "MinePanel - Self-Hosted Minecraft Server Manager",
     "tagline": "Self-hosted Minecraft server management, the right way.",
@@ -42,8 +42,8 @@
       "name": "Foundation — v1.0",
       "status": "wip",
       "description": "The core deployable release. Everything needed to spin up and manage Minecraft servers from a single docker-compose on your own machine.",
-      "progress": 67,
-      "progressLabel": "~67% complete",
+      "progress": 81,
+      "progressLabel": "~81% complete",
       "items": [
         { "text": "JWT auth via HttpOnly cookies", "done": true },
         { "text": "Register & login endpoints", "done": true },
@@ -63,11 +63,11 @@
         { "text": "Last admin protection", "done": true },
         { "text": "Account enumeration prevention", "done": true },
         { "text": "Docker service (socket, container CRUD)", "done": true },
-        { "text": "Server lifecycle (create, start, stop, restart, delete)", "done": false },
+        { "text": "Server lifecycle (create, start, stop, restart, delete)", "done": true },
         { "text": "Graceful shutdown with RCON warning", "done": false },
-        { "text": "Resource checks (RAM & disk guardrails)", "done": false },
-        { "text": "Startup reconciliation (DB vs Docker state sync)", "done": false },
-        { "text": "Concurrent operation protection (Postgres atomic CAS)", "done": false },
+        { "text": "Resource checks (RAM & disk guardrails)", "done": true },
+        { "text": "Startup reconciliation (DB vs Docker state sync)", "done": true },
+        { "text": "Concurrent operation protection (Postgres atomic CAS)", "done": true },
         { "text": "Host metrics via WebSocket (CPU, RAM, disk)", "done": false },
         { "text": "Unit + integration tests", "done": false },
         { "text": "CI/CD pipeline (GitHub Actions \u2192 GHCR)", "done": false },

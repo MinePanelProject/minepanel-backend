@@ -12,7 +12,14 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
-import { DifficultyEnum, GamemodeEnum, serverProviderEnum } from 'src/db/schema';
+import {
+  type Difficulty,
+  DifficultyEnum,
+  type Gamemode,
+  GamemodeEnum,
+  type ServerProvider,
+  serverProviderEnum,
+} from 'src/db/schema';
 
 export class CreateServerDto {
   @ApiProperty()
@@ -26,7 +33,7 @@ export class CreateServerDto {
   @ApiProperty()
   @IsIn(serverProviderEnum.enumValues)
   @IsNotEmpty()
-  provider: string;
+  provider: ServerProvider;
 
   @ApiProperty()
   @Transform(({ value }) => value?.trim())
@@ -41,61 +48,61 @@ export class CreateServerDto {
   @IsNotEmpty()
   port: number;
 
-  @ApiProperty()
+  @ApiProperty({ required: false })
   @IsInt()
   @Min(1)
   @Max(10000)
   @IsOptional()
-  maxPlayers: number;
+  maxPlayers?: number;
 
-  @ApiProperty()
+  @ApiProperty({ required: false })
   @IsOptional()
   @IsIn(DifficultyEnum.enumValues)
-  difficulty: string;
+  difficulty?: Difficulty;
 
-  @ApiProperty()
+  @ApiProperty({ required: false })
   @IsOptional()
   @IsIn(GamemodeEnum.enumValues)
-  gamemode: string;
+  gamemode?: Gamemode;
 
-  @ApiProperty()
+  @ApiProperty({ required: false })
   @IsOptional()
   @IsBoolean()
-  pvp: boolean;
+  pvp?: boolean;
 
-  @ApiProperty()
+  @ApiProperty({ required: false })
   @IsOptional()
   @IsInt()
   @Min(512)
-  memoryLimitMb: number;
+  memoryLimitMb?: number;
 
-  @ApiProperty()
+  @ApiProperty({ required: false })
   @Transform(({ value }) => value?.trim())
   @Transform(({ value }) => value?.replace(/[<>&"]/g, ''))
   @IsOptional()
   @MaxLength(59)
-  motd: string;
+  motd?: string;
 
-  @ApiProperty()
+  @ApiProperty({ required: false })
   @Transform(({ value }) => value?.trim())
   @IsOptional()
   @MaxLength(100)
-  levelSeed: string;
+  levelSeed?: string;
 
-  @ApiProperty()
+  @ApiProperty({ required: false })
   @IsOptional()
   @IsBoolean()
-  onlineMode: boolean;
+  onlineMode?: boolean;
 
-  @ApiProperty()
+  @ApiProperty({ required: false })
   @IsOptional()
   @IsInt()
   @Min(2)
   @Max(32)
-  viewDistance: number;
+  viewDistance?: number;
 
-  @ApiProperty()
+  @ApiProperty({ required: false })
   @IsOptional()
   @IsBoolean()
-  allowFlight: boolean;
+  allowFlight?: boolean;
 }

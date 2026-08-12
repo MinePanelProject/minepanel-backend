@@ -10,9 +10,9 @@ The NestJS backend manages Minecraft server containers via the Docker socket. Ea
 
 The socket path is configurable via `DOCKER_SOCKET` (default: `/var/run/docker.sock`). **Rootless Docker is the default** — no root privileges required. `DockerService` reads the path from `ConfigService` at startup, never hardcoded.
 
-> **Implemented (Phase 1 slice):** socket connection, ping, hardened container create/start/stop/remove, container inspect, host RAM/CPU via `docker.info`, host disk via `fs.statfs`.
+> **Implemented (Phase 1 slice):** socket connection, ping, hardened container create/start/stop/remove, container inspect, host RAM/CPU via `docker.info`, host disk via `fs.statfs`, server lifecycle endpoints (`ServersService`) with atomic CAS state transitions, resource guardrails, startup reconciliation, and managed-container recovery.
 >
-> **Deferred:** container stats, log streaming, exec/RCON console, server lifecycle endpoints (`ServersService`), WebSocket metrics.
+> **Deferred:** container stats, log streaming, exec/RCON console, WebSocket metrics.
 
 ```
 NestJS backend
@@ -86,67 +86,127 @@ If the Docker socket is unavailable at startup or becomes unreachable at runtime
 
 ---
 
-## Servers Module (planned future work)
+## Servers Module (Phase 1 delivered)
 
-`ServersService` will own all business logic. `ServersController` will be thin.
+`ServersService` owns the lifecycle state machine and resource guardrails. `ServersController` is a thin delegation layer.
 
 ### Endpoints
 
-| Method | Path                | Auth         | Description                        |
-|--------|---------------------|--------------|------------------------------------|
-| POST   | /servers            | ADMIN        | Create and register a new server   |
-| GET    | /servers            | JWT          | List servers (filtered by access)  |
-| GET    | /servers/:id        | JWT          | Get single server details          |
-| POST   | /servers/:id/start  | ADMIN \| MOD | Start server container             |
-| POST   | /servers/:id/stop   | ADMIN \| MOD | Stop server container              |
-| DELETE | /servers/:id        | ADMIN        | Delete server + remove container   |
+| Method | Path                 | Auth         | Description                        |
+|--------|----------------------|--------------|------------------------------------|
+| POST   | /servers             | ADMIN        | Create and start a new server      |
+| GET    | /servers             | JWT          | List visible servers               |
+| GET    | /servers/:id         | JWT          | Get single server details          |
+| POST   | /servers/:id/start   | ADMIN \| MOD | Start a stopped server             |
+| POST   | /servers/:id/stop    | ADMIN \| MOD | Stop a running server              |
+| POST   | /servers/:id/restart | ADMIN \| MOD | Restart a running server           |
+| DELETE | /servers/:id         | ADMIN        | Delete server + remove container   |
 
-> MOD access to start/stop requires `SERVER_LIFECYCLE` permission (Phase 1.5).
+> Phase 1: all authenticated users can read all visible servers. MODs can operate every server. Per-server PBAC (`SERVER_LIFECYCLE`) is deferred to Phase 1.5.
+
+### State machine
+
+All transitions are conditional `UPDATE ... WHERE id AND expected_status RETURNING` (atomic CAS). A zero-row update means the claim was lost and the call returns the relevant 409 conflict without touching Docker.
+
+```
+STOPPED  ──start──► STARTING ──► RUNNING
+RUNNING  ──stop──► STOPPING ──► STOPPED
+RUNNING  ──restart──► STOPPING ──► STARTING ──► RUNNING
+[CREATING / STARTING / STOPPING] ──Docker command with unknown outcome──► ERROR
+ERROR    ──startup reconciliation──► RUNNING or STOPPED
+```
+
+- `CREATING` rows are not externally visible and are reconciled on startup.
+- `ERROR` is a recoverable state: it records that a command may have changed reality and requires the next startup reconciliation to settle the truth by inspecting the container.
+
+### Resource guardrails
+
+Before any create/start/restart claim or Docker mutation:
+
+- `MIN_FREE_DISK_MB` (default 2048) vs `getHostDiskInfo().freeDiskMb`.
+- `MAX_MEMORY_RATIO` (default 0.90) vs `floor(getHostInfo().totalRamMb * ratio)`; the running aggregate of `memoryLimitMb` is recomputed under a Postgres advisory transaction lock (`pg_advisory_xact_lock(7332)`, distinct from the admin lock `7331`).
+- Malformed config or null host measurements fail closed with 503 `Host resource information unavailable`.
+- Genuine shortages return 422 `{ statusCode: 422, error: 'InsufficientResources', message, details: { resource, availableMb, requiredMb, totalMb } }`.
 
 ### Create server flow
 
 ```
-POST /servers  (ADMIN only)
-  1. validate DTO (name, provider, version, port, maxPlayers, etc.)
-  2. check port not already in use (unique in DB)
-  3. create Server record in DB (status: STOPPED)
-  4. call DockerService.createContainer(server) → get containerId
-  5. update Server record with containerId
-  6. return server data
+POST /servers (ADMIN only)
+  1. validate DTO and parse resource config
+  2. preflight disk + memory checks
+  3. under advisory lock: recompute allocation, insert CREATING row with ownerId from the auth context
+  4. DockerService.createContainer(server) → containerId
+  5. persist containerId conditionally (id + CREATING + containerId null)
+  6. DockerService.startContainer(containerId)
+  7. conditional CREATING → RUNNING
 ```
+
+Compensation: if create returns an ambiguous result, a deterministic managed-container lookup (`mc-{serverId}` + `minepanel.managed`/`minepanel.server-id` labels) is used. Confirmed absent → delete the provisional row; confirmed present → attach the containerId and leave the row in `ERROR` for reconciliation; unconfirmable (daemon unreachable) → retain the `CREATING` row.
 
 ### Start server flow
 
 ```
 POST /servers/:id/start
-  1. fetch Server from DB, check status is STOPPED or ERROR
-  2. update status to STARTING
-  3. call DockerService.startContainer(server.containerId)
-  4. update status to RUNNING
-  5. return updated server
+  1. fetch visible Server, 404 if absent/hidden
+  2. 409 if not STOPPED; 409 'Server container is not provisioned' if containerId is null
+  3. preflight disk + memory checks (excluding target server)
+  4. under advisory lock: recompute allocation, CAS STOPPED → STARTING
+  5. DockerService.startContainer(containerId)
+  6. CAS STARTING → RUNNING
+  7. ambiguous Docker failure → CAS STARTING → ERROR
 ```
 
 ### Stop server flow
 
 ```
 POST /servers/:id/stop
-  1. fetch Server from DB, check status is RUNNING or STARTING
-  2. update status to STOPPING
-  3. call DockerService.stopContainer(server.containerId)
-  4. update status to STOPPED
-  5. return updated server
+  1. fetch visible Server, 404 if absent/hidden, 409 if not RUNNING
+  2. CAS RUNNING → STOPPING
+  3. DockerService.stopContainer(containerId)
+  4. CAS STOPPING → STOPPED
+  5. ambiguous Docker failure → CAS STOPPING → ERROR
+```
+
+### Restart server flow
+
+```
+POST /servers/:id/restart
+  1. fetch visible Server, 404 if absent/hidden, 409 if not RUNNING
+  2. CAS RUNNING → STOPPING
+  3. stop helper (only calls Docker stop, never publishes STOPPED)
+  4. re-run disk + memory admission (excluding target server)
+  5. CAS STOPPING → STARTING
+  6. DockerService.startContainer(containerId)
+  7. CAS STARTING → RUNNING
+  8. stop-phase ambiguous failure → ERROR; post-stop admission/start failure → STOPPED
 ```
 
 ### Delete server flow
 
 ```
-DELETE /servers/:id  (ADMIN only)
-  1. fetch Server from DB
-  2. if status is RUNNING → stop first
-  3. call DockerService.removeContainer(server.containerId)
-  4. delete Server record from DB
-  5. optionally: remove volume data (configurable)
+DELETE /servers/:id (ADMIN only)
+  1. fetch visible Server, 404 if absent/hidden, 409 if not STOPPED
+  2. CAS STOPPED → STOPPING
+  3. if containerId is set, DockerService.removeContainer(containerId)
+  4. DELETE FROM servers WHERE id AND status = STOPPING
+  5. remove failure: inspect container — confirmed absent → delete row;
+     confirmed running → ERROR (reconciliation heals); unconfirmable → ERROR, keep row
 ```
+
+### Startup reconciliation
+
+On module init the backend queries every non-STOPPED row (`CREATING`, `STARTING`, `RUNNING`, `STOPPING`, `ERROR`), inspects all known containers in parallel, and falls back to the managed-container lookup for rows with a null/stale `containerId`. If any inspection reports daemon unavailability, a single degraded-startup warning is logged and **no** reconciliation writes are made in that pass.
+
+Every reconciliation write compares the full observed snapshot (`status`, `containerId`, `updatedAt` as read) and sets `updatedAt = now()` in the database, so a later lifecycle transition cannot be overwritten.
+
+> **Phase 1 single-process invariant:** exactly one backend process performs startup reconciliation before serving requests. This is what allows the enum-only forward migration (`ALTER TYPE ... ADD VALUE 'CREATING'`) to be safe during rollout.
+
+### Deferred to later slices
+
+- RCON-based graceful stop, console commands, and player warnings.
+- WebSocket metrics, log streaming, and real-time container stats.
+- Per-server PBAC / `ServerAccess` filtering.
+- Backups, world/version management, and delayed volume cleanup.
 
 ---
 
@@ -160,7 +220,7 @@ DELETE /servers/:id  (ADMIN only)
 | version     | String         | e.g. "1.21.1"                  |
 | port        | Int            | unique, host port              |
 | containerId | String?        | set after Docker create        |
-| status      | ServerStatus   | STOPPED \| STARTING \| RUNNING \| STOPPING \| ERROR |
+| status      | ServerStatus   | STOPPED \| CREATING \| STARTING \| RUNNING \| STOPPING \| ERROR |
 | maxPlayers  | Int            | default: 20                    |
 | difficulty  | String         | default: "normal"              |
 | gamemode    | String         | default: "survival"            |

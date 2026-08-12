@@ -1,0 +1,1 @@
+ALTER TYPE "public"."server_status" ADD VALUE 'CREATING' BEFORE 'STARTING';

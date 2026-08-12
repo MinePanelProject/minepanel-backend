@@ -32,6 +32,11 @@ export type HostInfo = { totalRamMb: number | null; cpuCount: number | null };
 
 export type DiskInfo = { totalDiskMb: number | null; freeDiskMb: number | null };
 
+export type ManagedContainerLookupResult =
+  | { id: string; running: boolean }
+  | { unavailable: true }
+  | null;
+
 const MINECRAFT_IMAGE = 'itzg/minecraft-server';
 const CONTAINER_PORT = '25565/tcp';
 const MIN_MEMORY_MB = 512;
@@ -146,6 +151,42 @@ export class DockerService {
     }
   }
 
+  async findManagedContainer(serverId: string): Promise<ManagedContainerLookupResult> {
+    try {
+      const containers = (await this.docker.listContainers({
+        all: true,
+        filters: { label: [`minepanel.server-id=${serverId}`, 'minepanel.managed=true'] },
+      })) as Array<{ Id?: unknown; State?: unknown }>;
+
+      if (containers.length === 0) {
+        return null;
+      }
+
+      const container = containers[0];
+      const id = typeof container.Id === 'string' ? container.Id : '';
+
+      if (!id) {
+        Logger.warn('Managed container lookup returned an entry without an id', 'DockerService');
+        return null;
+      }
+
+      return { id, running: container.State === 'running' };
+    } catch (error) {
+      if (
+        this.isDaemonUnreachable(error) ||
+        this.isStatusCode(error, 502) ||
+        this.isStatusCode(error, 503) ||
+        this.isStatusCode(error, 504)
+      ) {
+        return { unavailable: true };
+      }
+
+      // Any other lookup failure prevents confirming absence, so treat it as
+      // unavailable rather than risk deleting a tracked row or orphaning a container.
+      return { unavailable: true };
+    }
+  }
+
   async inspectContainer(containerId: string): Promise<ContainerInspectState> {
     try {
       const info = (await this.docker.getContainer(containerId).inspect()) as {
@@ -231,7 +272,7 @@ export class DockerService {
         !isValidStatfsField(stats.bavail) ||
         stats.bavail > stats.blocks
       ) {
-        Logger.warn(`Invalid statfs output for ${config.mcDataPath}`, 'DockerService');
+        Logger.warn('Invalid statfs output from Docker volume', 'DockerService');
 
         return { totalDiskMb: null, freeDiskMb: null };
       }
@@ -240,7 +281,7 @@ export class DockerService {
       const free = stats.bavail * stats.bsize;
 
       if (!Number.isFinite(total) || !Number.isFinite(free)) {
-        Logger.warn(`Invalid statfs output for ${config.mcDataPath}`, 'DockerService');
+        Logger.warn('Invalid statfs output from Docker volume', 'DockerService');
 
         return { totalDiskMb: null, freeDiskMb: null };
       }
@@ -249,9 +290,8 @@ export class DockerService {
         totalDiskMb: Math.floor(total / 1024 / 1024),
         freeDiskMb: Math.floor(free / 1024 / 1024),
       };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      Logger.warn(`Failed to read disk info for ${config.mcDataPath}: ${message}`, 'DockerService');
+    } catch {
+      Logger.warn('Failed to read host disk info', 'DockerService');
 
       return { totalDiskMb: null, freeDiskMb: null };
     }

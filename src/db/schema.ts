@@ -12,6 +12,7 @@ export const serverProviderEnum = pgEnum('server_provider', [
 ]);
 export const serverStatusEnum = pgEnum('server_status', [
   'STOPPED',
+  'CREATING',
   'STARTING',
   'RUNNING',
   'STOPPING',
@@ -113,6 +114,7 @@ export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type RefreshToken = typeof refreshTokens.$inferSelect;
 export type Server = typeof servers.$inferSelect;
+export type NewServer = typeof servers.$inferInsert;
 export type Role = (typeof roleEnum.enumValues)[number];
 export type ServerProvider = (typeof serverProviderEnum.enumValues)[number];
 export type ServerStatus = (typeof serverStatusEnum.enumValues)[number];
