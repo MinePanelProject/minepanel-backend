@@ -29,7 +29,7 @@ FROM oven/bun:1.3.14-alpine AS final
 
 WORKDIR /app
 
-RUN apk add --no-cache curl
+RUN apk upgrade --no-cache && apk add --no-cache curl
 
 COPY --from=production /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
