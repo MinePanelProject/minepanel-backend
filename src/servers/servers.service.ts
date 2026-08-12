@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { and, asc, count, eq, isNull, ne, type SQL, sql } from 'drizzle-orm';
+import { deferred } from 'src/common/deferred';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
 import { type NewServer, type Server, type ServerStatus, servers } from 'src/db/schema';
 import { DockerService } from 'src/docker/docker.service';
@@ -320,6 +321,8 @@ export class ServersService implements OnModuleInit {
       throw new InternalServerErrorException('Running server has no container id');
     }
 
+    const warnSeconds = this.parseStopWarnSeconds();
+
     const stopping = await this.transition(id, 'RUNNING', 'STOPPING', containerId, undefined);
 
     if (!stopping) {
@@ -327,7 +330,7 @@ export class ServersService implements OnModuleInit {
     }
 
     try {
-      await this.stopContainer(containerId);
+      await this.gracefulStopContainer(containerId, warnSeconds);
     } catch (error) {
       if (error instanceof ServiceUnavailableException) {
         await this.transition(id, 'STOPPING', 'ERROR', containerId, undefined);
@@ -365,6 +368,8 @@ export class ServersService implements OnModuleInit {
       throw new InternalServerErrorException('Running server has no container id');
     }
 
+    const warnSeconds = this.parseStopWarnSeconds();
+
     const stopping = await this.transition(id, 'RUNNING', 'STOPPING', containerId, undefined);
 
     if (!stopping) {
@@ -372,7 +377,7 @@ export class ServersService implements OnModuleInit {
     }
 
     try {
-      await this.stopContainer(containerId);
+      await this.gracefulStopContainer(containerId, warnSeconds);
     } catch (error) {
       if (error instanceof ServiceUnavailableException) {
         await this.transition(id, 'STOPPING', 'ERROR', containerId, undefined);
@@ -471,8 +476,51 @@ export class ServersService implements OnModuleInit {
     await this.db.delete(servers).where(and(eq(servers.id, id), eq(servers.status, 'STOPPING')));
   }
 
-  private async stopContainer(containerId: string): Promise<void> {
-    await this.dockerService.stopContainer(containerId);
+  private parseStopWarnSeconds(): number {
+    const raw = String(this.configService.get<string>('STOP_WARN_SECONDS', '30'));
+
+    if (!/^\d+$/.test(raw)) {
+      throw new ServiceUnavailableException('Graceful shutdown configuration unavailable');
+    }
+
+    const value = Number(raw);
+
+    if (!Number.isSafeInteger(value) || value > 300) {
+      throw new ServiceUnavailableException('Graceful shutdown configuration unavailable');
+    }
+
+    return value;
+  }
+
+  private async gracefulStopContainer(containerId: string, warnSeconds: number): Promise<void> {
+    let rconFailed = false;
+
+    try {
+      await this.dockerService.executeRconCommand(containerId, [
+        'say',
+        `§cServer closing in ${warnSeconds} seconds...`,
+      ]);
+
+      if (warnSeconds > 0) {
+        await this.sleep(warnSeconds * 1000);
+      }
+
+      await this.dockerService.executeRconCommand(containerId, ['save-all']);
+      await this.sleep(3000);
+    } catch {
+      // Any RCON-phase failure (unavailable CLI, transport, HTTP status, or
+      // timeout) leaves the container state uncertain — degrade to the direct
+      // Docker stop; only its result classifies the transition.
+      rconFailed = true;
+    }
+
+    await this.dockerService.stopContainer(containerId, rconFailed ? 10 : 15);
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    const { promise, resolve } = deferred<void>();
+    setTimeout(resolve, ms);
+    return promise;
   }
 
   private async resolveDeleteRemoveFailure(id: string, containerId: string): Promise<boolean> {

@@ -23,7 +23,11 @@ import type { App } from 'supertest/types';
 import { DRIZZLE, type DrizzleDB } from '../src/db/db.module';
 import * as schema from '../src/db/schema';
 import { DOCKERODE } from '../src/docker/docker.constants';
-import { type ContainerInspectState, DockerService } from '../src/docker/docker.service';
+import {
+  type ContainerInspectState,
+  DockerService,
+  RconUnavailableError,
+} from '../src/docker/docker.service';
 import { ServersModule } from '../src/servers/servers.module';
 
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
@@ -65,6 +69,7 @@ type TestDocker = Pick<
   | 'createContainer'
   | 'startContainer'
   | 'stopContainer'
+  | 'executeRconCommand'
   | 'removeContainer'
   | 'findManagedContainer'
   | 'inspectContainer'
@@ -117,9 +122,9 @@ describe('Servers lifecycle (PostgreSQL e2e)', () => {
   let db: PostgresJsDatabase<typeof schema>;
   let app: INestApplication<App>;
   let docker: TestDocker;
-  let trackedServerIds: Set<string>;
+  let dockerEvents: string[];
+  let originalStopWarnSeconds: string | undefined;
   let trackedUserIds: Set<string>;
-  let nextPort: number;
 
   const makeInspect = (id: string, running: boolean): ContainerInspectState => ({
     id,
@@ -134,24 +139,48 @@ describe('Servers lifecycle (PostgreSQL e2e)', () => {
     oomKilled: false,
   });
 
-  const makeDocker = (): TestDocker => ({
-    createContainer: jest.fn().mockResolvedValue('created-container'),
-    startContainer: jest.fn().mockResolvedValue(undefined),
-    stopContainer: jest.fn().mockResolvedValue(undefined),
-    removeContainer: jest.fn().mockResolvedValue(undefined),
-    findManagedContainer: jest.fn().mockResolvedValue(null),
-    inspectContainer: jest.fn().mockImplementation(async (id: string) => makeInspect(id, false)),
-    getHostInfo: jest.fn().mockResolvedValue({ totalRamMb: 8192, cpuCount: 8 }),
-    getHostDiskInfo: jest.fn().mockResolvedValue({ totalDiskMb: 100000, freeDiskMb: 10000 }),
-  });
+  const makeDocker = (): TestDocker => {
+    dockerEvents = [];
+    return {
+      createContainer: jest.fn().mockResolvedValue('created-container'),
+      startContainer: jest.fn().mockImplementation(async () => {
+        dockerEvents.push('start');
+      }),
+      stopContainer: jest.fn().mockImplementation(async (_id: string, timeout?: number) => {
+        dockerEvents.push(`stop:${timeout}`);
+        return 'stopped' as const;
+      }),
+      executeRconCommand: jest
+        .fn()
+        .mockImplementation(async (_id: string, command: readonly string[]) => {
+          dockerEvents.push(`rcon:${command[0]}`);
+        }),
+      removeContainer: jest.fn().mockResolvedValue(undefined),
+      findManagedContainer: jest.fn().mockResolvedValue(null),
+      inspectContainer: jest.fn().mockImplementation(async (id: string) => makeInspect(id, false)),
+      getHostInfo: jest.fn().mockResolvedValue({ totalRamMb: 8192, cpuCount: 8 }),
+      getHostDiskInfo: jest.fn().mockResolvedValue({ totalDiskMb: 100000, freeDiskMb: 10000 }),
+    };
+  };
 
   const resetDocker = (): void => {
+    dockerEvents = [];
     docker.getHostInfo = jest.fn().mockResolvedValue({ totalRamMb: 8192, cpuCount: 8 });
     docker.getHostDiskInfo = jest
       .fn()
       .mockResolvedValue({ totalDiskMb: 100000, freeDiskMb: 10000 });
-    docker.startContainer = jest.fn().mockResolvedValue(undefined);
-    docker.stopContainer = jest.fn().mockResolvedValue(undefined);
+    docker.startContainer = jest.fn().mockImplementation(async () => {
+      dockerEvents.push('start');
+    });
+    docker.stopContainer = jest.fn().mockImplementation(async (_id: string, timeout?: number) => {
+      dockerEvents.push(`stop:${timeout}`);
+      return 'stopped' as const;
+    });
+    docker.executeRconCommand = jest
+      .fn()
+      .mockImplementation(async (_id: string, command: readonly string[]) => {
+        dockerEvents.push(`rcon:${command[0]}`);
+      });
     docker.removeContainer = jest.fn().mockResolvedValue(undefined);
     docker.findManagedContainer = jest.fn().mockResolvedValue(null);
     docker.inspectContainer = jest
@@ -262,6 +291,8 @@ describe('Servers lifecycle (PostgreSQL e2e)', () => {
   };
 
   beforeAll(async () => {
+    originalStopWarnSeconds = process.env.STOP_WARN_SECONDS;
+    process.env.STOP_WARN_SECONDS = '0';
     const connectionString = assertSafeTestEnvironment();
     sql = postgres(connectionString, { max: 8 });
     await sql`SELECT 1`;
@@ -271,7 +302,6 @@ describe('Servers lifecycle (PostgreSQL e2e)', () => {
     nextPort = 25000;
     app = await bootApp();
   });
-
   beforeEach(() => {
     if (docker) resetDocker();
   });
@@ -292,6 +322,8 @@ describe('Servers lifecycle (PostgreSQL e2e)', () => {
   afterAll(async () => {
     await app?.close();
     await sql?.end();
+    if (originalStopWarnSeconds === undefined) delete process.env.STOP_WARN_SECONDS;
+    else process.env.STOP_WARN_SECONDS = originalStopWarnSeconds;
   });
 
   it('binds the app to the test Drizzle client and the pre-init Docker mock', () => {
@@ -541,5 +573,45 @@ describe('Servers lifecycle (PostgreSQL e2e)', () => {
     expect(await readServer(server.id)).toEqual(
       expect.objectContaining({ status: 'STOPPED', containerId: 'boot-container' }),
     );
+  });
+  it('gracefully stops through RCON and terminal Docker stop', async () => {
+    const user = await createUser();
+    const server = await createServer(user.id, { status: 'RUNNING' });
+
+    await request(app.getHttpServer())
+      .post(`/api/servers/${server.id}/stop`)
+      .set(auth(user))
+      .expect(200);
+
+    expect(await readServer(server.id)).toEqual(expect.objectContaining({ status: 'STOPPED' }));
+    expect(dockerEvents).toEqual(['rcon:say', 'rcon:save-all', 'stop:15']);
+  });
+
+  it('restarts through graceful Docker stop before starting the same container', async () => {
+    const user = await createUser();
+    const server = await createServer(user.id, { status: 'RUNNING' });
+
+    await request(app.getHttpServer())
+      .post(`/api/servers/${server.id}/restart`)
+      .set(auth(user))
+      .expect(200);
+
+    expect(await readServer(server.id)).toEqual(expect.objectContaining({ status: 'RUNNING' }));
+    expect(dockerEvents).toEqual(['rcon:say', 'rcon:save-all', 'stop:15', 'start']);
+  });
+
+  it('falls back to a ten-second Docker stop when RCON warning fails', async () => {
+    const user = await createUser();
+    const server = await createServer(user.id, { status: 'RUNNING' });
+    docker.executeRconCommand = jest.fn().mockRejectedValue(new RconUnavailableError());
+
+    await request(app.getHttpServer())
+      .post(`/api/servers/${server.id}/stop`)
+      .set(auth(user))
+      .expect(200);
+
+    expect(await readServer(server.id)).toEqual(expect.objectContaining({ status: 'STOPPED' }));
+    expect(dockerEvents).toEqual(['stop:10']);
+    expect(docker.stopContainer).toHaveBeenCalledWith(expect.any(String), 10);
   });
 });

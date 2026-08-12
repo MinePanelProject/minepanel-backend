@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { Readable } from 'node:stream';
 import {
   BadRequestException,
   ConflictException,
@@ -10,7 +11,12 @@ import { ConfigService } from '@nestjs/config';
 import { Test, type TestingModule } from '@nestjs/testing';
 import type { Server } from 'src/db/schema';
 import { DOCKERODE } from './docker.constants';
-import { type DiskInfo, DockerService, type HostInfo } from './docker.service';
+import {
+  type DiskInfo,
+  DockerService,
+  type HostInfo,
+  RconUnavailableError,
+} from './docker.service';
 
 const makeServer = (overrides?: Partial<Server>): Server => ({
   id: 'abc-123',
@@ -95,6 +101,7 @@ describe('DockerService', () => {
 
   afterEach(() => {
     statfsSpy?.mockRestore();
+    jest.useRealTimers();
   });
 
   it('returns true when the docker daemon responds to ping', async () => {
@@ -123,6 +130,7 @@ describe('DockerService', () => {
           ExposedPorts: { '25565/tcp': {} },
           Env: expect.arrayContaining([
             'EULA=TRUE',
+            'ENABLE_RCON=TRUE',
             'TYPE=PAPER',
             'VERSION=1.21.1',
             'MEMORY=2048M',
@@ -158,6 +166,7 @@ describe('DockerService', () => {
       expect(env).toEqual(
         expect.arrayContaining([
           'EULA=TRUE',
+          'ENABLE_RCON=TRUE',
           'TYPE=PAPER',
           'VERSION=1.21.1',
           'MEMORY=2048M',
@@ -170,7 +179,7 @@ describe('DockerService', () => {
           'PVP=TRUE',
         ]),
       );
-      expect(env).toHaveLength(11);
+      expect(env).toHaveLength(12);
     });
 
     it('supports env variants for booleans, motd, and seed', async () => {
@@ -203,6 +212,7 @@ describe('DockerService', () => {
       const keys = env.map((entry) => entry.split('=')[0]);
       const whitelist = new Set([
         'EULA',
+        'ENABLE_RCON',
         'TYPE',
         'VERSION',
         'MEMORY',
@@ -220,6 +230,9 @@ describe('DockerService', () => {
       expect(keys.every((key) => whitelist.has(key))).toBe(true);
       expect(keys).toEqual(expect.arrayContaining([...whitelist]));
       expect(new Set(keys).size).toBe(keys.length);
+      expect(env.filter((entry) => entry.startsWith('ENABLE_RCON=')).length).toBe(1);
+      expect(env).not.toContain(expect.stringMatching(/^RCON_PASSWORD=/));
+      expect(env).not.toContain(expect.stringMatching(/^RCON_PORT=/));
     });
 
     it.each([
@@ -372,8 +385,8 @@ describe('DockerService', () => {
       expect(config.HostConfig.CapAdd).toEqual([]);
       expect(config.HostConfig.Privileged).toBe(false);
       expect(Object.keys(config.ExposedPorts)).toEqual(['25565/tcp']);
+      expect(config.HostConfig.PortBindings).not.toHaveProperty('25575/tcp');
     });
-
     it('throws ServiceUnavailableException when the daemon is unreachable', async () => {
       fakeDocker.createContainer.mockRejectedValue(makeDaemonError('ECONNREFUSED'));
 
@@ -525,11 +538,18 @@ describe('DockerService', () => {
       expect(stop).toHaveBeenCalledWith({ t: 55 });
     });
 
-    it('treats 304 as idempotent', async () => {
+    it('returns stopped on a 204-style success', async () => {
+      const stop = jest.fn().mockResolvedValue(undefined);
+      fakeDocker.getContainer.mockReturnValue({ id: 'c1', stop });
+
+      await expect(service.stopContainer('c1')).resolves.toBe('stopped');
+    });
+
+    it('returns already-stopped when Docker reports 304', async () => {
       const stop = jest.fn().mockRejectedValue(makeStatusError(304));
       fakeDocker.getContainer.mockReturnValue({ id: 'c1', stop });
 
-      await expect(service.stopContainer('c1')).resolves.toBeUndefined();
+      await expect(service.stopContainer('c1')).resolves.toBe('already-stopped');
     });
 
     it('throws ServiceUnavailableException when the daemon is unreachable', async () => {
@@ -746,6 +766,142 @@ describe('DockerService', () => {
         totalDiskMb: null,
         freeDiskMb: null,
       } as DiskInfo);
+    });
+  });
+  describe('executeRconCommand', () => {
+    const makeExec = (inspectResult: unknown = { Running: false, ExitCode: 0 }) => {
+      const stream = Readable.from(['discarded output']);
+      const start = jest.fn().mockResolvedValue(stream);
+      const inspect = jest.fn().mockResolvedValue(inspectResult);
+      const exec = jest.fn().mockResolvedValue({ start, inspect });
+      fakeDocker.getContainer.mockReturnValue({ id: 'c1', exec });
+      return { exec, start, inspect, stream };
+    };
+
+    it('executes fixed argv with non-interactive attached output and drains it', async () => {
+      const { exec, start, inspect } = makeExec();
+
+      await expect(service.executeRconCommand('c1', ['say', 'hello'])).resolves.toBeUndefined();
+
+      expect(fakeDocker.getContainer).toHaveBeenCalledWith('c1');
+      expect(exec).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Cmd: ['rcon-cli', 'say', 'hello'],
+          AttachStdin: false,
+          AttachStdout: true,
+          AttachStderr: true,
+          Tty: false,
+        }),
+      );
+      expect(start).toHaveBeenCalledWith(expect.objectContaining({ Detach: false, Tty: false }));
+      expect(inspect).toHaveBeenCalled();
+    });
+    it('rejects invalid argv before any Docker call', async () => {
+      const commands: readonly (readonly string[])[] = [
+        [],
+        [''],
+        ['say', 'hello', 'extra'],
+        ['say', 'line\nbreak'],
+        ['say', 'line\rbreak'],
+        ['say', 'nul\0byte'],
+        ['say', 'x'.repeat(256)],
+      ];
+
+      for (const command of commands) {
+        await expect(service.executeRconCommand('c1', command)).rejects.toBeInstanceOf(
+          RconUnavailableError,
+        );
+      }
+      expect(fakeDocker.getContainer).not.toHaveBeenCalled();
+    });
+
+    it('rejects a command whose combined UTF-8 size exceeds 256 bytes', async () => {
+      const command = ['say', 'é'.repeat(128)];
+
+      await expect(service.executeRconCommand('c1', command)).rejects.toBeInstanceOf(
+        RconUnavailableError,
+      );
+      expect(fakeDocker.getContainer).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { Running: true, ExitCode: 0 },
+      { Running: false, ExitCode: 1 },
+      { Running: 'false', ExitCode: 0 },
+      { Running: false },
+      { ExitCode: 0 },
+    ])('rejects malformed or unsuccessful inspect result %j', async (inspectResult) => {
+      makeExec(inspectResult);
+
+      await expect(service.executeRconCommand('c1', ['save-all'])).rejects.toBeInstanceOf(
+        RconUnavailableError,
+      );
+    });
+
+    it('maps stream errors to RconUnavailableError and does not buffer output', async () => {
+      const stream = new Readable({ read() {} });
+      const start = jest.fn().mockResolvedValue(stream);
+      const inspect = jest.fn();
+      const exec = jest.fn().mockResolvedValue({ start, inspect });
+      fakeDocker.getContainer.mockReturnValue({ exec });
+      const promise = service.executeRconCommand('c1', ['save-all']);
+      await Promise.resolve();
+      await Promise.resolve();
+      stream.emit('error', new Error('stream failed'));
+
+      await expect(promise).rejects.toBeInstanceOf(RconUnavailableError);
+      expect(inspect).not.toHaveBeenCalled();
+    });
+
+    it('aborts and cleans up a stalled command at the single 10 second deadline', async () => {
+      jest.useFakeTimers();
+      const stream = new Readable({ read() {} });
+      const start = jest.fn().mockResolvedValue(stream);
+      const inspect = jest.fn();
+      const exec = jest.fn().mockResolvedValue({ start, inspect });
+      fakeDocker.getContainer.mockReturnValue({ exec });
+      const promise = service.executeRconCommand('c1', ['save-all']);
+      await Promise.resolve();
+      await Promise.resolve();
+      jest.advanceTimersByTime(10_000);
+      await expect(promise).rejects.toBeInstanceOf(RconUnavailableError);
+      expect(stream.destroyed).toBe(true);
+      expect(inspect).not.toHaveBeenCalled();
+    });
+
+    it('preserves typed daemon transport failures', async () => {
+      fakeDocker.getContainer.mockImplementationOnce(() => {
+        throw makeDaemonError('ECONNREFUSED');
+      });
+
+      await expect(service.executeRconCommand('c1', ['save-all'])).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+    });
+
+    it.each([
+      [404, NotFoundException],
+      [409, ConflictException],
+      [503, ServiceUnavailableException],
+    ] as const)('preserves typed HTTP %s transport failures', async (statusCode, ErrorType) => {
+      fakeDocker.getContainer.mockReturnValue({
+        exec: jest.fn().mockRejectedValue(makeStatusError(statusCode)),
+      });
+
+      await expect(service.executeRconCommand('c1', ['save-all'])).rejects.toBeInstanceOf(
+        ErrorType,
+      );
+    });
+
+    it('does not log command argv or command output', async () => {
+      const { stream } = makeExec();
+      const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+      await service.executeRconCommand('c1', ['say', 'secret']);
+
+      expect(log).not.toHaveBeenCalled();
+      expect(stream.destroyed).toBe(true);
+      log.mockRestore();
     });
   });
 });

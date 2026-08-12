@@ -1,8 +1,10 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import type { Readable } from 'node:stream';
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Inject,
   Injectable,
   InternalServerErrorException,
@@ -12,8 +14,16 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type Dockerode from 'dockerode';
+import { deferred } from 'src/common/deferred';
 import type { Server } from 'src/db/schema';
-import { DOCKERODE, MAX_STOP_TIMEOUT_SECONDS, STOP_TIMEOUT_SECONDS } from './docker.constants';
+import {
+  DOCKERODE,
+  MAX_STOP_TIMEOUT_SECONDS,
+  RCON_EXEC_TIMEOUT_MS,
+  RCON_MAX_ARG_COUNT,
+  RCON_MAX_TOTAL_BYTES,
+  STOP_TIMEOUT_SECONDS,
+} from './docker.constants';
 
 export type ContainerInspectState = {
   id: string;
@@ -57,6 +67,13 @@ const DAEMON_UNREACHABLE_CODES = new Set([
 ]);
 
 const CONTAINER_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
+
+export class RconUnavailableError extends Error {
+  constructor(message = 'RCON unavailable') {
+    super(message);
+    this.name = 'RconUnavailableError';
+  }
+}
 
 @Injectable()
 export class DockerService {
@@ -123,7 +140,7 @@ export class DockerService {
   async stopContainer(
     containerId: string,
     stopTimeoutSeconds = STOP_TIMEOUT_SECONDS,
-  ): Promise<void> {
+  ): Promise<'stopped' | 'already-stopped'> {
     if (
       typeof stopTimeoutSeconds !== 'number' ||
       !Number.isFinite(stopTimeoutSeconds) ||
@@ -136,10 +153,128 @@ export class DockerService {
 
     try {
       await this.docker.getContainer(containerId).stop({ t: stopTimeoutSeconds });
+
+      return 'stopped';
     } catch (error) {
-      if (this.isStatusCode(error, 304)) return; // already stopped, treat as idempotent success
+      if (this.isStatusCode(error, 304)) return 'already-stopped';
       this.handleDockerError(error, 'container');
     }
+  }
+
+  async executeRconCommand(containerId: string, command: readonly string[]): Promise<void> {
+    this.validateRconCommand(command);
+
+    const abortController = new AbortController();
+    const deadline = setTimeout(() => abortController.abort(), RCON_EXEC_TIMEOUT_MS);
+
+    try {
+      const exec = await this.docker.getContainer(containerId).exec({
+        AttachStdin: false,
+        AttachStdout: true,
+        AttachStderr: true,
+        Tty: false,
+        Cmd: ['rcon-cli', ...command],
+        abortSignal: abortController.signal,
+      });
+
+      const stream = (await exec.start({
+        Detach: false,
+        Tty: false,
+        abortSignal: abortController.signal,
+      })) as Readable;
+
+      try {
+        await this.drainExecStream(stream, abortController);
+      } finally {
+        try {
+          stream.destroy();
+        } catch {
+          // best-effort cleanup; the stream may already be closed
+        }
+      }
+
+      const result = (await exec.inspect({ abortSignal: abortController.signal })) as {
+        Running?: unknown;
+        ExitCode?: unknown;
+      };
+
+      if (result.Running !== false || result.ExitCode !== 0) {
+        throw new RconUnavailableError();
+      }
+    } catch (error) {
+      if (this.isDockerError(error)) {
+        this.handleDockerError(error, 'container');
+      }
+
+      // local timeout / stream / CLI / exit / malformed-result failures
+      throw new RconUnavailableError();
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
+
+  private validateRconCommand(command: readonly string[]): void {
+    if (!Array.isArray(command) || command.length === 0) {
+      throw new RconUnavailableError('RCON command rejected');
+    }
+
+    if (command.length > RCON_MAX_ARG_COUNT) {
+      throw new RconUnavailableError('RCON command rejected');
+    }
+
+    let totalBytes = 0;
+
+    for (const arg of command) {
+      if (typeof arg !== 'string' || arg.length === 0) {
+        throw new RconUnavailableError('RCON command rejected');
+      }
+
+      if (/[\0\r\n]/.test(arg)) {
+        throw new RconUnavailableError('RCON command rejected');
+      }
+
+      totalBytes += Buffer.byteLength(arg, 'utf8');
+
+      if (totalBytes > RCON_MAX_TOTAL_BYTES) {
+        throw new RconUnavailableError('RCON command rejected');
+      }
+    }
+  }
+
+  private async drainExecStream(stream: Readable, abortController: AbortController): Promise<void> {
+    const { promise, resolve, reject } = deferred<void>();
+
+    const onAbort = () => {
+      try {
+        stream.destroy();
+      } catch {
+        // ignore secondary cleanup errors
+      }
+      reject(new Error('RCON exec timeout'));
+    };
+
+    if (abortController.signal.aborted) {
+      onAbort();
+      return promise;
+    }
+
+    abortController.signal.addEventListener('abort', onAbort, { once: true });
+
+    stream.on('data', () => {
+      // discard output; never buffer or log
+    });
+
+    stream.on('end', () => {
+      abortController.signal.removeEventListener('abort', onAbort);
+      resolve();
+    });
+
+    stream.on('error', (error: Error) => {
+      abortController.signal.removeEventListener('abort', onAbort);
+      reject(error);
+    });
+
+    return promise;
   }
 
   async removeContainer(containerId: string): Promise<void> {
@@ -384,6 +519,7 @@ export class DockerService {
   private buildEnv(server: Server): string[] {
     const env = [
       'EULA=TRUE',
+      'ENABLE_RCON=TRUE',
       `TYPE=${server.provider}`,
       `VERSION=${server.version}`,
       `MEMORY=${server.memoryLimitMb}M`,
@@ -413,6 +549,15 @@ export class DockerService {
     if (typeof error !== 'object' || error === null) return false;
     const err = error as { code?: unknown; statusCode?: unknown };
     if (err.statusCode !== undefined) return false; // daemon answered with HTTP status
+
+    return typeof err.code === 'string' && DAEMON_UNREACHABLE_CODES.has(err.code);
+  }
+
+  private isDockerError(error: unknown): boolean {
+    if (error instanceof HttpException) return true;
+    if (typeof error !== 'object' || error === null) return false;
+    const err = error as { code?: unknown; statusCode?: unknown };
+    if (typeof err.statusCode === 'number') return true;
 
     return typeof err.code === 'string' && DAEMON_UNREACHABLE_CODES.has(err.code);
   }

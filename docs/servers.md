@@ -10,9 +10,9 @@ The NestJS backend manages Minecraft server containers via the Docker socket. Ea
 
 The socket path is configurable via `DOCKER_SOCKET` (default: `/var/run/docker.sock`). **Rootless Docker is the default** — no root privileges required. `DockerService` reads the path from `ConfigService` at startup, never hardcoded.
 
-> **Implemented (Phase 1 slice):** socket connection, ping, hardened container create/start/stop/remove, container inspect, host RAM/CPU via `docker.info`, host disk via `fs.statfs`, server lifecycle endpoints (`ServersService`) with atomic CAS state transitions, resource guardrails, startup reconciliation, and managed-container recovery.
+> **Implemented (Phase 1 slice):** socket connection, ping, hardened container create/start/stop/remove, container inspect, host RAM/CPU via `docker.info`, host disk via `fs.statfs`, server lifecycle endpoints (`ServersService`) with atomic CAS state transitions, resource guardrails, startup reconciliation, managed-container recovery, and RCON-aware graceful stop with player warning.
 >
-> **Deferred:** container stats, log streaming, exec/RCON console, WebSocket metrics.
+> **Deferred:** container stats, log streaming, WebSocket metrics, external RCON service/pool, console command endpoints, encrypted `rconPassword` persistence.
 
 ```
 NestJS backend
@@ -43,7 +43,7 @@ NestJS backend
 | Labels           | `minepanel.server-id={serverId}`, `minepanel.managed=true`     |
 | Privileged       | `false` (hardcoded)                                            |
 | Capabilities     | none (`CapAdd: []`, hardcoded)                                 |
-| Env vars         | `EULA=TRUE`, `TYPE`, `VERSION`, `MEMORY`, `MAX_PLAYERS`, `DIFFICULTY`, `MODE`, `ONLINE_MODE`, `VIEW_DISTANCE`, `ALLOW_FLIGHT`, `PVP`, `MOTD`, `SEED` |
+| Env vars         | `EULA=TRUE`, `ENABLE_RCON=TRUE`, `TYPE`, `VERSION`, `MEMORY`, `MAX_PLAYERS`, `DIFFICULTY`, `MODE`, `ONLINE_MODE`, `VIEW_DISTANCE`, `ALLOW_FLIGHT`, `PVP`, `MOTD`, `SEED` |
 
 > **`MC_DATA_PATH` is one absolute path, identical on the Docker host and inside the backend container.** Compose mounts `${MC_DATA_PATH_HOST}` at the same absolute path and passes it as `MC_DATA_PATH`; the daemon bind source and backend `statfs` therefore name the same physical root. Relative values and values with surrounding whitespace are rejected (Compose interpolates `MC_DATA_PATH_HOST` verbatim, so the two must normalize identically); the obsolete `mc-data` named volume was removed from compose.
 >
@@ -56,7 +56,8 @@ Implemented:
 ```ts
 createContainer(server: Server): Promise<string>   // returns containerId
 startContainer(containerId: string): Promise<void>
-stopContainer(containerId: string, stopTimeoutSeconds = 30): Promise<void>
+stopContainer(containerId: string, stopTimeoutSeconds = 30): Promise<'stopped' | 'already-stopped'>
+executeRconCommand(containerId: string, command: readonly string[]): Promise<void>
 removeContainer(containerId: string): Promise<void>
 inspectContainer(containerId: string): Promise<ContainerInspectState>
 getHostInfo(): Promise<{ totalRamMb: number | null; cpuCount: number | null }>
@@ -161,25 +162,37 @@ POST /servers/:id/start
 ```
 POST /servers/:id/stop
   1. fetch visible Server, 404 if absent/hidden, 409 if not RUNNING
-  2. CAS RUNNING → STOPPING
-  3. DockerService.stopContainer(containerId)
-  4. CAS STOPPING → STOPPED
-  5. ambiguous Docker failure → CAS STOPPING → ERROR
+  2. parse STOP_WARN_SECONDS (default 30, range 0-300); malformed → 503, no mutation
+  3. CAS RUNNING → STOPPING
+  4. graceful stop helper:
+       a. RCON exec rcon-cli say '§cServer closing in {warnSeconds} seconds...'
+       b. if warning succeeded and warnSeconds > 0: wait warnSeconds
+       c. RCON exec rcon-cli save-all
+       d. wait 3s (bounded grace period, not a guaranteed durability flush)
+       e. DockerService.stopContainer(containerId, 15)   // SIGTERM
+     any RCON step fails → skip remaining RCON delays/commands → DockerService.stopContainer(containerId, 10)
+  5. CAS STOPPING → STOPPED
+  6. ambiguous Docker failure → CAS STOPPING → ERROR; known Docker rejection → restore RUNNING
 ```
+
+The explicit `DockerService.stopContainer` is mandatory even though the itzg image's `mc-server-runner` PID1 traps `SIGTERM` and sends `stop` over RCON: Docker marks `HasBeenManuallyStopped` **before** delivering the signal, so the `unless-stopped` restart policy cannot relaunch the container behind a `STOPPED` DB row. `stopContainer` distinguishes `204` (`stopped`) from `304` (`already-stopped`); both finalize to `STOPPED` because the container is exited. RCON is provided by the bundled `rcon-cli` inside the container over a non-interactive `docker exec`; the image manages its own random RCON password in `/data/.rcon-cli.*` and no password is stored in the backend.
 
 ### Restart server flow
 
 ```
 POST /servers/:id/restart
   1. fetch visible Server, 404 if absent/hidden, 409 if not RUNNING
-  2. CAS RUNNING → STOPPING
-  3. stop helper (only calls Docker stop, never publishes STOPPED)
-  4. re-run disk + memory admission (excluding target server)
-  5. CAS STOPPING → STARTING
-  6. DockerService.startContainer(containerId)
-  7. CAS STARTING → RUNNING
-  8. stop-phase ambiguous failure → ERROR; post-stop admission/start failure → STOPPED
+  2. parse STOP_WARN_SECONDS (default 30, range 0-300); malformed → 503, no mutation
+  3. CAS RUNNING → STOPPING
+  4. graceful stop helper (same sequence as stop)
+  5. re-run disk + memory admission (excluding target server)
+  6. CAS STOPPING → STARTING
+  7. DockerService.startContainer(containerId)
+  8. CAS STARTING → RUNNING
+  9. stop-phase ambiguous failure → ERROR; post-stop admission/start failure → STOPPED
 ```
+
+Restart never uses the Docker restart primitive; it always stops the container first and only admits the start phase after `stopContainer` confirms the container is stopped.
 
 ### Delete server flow
 
@@ -203,8 +216,8 @@ Every reconciliation write compares the full observed snapshot (`status`, `conta
 
 ### Deferred to later slices
 
-- RCON-based graceful stop, console commands, and player warnings.
 - WebSocket metrics, log streaming, and real-time container stats.
+- External RCON service, connection pool, console command endpoints, and encrypted `rconPassword` persistence.
 - Per-server PBAC / `ServerAccess` filtering.
 - Backups, world/version management, and delayed volume cleanup.
 
@@ -254,5 +267,6 @@ For Phase 1 (before ServerAccess table exists): all authenticated users see all 
 | DOCKER_NETWORK | Docker network for MC containers     | minepanel_network            |
 | MC_DATA_PATH_HOST | Host data root (compose only) | $HOME/.minepanel/mc-data |
 | MC_DATA_PATH   | Base path for MC server data volumes (absolute; must be identical on host and inside backend container) | /mc-data |
-| MC_PORT_MIN    | Minimum allowed MC server port       | 25565                        |
-| MC_PORT_MAX    | Maximum allowed MC server port       | 25665                        |
+| `MC_PORT_MIN`    | Minimum allowed MC server port       | 25565                        |
+| `MC_PORT_MAX`    | Maximum allowed MC server port       | 25665                        |
+| `STOP_WARN_SECONDS` | Graceful shutdown warning seconds (0-300) | 30                     |

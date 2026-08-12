@@ -14,8 +14,8 @@ import {
   type DiskInfo,
   DockerService,
   type HostInfo,
+  RconUnavailableError,
 } from 'src/docker/docker.service';
-import { CreateServerDto } from './dto/create-server.dto';
 import { ListServersQueryDto } from './dto/list-servers-query.dto';
 import { ServersService } from './servers.service';
 
@@ -103,6 +103,7 @@ describe('ServersService', () => {
     | 'createContainer'
     | 'startContainer'
     | 'stopContainer'
+    | 'executeRconCommand'
     | 'removeContainer'
     | 'findManagedContainer'
     | 'inspectContainer'
@@ -194,7 +195,9 @@ describe('ServersService', () => {
       }),
       stopContainer: jest.fn(async () => {
         calls.push('stopContainer');
+        return 'stopped' as const;
       }),
+      executeRconCommand: jest.fn().mockRejectedValue(new RconUnavailableError()),
       removeContainer: jest.fn(async () => {
         calls.push('removeContainer');
       }),
@@ -610,7 +613,7 @@ describe('ServersService', () => {
       const result = await service.stopServer('server-1');
 
       expect(result.status).toBe('STOPPED');
-      expect(docker.stopContainer).toHaveBeenCalledWith('container-1');
+      expect(docker.stopContainer).toHaveBeenCalledWith('container-1', 10);
       expect(updatedValues.map((value) => value.status)).toEqual(['STOPPING', 'STOPPED']);
     });
 
@@ -659,7 +662,7 @@ describe('ServersService', () => {
       const result = await service.restartServer('server-1');
 
       expect(result.status).toBe('RUNNING');
-      expect(docker.stopContainer).toHaveBeenCalledWith('container-1');
+      expect(docker.stopContainer).toHaveBeenCalledWith('container-1', 10);
       expect(docker.startContainer).toHaveBeenCalledWith('container-1');
       expect(updatedValues.map((value) => value.status)).toEqual([
         'STOPPING',
@@ -731,6 +734,324 @@ describe('ServersService', () => {
         'STARTING',
         'STOPPED',
       ]);
+    });
+  });
+  describe('graceful RCON shutdown', () => {
+    const flush = async () => {
+      for (let index = 0; index < 20; index += 1) {
+        await Promise.resolve();
+      }
+    };
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('runs warning, save, terminal Docker stop, and final CAS in order', async () => {
+      jest.useFakeTimers();
+      configValues.STOP_WARN_SECONDS = '5';
+      const events: string[] = [];
+      const transactionEventIndexes: number[] = [];
+      db.transaction.mockImplementation(async (callback: (tx: typeof db) => Promise<unknown>) => {
+        transactionEventIndexes.push(events.length);
+        return callback(db);
+      });
+      docker.executeRconCommand = jest.fn(async (_id, command) => {
+        events.push(`rcon:${command.join(' ')}`);
+      });
+      docker.stopContainer = jest.fn(async (_id, timeout) => {
+        events.push(`stop:${timeout}`);
+        return 'stopped' as const;
+      });
+      selectResults.push([makeServer({ status: 'RUNNING' })]);
+      updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'STOPPED' })]);
+
+      const _promise = service.stopServer('server-1');
+      await flush();
+      expect(events).toEqual(['rcon:say §cServer closing in 5 seconds...']);
+      jest.advanceTimersByTime(5_000);
+      await flush();
+      expect(events).toEqual(['rcon:say §cServer closing in 5 seconds...', 'rcon:save-all']);
+      jest.advanceTimersByTime(3_000);
+      await flush();
+      expect(transactionEventIndexes).toEqual([0, 3]);
+      expect(events).toEqual([
+        'rcon:say §cServer closing in 5 seconds...',
+        'rcon:save-all',
+        'stop:15',
+      ]);
+      expect(updatedValues.map((value) => value.status)).toEqual(['STOPPING', 'STOPPED']);
+      expect(db.transaction).toHaveBeenCalledTimes(2);
+    });
+
+    it('skips a zero-duration warning timer while preserving command order', async () => {
+      jest.useFakeTimers();
+      configValues.STOP_WARN_SECONDS = '0';
+      const events: string[] = [];
+      docker.executeRconCommand = jest.fn(async (_id, command) => {
+        events.push(`rcon:${command[0]}`);
+      });
+      docker.stopContainer = jest.fn(async () => {
+        events.push('stop');
+        return 'stopped' as const;
+      });
+      selectResults.push([makeServer({ status: 'RUNNING' })]);
+      updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'STOPPED' })]);
+
+      const promise = service.stopServer('server-1');
+      await flush();
+      expect(events).toEqual(['rcon:say', 'rcon:save-all']);
+      expect(jest.getTimerCount()).toBe(1);
+      jest.advanceTimersByTime(3_000);
+      await expect(promise).resolves.toEqual(expect.objectContaining({ status: 'STOPPED' }));
+      expect(events).toEqual(['rcon:say', 'rcon:save-all', 'stop']);
+    });
+
+    it('falls back immediately with timeout 10 when warning RCON fails', async () => {
+      configValues.STOP_WARN_SECONDS = '30';
+      docker.executeRconCommand = jest.fn().mockRejectedValue(new RconUnavailableError());
+      docker.stopContainer = jest.fn().mockResolvedValue('stopped');
+      selectResults.push([makeServer({ status: 'RUNNING' })]);
+      updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'STOPPED' })]);
+
+      await expect(service.stopServer('server-1')).resolves.toEqual(
+        expect.objectContaining({ status: 'STOPPED' }),
+      );
+      expect(docker.executeRconCommand).toHaveBeenCalledTimes(1);
+      expect(docker.stopContainer).toHaveBeenCalledWith('container-1', 10);
+    });
+    it.each([
+      {
+        name: 'RCON 404 then final Docker 404',
+        rconError: new NotFoundException('RCON container unavailable'),
+        finalDockerError: new NotFoundException('container gone during fallback'),
+        expectedStatus: 'STOPPED' as const,
+      },
+      {
+        name: 'RCON 409 then idempotent Docker stop',
+        rconError: new ConflictException('RCON command rejected'),
+        finalDockerError: undefined,
+        expectedStatus: 'STOPPED' as const,
+      },
+      {
+        name: 'RCON 503 then final Docker 503',
+        rconError: new ServiceUnavailableException('RCON daemon unavailable'),
+        finalDockerError: new ServiceUnavailableException('Docker daemon unavailable'),
+        expectedStatus: 'ERROR' as const,
+      },
+    ])('$name uses the fallback stop result for compensation', async ({
+      rconError,
+      finalDockerError,
+      expectedStatus,
+    }) => {
+      configValues.STOP_WARN_SECONDS = '0';
+      docker.executeRconCommand = jest.fn().mockRejectedValue(rconError);
+      docker.stopContainer = jest
+        .fn()
+        .mockImplementation(async (_containerId: string, timeout: number) => {
+          expect(timeout).toBe(10);
+          if (finalDockerError) throw finalDockerError;
+          return 'already-stopped' as const;
+        });
+      selectResults.push([makeServer({ status: 'RUNNING' })]);
+      updateResults.push(
+        [makeServer({ status: 'STOPPING' })],
+        [makeServer({ status: expectedStatus })],
+      );
+
+      const result = service.stopServer('server-1');
+      if (finalDockerError) {
+        await expect(result).rejects.toBe(finalDockerError);
+      } else {
+        await expect(result).resolves.toEqual(expect.objectContaining({ status: expectedStatus }));
+      }
+
+      expect(docker.executeRconCommand).toHaveBeenCalledTimes(1);
+      expect(docker.stopContainer).toHaveBeenCalledWith('container-1', 10);
+      expect(updatedValues.map((value) => value.status)).toEqual(['STOPPING', expectedStatus]);
+      expect(updatedValues.map((value) => value.status)).not.toContain('RUNNING');
+    });
+
+    it('skips save-all and the three-second delay when save-all fails', async () => {
+      jest.useFakeTimers();
+      configValues.STOP_WARN_SECONDS = '2';
+      docker.executeRconCommand = jest
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new RconUnavailableError());
+      docker.stopContainer = jest.fn().mockResolvedValue('stopped');
+      selectResults.push([makeServer({ status: 'RUNNING' })]);
+      updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'STOPPED' })]);
+
+      const promise = service.stopServer('server-1');
+      await flush();
+      jest.advanceTimersByTime(2_000);
+      await flush();
+      await expect(promise).resolves.toEqual(expect.objectContaining({ status: 'STOPPED' }));
+      expect(docker.executeRconCommand).toHaveBeenCalledTimes(2);
+      expect(docker.stopContainer).toHaveBeenCalledWith('container-1', 10);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('compensates STOPPING to ERROR for a final Docker 503', async () => {
+      configValues.STOP_WARN_SECONDS = '0';
+      const error = docker503();
+      docker.executeRconCommand = jest.fn().mockResolvedValue(undefined);
+      docker.stopContainer = jest.fn().mockRejectedValue(error);
+      selectResults.push([makeServer({ status: 'RUNNING' })]);
+      updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'ERROR' })]);
+
+      jest.useFakeTimers();
+      const promise = service.stopServer('server-1');
+      await flush();
+      jest.advanceTimersByTime(3_000);
+      await expect(promise).rejects.toBe(error);
+      expect(docker.stopContainer).toHaveBeenCalledWith('container-1', 15);
+      expect(updatedValues.map((value) => value.status)).toEqual(['STOPPING', 'ERROR']);
+    });
+
+    it('restores RUNNING for a known final Docker rejection', async () => {
+      configValues.STOP_WARN_SECONDS = '0';
+      const error = new ConflictException('daemon rejected stop');
+      docker.executeRconCommand = jest.fn().mockResolvedValue(undefined);
+      docker.stopContainer = jest.fn().mockRejectedValue(error);
+      selectResults.push([makeServer({ status: 'RUNNING' })]);
+      updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'RUNNING' })]);
+
+      jest.useFakeTimers();
+      const promise = service.stopServer('server-1');
+      await flush();
+      jest.advanceTimersByTime(3_000);
+      await expect(promise).rejects.toBe(error);
+      expect(updatedValues.map((value) => value.status)).toEqual(['STOPPING', 'RUNNING']);
+    });
+
+    it('settles STOPPED for a final Docker NotFound', async () => {
+      configValues.STOP_WARN_SECONDS = '0';
+      const error = new NotFoundException('container gone');
+      docker.executeRconCommand = jest.fn().mockResolvedValue(undefined);
+      docker.stopContainer = jest.fn().mockRejectedValue(error);
+      selectResults.push([makeServer({ status: 'RUNNING' })]);
+      updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'STOPPED' })]);
+
+      jest.useFakeTimers();
+      const promise = service.stopServer('server-1');
+      await flush();
+      jest.advanceTimersByTime(3_000);
+      await expect(promise).rejects.toBe(error);
+      expect(updatedValues.map((value) => value.status)).toEqual(['STOPPING', 'STOPPED']);
+    });
+
+    it.each([
+      '',
+      'abc',
+      '-1',
+      '1.5',
+      '301',
+      'NaN',
+      '9'.repeat(400),
+    ])('rejects invalid STOP_WARN_SECONDS=%s before CAS or Docker', async (raw) => {
+      configValues.STOP_WARN_SECONDS = raw;
+      selectResults.push([makeServer({ status: 'RUNNING' })]);
+
+      await expect(service.stopServer('server-1')).rejects.toMatchObject({
+        status: 503,
+        response: { message: 'Graceful shutdown configuration unavailable' },
+      });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(docker.executeRconCommand).not.toHaveBeenCalled();
+      expect(docker.stopContainer).not.toHaveBeenCalled();
+    });
+
+    it('rejects concurrent lifecycle losers without RCON or Docker work', async () => {
+      jest.useFakeTimers();
+      configValues.STOP_WARN_SECONDS = '30';
+      let releaseWarning!: () => void;
+      const warning = new Promise<void>((resolve) => {
+        releaseWarning = resolve;
+      });
+      docker.executeRconCommand = jest.fn().mockReturnValue(warning);
+      selectResults.push(
+        [makeServer({ status: 'RUNNING' })],
+        [makeServer({ status: 'RUNNING' })],
+        [makeServer({ status: 'RUNNING' })],
+        [makeServer({ status: 'RUNNING' })],
+        [makeServer({ status: 'RUNNING' })],
+      );
+      let claimAvailable = true;
+      db.update = jest.fn(() => ({
+        set: jest.fn((values: Record<string, unknown>) => ({
+          where: jest.fn(() => ({
+            returning: jest.fn(async () => {
+              updatedValues.push(values);
+              if (values.status === 'STOPPING' && claimAvailable) {
+                claimAvailable = false;
+                return [makeServer({ status: 'STOPPING' })];
+              }
+              if (values.status === 'STOPPED') return [makeServer({ status: 'STOPPED' })];
+              return [];
+            }),
+          })),
+        })),
+      }));
+
+      const first = service.stopServer('server-1');
+      await flush();
+      const losers = await Promise.allSettled([
+        service.stopServer('server-1'),
+        service.startServer('server-1'),
+        service.restartServer('server-1'),
+        service.deleteServer('server-1'),
+      ]);
+      expect(losers.every((result) => result.status === 'rejected')).toBe(true);
+      expect(docker.stopContainer).not.toHaveBeenCalled();
+      expect(docker.executeRconCommand).toHaveBeenCalledTimes(1);
+      releaseWarning();
+      await flush();
+      jest.runOnlyPendingTimers();
+      await flush();
+      jest.runOnlyPendingTimers();
+      await expect(first).resolves.toBeDefined();
+    });
+
+    it('restarts through graceful stop before admission and STARTING claim', async () => {
+      jest.useFakeTimers();
+      configValues.STOP_WARN_SECONDS = '0';
+      const events: string[] = [];
+      docker.executeRconCommand = jest.fn(async (_id, command) => {
+        events.push(`rcon:${command[0]}`);
+      });
+      docker.stopContainer = jest.fn(async () => {
+        events.push('stop:15');
+        return 'stopped' as const;
+      });
+      docker.getHostInfo = jest.fn(async () => {
+        events.push('host');
+        return { totalRamMb: 8192, cpuCount: 8 };
+      });
+      docker.getHostDiskInfo = jest.fn(async () => {
+        events.push('disk');
+        return { totalDiskMb: 100000, freeDiskMb: 5000 };
+      });
+      selectResults.push([makeServer({ status: 'RUNNING' })], []);
+      updateResults.push(
+        [makeServer({ status: 'STOPPING' })],
+        [makeServer({ status: 'STARTING' })],
+        [makeServer({ status: 'RUNNING' })],
+      );
+
+      const promise = service.restartServer('server-1');
+      await flush();
+      jest.advanceTimersByTime(3_000);
+      await flush();
+      await expect(promise).resolves.toEqual(expect.objectContaining({ status: 'RUNNING' }));
+      expect(events.slice(0, 5)).toEqual(['rcon:say', 'rcon:save-all', 'stop:15', 'host', 'disk']);
+      expect(docker.stopContainer).toHaveBeenCalledWith('container-1', 15);
+      expect(updatedValues.map((value) => value.status)).not.toContain('STOPPED');
+      expect(
+        (docker as unknown as { restartContainer?: jest.Mock }).restartContainer,
+      ).toBeUndefined();
     });
   });
   describe('deleteServer', () => {

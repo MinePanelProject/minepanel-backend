@@ -51,6 +51,7 @@ Key variables:
 | `MC_DATA_PATH` | `/mc-data` | Minecraft data root (direct backend execution only; Compose injects `MC_DATA_PATH_HOST`). |
 | `MIN_FREE_DISK_MB` | `2048` | Minimum free disk required to create a new server. |
 | `MAX_MEMORY_RATIO` | `0.90` | Max fraction of host RAM allocatable to MC servers. |
+| `STOP_WARN_SECONDS` | `30` | Seconds to warn players before a graceful shutdown. Integer `0`-`300`. `0` skips the warning delay but still warns, saves, and stops. |
 
 ### Minecraft data directory
 
