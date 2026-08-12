@@ -1,40 +1,41 @@
-# Multi-stage build for smaller image
+# Multi-stage production build on the exact Bun runtime.
 
-# Stage 1: Build
-FROM node:20-alpine AS builder
+# ── Stage 1: build ────────────────────────────────────────────────────────────
+FROM oven/bun:1.3.14-alpine AS build
 
 WORKDIR /app
 
-COPY package*.json ./
-COPY bun.lock ./
-COPY prisma ./prisma/
-COPY prisma.config.ts ./
-
-RUN npm ci
-
-RUN npx prisma generate
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 
 COPY . .
+RUN bun run build
 
-RUN npm run build
+# ── Stage 2: production dependencies ──────────────────────────────────────────
+FROM oven/bun:1.3.14-alpine AS production
 
-# Stage 2: Production
-FROM node:20-alpine
+WORKDIR /app
+
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
+
+# ── Stage 3: final runtime image ──────────────────────────────────────────────
+FROM oven/bun:1.3.14-alpine AS final
 
 WORKDIR /app
 
 RUN apk add --no-cache curl
 
-COPY package*.json ./
-COPY bun.lock ./
-COPY prisma ./prisma/
-COPY prisma.config.ts ./
+COPY --from=production /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/drizzle ./drizzle
+COPY package.json ./
 
-RUN npm ci --only=production
-
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/generated ./generated
+ENV NODE_ENV=production
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD ["curl", "-f", "http://localhost:3000/health"]
+
+CMD ["bun", "dist/src/main.js"]

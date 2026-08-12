@@ -2,7 +2,7 @@
 
 ## Overview
 
-MinePanel is a self-hosted Minecraft server management panel. A single `docker-compose up` brings up the entire stack on the user's own host — no external services, no cloud dependencies.
+MinePanel is a self-hosted Minecraft server management panel. A single `docker compose up` brings up the entire stack on the user's own host — no external services, no cloud dependencies.
 
 **What it does:** the backend manages PostgreSQL for state, controls Minecraft server containers via the Docker socket, and exposes a REST + WebSocket API consumed by the frontend.
 
@@ -37,24 +37,26 @@ The backend is fully agnostic of the client. Role-based guards (`ADMIN` / `MOD` 
 ## Container Architecture
 
 ```text
-User runs: docker-compose up -d
+User runs: docker compose up -d
 
 ┌──────────────────────────────────────────────────────────────┐
 │                        Docker Host                           │
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │  minepanel-nestjs (container)                        │   │
-│  │  - NestJS backend                  Port: 3000:3000   │   │
-│  │  - Socket: ${DOCKER_SOCKET} (rootless default)       │   │
-│  │  - Volume: MC_DATA_PATH host dir (bind, shared)      │   │
-│  │  - Network: minepanel_network                        │   │
+│  │  - NestJS backend                  Port: 3000 (internal)│  │
+│  │  - Socket: /var/run/docker.sock (host bind, fixed path) │  │
+│  │  - Volume: MC_DATA_PATH_HOST -> /mc-data (read-only)    │  │
+│  │  - Networks: app (Caddy/Postgres); creates MC containers│  │
+│  │    on the mc bridge via the Docker socket (no direct    │  │
+│  │    mc-network membership — RCON uses docker exec)        │  │
 │  └──────────────────┬───────────────────────────────────┘   │
 │                     │ Postgres                               │
 │                     ↓                                        │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │  minepanel-postgres (container)                      │   │
 │  │  - PostgreSQL 16          Volume: postgres-data/     │   │
-│  │  - Network: minepanel_network                        │   │
+│  │  - Network: app (minepanel-app-network)              │   │
 │  └──────────────────────────────────────────────────────┘   │
 │                                                              │
 │                     ↓ Docker socket — spawns MC containers   │
@@ -707,25 +709,26 @@ New env vars:
 | JWT_EXPIRES_IN        | Access token TTL                   | 15m                              |
 | JWT_REFRESH_EXPIRES_IN| Refresh token TTL                  | 7d                               |
 | PORT                  | Backend listen port                | 3000                             |
-| DOMAIN                | Public domain (used by Caddy for HTTPS; set CORS_ORIGIN separately) | (required in prod) |
-| CORS_ORIGIN           | Allowed CORS origin (compose default `https://minepanel.xyz`) | http://localhost:5173 |
-| DOCKER_SOCKET         | Path to Docker socket (inside container) | /var/run/docker.sock        |
-| DOCKER_NETWORK        | Docker network for MC containers   | minepanel_network                |
-| MC_DATA_PATH_HOST     | Host data root (compose interpolation only) | $HOME/.minepanel/mc-data  |
-| MC_DATA_PATH          | Base path for MC server data (direct backend execution only; Compose injects `MC_DATA_PATH_HOST`) | /mc-data |
+| DOMAIN                | Public domain (used by Caddy for HTTPS; set CORS_ORIGIN separately) | (required) |
+| CORS_ORIGIN           | Exact frontend origin (never `*`; not derived from DOMAIN) | (required) |
+| DOCKER_SOCKET         | Host socket path used as the Compose bind source (container path is fixed `/var/run/docker.sock`) | /var/run/docker.sock |
+| DOCKER_NETWORK        | Docker network name for managed MC containers (and the Compose mc bridge) | minepanel_network |
+| MC_DATA_PATH_HOST     | Host data root, required in Compose (wizards default `$HOME/.minepanel/mc-data`; mounted read-only at `/mc-data`) | (required) |
+| MC_DATA_BIND_SOURCE   | Host-side bind source for MC containers (Compose sets it from MC_DATA_PATH_HOST; defaults to MC_DATA_PATH) | (derived) |
+| MC_DATA_PATH          | Base path inside the backend (Compose fixes it to `/mc-data`) | /mc-data |
 | MC_PORT_MIN           | Minimum allowed MC server port     | 25565                            |
 | MC_PORT_MAX           | Maximum allowed MC server port     | 25665                            |
 | MIN_FREE_DISK_MB      | Min free disk (MB) on MC_DATA_PATH to allow create/start | 2048     |
 | MAX_MEMORY_RATIO      | Max fraction of host RAM to allocate to MC servers (0–1) | 0.90     |
-| POSTGRES_PASSWORD      | Postgres password (docker-compose) | changeme                        |
+| POSTGRES_PASSWORD      | Postgres password (Compose requires it: `${POSTGRES_PASSWORD:?}`) | (required) |
 | MICROSOFT_CLIENT_ID    | Azure app client ID (MC linking)   | (optional)                      |
 | MICROSOFT_CLIENT_SECRET| Azure app client secret (MC link)  | (optional)                      |
 | PANEL_NAME             | Display name shown in frontend listing | MinePanel                   |
-| ENCRYPTION_KEY         | 32-byte hex key for RCON password encryption (Phase 3b) | (required Phase 3b) |
+| ENCRYPTION_KEY         | 32-byte hex key for secret encryption (Compose requires it; production preflight rejects non-64-hex values) | (required) |
 | STOP_WARN_SECONDS      | Seconds to warn players before graceful server shutdown | 30              |
 | PANEL_ASSETS_PATH        | Directory for panel-level static assets (planned — no mount in current compose) | /panel-assets   |
 | REQUIRE_ADMIN_APPROVAL   | If true, new registrations start as PENDING (admin must approve) | true       |
-| INSECURE_COOKIES         | Allow HttpOnly cookies over plain HTTP (LAN/local only)         | false      |
+| MINEPANEL_IMAGE          | Backend image used by docker-compose                             | `ghcr.io/minepanelproject/minepanel-backend:latest` |
 | SMTP_HOST                | SMTP server hostname (optional — enables email features)          | (optional) |
 | SMTP_PORT                | SMTP port                                                         | 587        |
 | SMTP_SECURE              | Use TLS (`true` for port 465, `false` for STARTTLS)               | false      |
@@ -822,7 +825,9 @@ app.enableCors({
 | `sameSite` | `lax` | `none` | Richiesto per cross-origin (vedi nota) |
 | `path`     | `/`   | `/`   |                                      |
 
-> **Perché `SameSite=None` e non `Strict`?** Il frontend (`minepanel.xyz`) fa richieste `fetch()` cross-origin al backend self-hosted (`user.domain.com`). Con `SameSite=Strict` o `Lax` il browser non invia i cookie su richieste JavaScript cross-origin — l'autenticazione non funzionerebbe. `SameSite=None; Secure` è l'unica opzione per cookie HttpOnly su richieste cross-origin. La protezione CSRF è garantita da: policy CORS con `origin` specifico + `credentials: true`, e dal fatto che solo `minepanel.xyz` può fare richieste valide.
+> **Perché `SameSite=None` e non `Strict`?** Il frontend (`minepanel.xyz`) fa richieste `fetch()` cross-origin al backend self-hosted (`user.domain.com`). Con `SameSite=Strict` o `Lax` il browser non invia i cookie su richieste JavaScript cross-origin — l'autenticazione non funzionerebbe. `SameSite=None; Secure` è l'unica opzione per cookie HttpOnly su richieste cross-origin.
+>
+> **Protezione CSRF.** `CORS_ORIGIN` è una allow-list CORS per il frontend e non è, da sola, una difesa CSRF: una form cross-site può inviare una richiesta con cookie senza poter leggere la risposta. Per ogni richiesta HTTP `POST`, `PUT`, `PATCH` o `DELETE` che include l'header `Origin`, il backend richiede che `Origin` corrisponda esattamente al singolo `CORS_ORIGIN` canonico (o all'origine stessa dell'API per le chiamate same-origin, es. la UI Swagger su `/docs`); un valore diverso, `null` o non valido restituisce `403 {"error":"CsrfOriginForbidden"}` prima dell'autenticazione. Le richieste mutanti senza `Origin` restano consentite per client non-browser/CI; browser moderni inviano `Origin` per le form POST cross-site. `OPTIONS` e le richieste di lettura sono escluse. Socket.IO applica separatamente la stessa allow-list al livello Engine.IO.
 
 ### Input validation
 
@@ -901,7 +906,7 @@ bun db:push
 bun start:dev
 ```
 
-> **Runtime clarification:** `bun start:dev` runs `nest start --watch` which uses SWC transpiler under Node.js — **not** Bun's transpiler. Bun cannot transpile NestJS TypeScript decorators because of `emitDecoratorMetadata` support gaps. In production, TypeScript is compiled to `dist/` first, then `bun dist/main.js` executes the compiled JavaScript (no transpilation — Bun is just a fast JS runtime here).
+> **Runtime clarification:** `bun start:dev` runs `nest start --watch` which uses SWC transpiler under Node.js — **not** Bun's transpiler. Bun cannot transpile NestJS TypeScript decorators because of `emitDecoratorMetadata` support gaps. In production, TypeScript is compiled to `dist/` first, then `bun dist/src/main.js` executes the compiled JavaScript (no transpilation — Bun is just a fast JS runtime here).
 
 ## Production Deployment
 
@@ -909,7 +914,7 @@ bun start:dev
 cp .env.example .env
 # Edit .env with secure passwords/secrets
 
-docker compose up -d
+docker compose pull && docker compose up -d
 # NestJS + Postgres + Caddy (HTTPS) run in containers
 # Or run ./setup.sh (Linux), ./setup-mac.sh (macOS), ./setup.ps1 (Windows)
 # for the interactive setup wizard that auto-generates secrets
@@ -925,27 +930,15 @@ Build with: `docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/m
 
 The `itzg/minecraft-server` image also supports ARM64 natively — no extra config needed.
 
-### HTTP-only mode (no domain / local network)
+### HTTPS — mandatory
 
-When Caddy is not used (`./setup.sh` with empty domain), the panel runs on plain HTTP port 3000. In this mode, cookies must have `Secure=false`, which is already handled by `NODE_ENV=development`.
+Production deployments must use HTTPS. `SameSite=None; Secure` cookies (required for multi-backend cross-origin auth) are **only sent by the browser over HTTPS**. Without TLS the browser silently drops every auth cookie → all authenticated requests return 401 with no visible error.
 
-For LAN/local deployments over HTTP in production, set `INSECURE_COOKIES=true` in `.env`:
-```
-INSECURE_COOKIES=true   # allows HttpOnly cookies over HTTP (LAN only — never expose to internet)
-```
-The `JwtAuthService` checks this flag and sets `secure: false` on cookies regardless of `NODE_ENV`.
-
-> Never set `INSECURE_COOKIES=true` on a server exposed to the public internet — cookies will be readable over plain HTTP by network observers.
+A reverse proxy with TLS termination is not optional. NestJS itself runs plain HTTP on the internal port 3000; Caddy handles HTTPS and forwards to it.
 
 ### Optional: Docker Socket Proxy
 
 Direct Docker socket access (`/var/run/docker.sock`) grants the NestJS container root-equivalent privileges on the host. The backend enforces a **local Unix socket** transport: `DOCKER_SOCKET` must be a socket path mounted into the container, and remote TCP endpoints (e.g. `tcp://socket-proxy:2375`) are unsupported and would leave Docker unreachable. A restricted socket proxy such as [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) (which exposes TCP) therefore cannot be used directly; it would need an additional TCP-to-Unix relay whose socket is mounted at the configured `DOCKER_SOCKET` path. This is a future hardening option — the default deployment mounts the host socket directly.
-
-### HTTPS — mandatory in production
-
-`SameSite=None; Secure` cookies (required for multi-backend cross-origin auth) are **only sent by the browser over HTTPS**. Without TLS the browser silently drops every auth cookie → all authenticated requests return 401 with no visible error.
-
-A reverse proxy with TLS termination is not optional. NestJS itself runs plain HTTP on port 3000; the reverse proxy handles HTTPS and forwards to it.
 
 ### Default: Caddy (auto-HTTPS, included in docker-compose)
 
@@ -954,22 +947,24 @@ Caddy is **included by default** in `docker-compose.yml` — no extra setup requ
 Set `DOMAIN` in `.env` and Caddy configures itself:
 
 ```
-# Caddyfile (shipped with the project)
-{$DOMAIN} {
+# Caddyfile (shipped with the project) — TLS is mandatory: the site address
+# forces the https:// scheme so a malformed DOMAIN cannot fall back to HTTP
+https://{$DOMAIN} {
     reverse_proxy nestjs:3000
 }
 ```
 
-The `docker-compose.yml` passes `DOMAIN` as an env var to the Caddy container. `CORS_ORIGIN` is NOT derived from `DOMAIN`: the compose file uses `CORS_ORIGIN=${CORS_ORIGIN:-https://minepanel.xyz}`, so operators set it manually to the exact frontend URL (e.g. `https://minepanel.xyz`).
+The `docker-compose.yml` passes `DOMAIN` as an env var to the Caddy container. `CORS_ORIGIN` is NOT derived from `DOMAIN`: operators must set it to the exact frontend URL (e.g. `https://minepanel.xyz`). The compose file requires both variables with `${DOMAIN:?}` and `${CORS_ORIGIN:?}`.
 
 **Host-based Caddy** (if you prefer Caddy on the host instead of in Docker):
 
-Remove the `caddy` service from `docker-compose.yml`, expose port 3000 on `nestjs`, then use a local Caddyfile:
+Remove the `caddy` service from `docker-compose.yml`, bind port 3000 to loopback only on `nestjs` (edit `docker-compose.yml`: add `ports: ["127.0.0.1:3000:3000"]`), then use a local Caddyfile (TLS mandatory, never serve HTTP):
 ```
-your-domain.com {
-    reverse_proxy localhost:3000
+https://your-domain.com {
+    reverse_proxy 127.0.0.1:3000
 }
 ```
+The backend must never be reachable on a host-wide plaintext port: the reverse proxy terminates TLS; bind 3000 to `127.0.0.1` so it is not exposed on the network.
 
 ### Alternative: nginx
 
@@ -987,7 +982,7 @@ server {
     client_max_body_size 50M;
 
     location / {
-        proxy_pass         http://localhost:3000;
+        proxy_pass         http://127.0.0.1:3000;
         proxy_http_version 1.1;
 
         # Required for WebSocket (socket.io)
@@ -1033,9 +1028,9 @@ Traefik handles WebSocket automatically on `websecure` entrypoint.
 - [ ] Reverse proxy running with valid TLS certificate
 - [ ] `NODE_ENV=production` in `.env` (enables `Secure` cookie flag)
 - [ ] `CORS_ORIGIN` set to the **exact** frontend URL (e.g. `https://minepanel.xyz`) — never `*`
-- [ ] `JWT_SECRET` is a long random string (not the placeholder)
-- [ ] `ENCRYPTION_KEY` is a 32-byte hex string (Phase 3b)
-- [ ] `POSTGRES_PASSWORD` changed from `changeme`
+- [ ] `JWT_SECRET` is a long random string (min 32 chars, not the placeholder)
+- [ ] `ENCRYPTION_KEY` is exactly 32 random bytes as 64 hex characters (required in production)
+- [ ] `POSTGRES_PASSWORD` is a strong random value (Compose requires it)
 - [ ] MC ports (25565–25665) open in firewall if players connect directly
 
 ---
@@ -1418,13 +1413,8 @@ Body: { event, timestamp, data: { ...event-specific fields } }
 
 #### Known implementation deltas (to fix)
 
-- **`auth.controller.ts` imports `User` from `@prisma/client`** — bug, should import from `src/db/schema`. Prisma is not used in this project.
-- **`schema.ts` is missing v1.0 auth fields** — `users.status` (UserStatus enum: ACTIVE/PENDING/BANNED), `users.totpSecret`, `users.totpEnabled`, `users.totpBackupCodes`, `users.tempPasswordHash`, `users.tempPasswordExpiresAt`, `users.mustChangePassword`. Add these before implementing the admin approval and 2FA flows.
 - **`schema.ts` is missing Phase 1.5 fields** — `users.googleId`, `users.githubId`, `users.minecraftVerified`; `servers.accessType`, `servers.discordWebhook`. These will be added as Drizzle migrations when Phase 1.5 starts.
 - **`users.passwordHash` is `notNull()` in schema** but spec requires `nullable` (OAuth-only users have no password). Fix before Phase 1.5 OAuth work.
-- **`ValidationPipe` missing `forbidNonWhitelisted: true`** in current `main.ts`. Add to reject requests with unknown fields entirely.
-- **`main.ts` CORS missing `credentials: true`** — required for cross-origin cookie sending. Fix before any frontend integration.
-- **`main.ts` missing `helmet()`** — add security headers. Fix before production deployment.
 
 ### Phase 1.5 - Access Control + OAuth (post-core)
 
@@ -2208,7 +2198,7 @@ MinePanel aims to be the **modern open-source alternative** to:
 - **Crafty Controller** — simpler but limited feature set
 - **Multicraft / McMyAdmin** — commercial, dated UI
 
-Our differentiator: dead-simple self-hosting (single `docker-compose up`) + great UX + modern stack.
+Our differentiator: dead-simple self-hosting (single `docker compose up`) + great UX + modern stack.
 
 #### Server creation modes
 

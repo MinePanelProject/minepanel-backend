@@ -156,6 +156,36 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
       .expect(200);
     expect((refreshed.headers['set-cookie'] as string[]).join(';')).toContain('access_token=');
 
+    // CSRF: a cross-site form-shaped attempt (no JSON preflight) with a forged
+    // Origin is rejected before authentication runs
+    const forged = await request(app.getHttpServer())
+      .post('/api/auth/logout-all')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .set('Origin', 'https://evil.example')
+      .set('Cookie', cookiePairs)
+      .expect(403);
+    expect(forged.body).toEqual({ error: 'CsrfOriginForbidden' });
+
+    // the blocked attempt must not have revoked the session
+    await request(app.getHttpServer())
+      .post('/api/auth/refresh')
+      .set('Cookie', cookiePairs)
+      .expect(200);
+
+    // the exact canonical Origin passes the guard
+    await request(app.getHttpServer())
+      .post('/api/auth/refresh')
+      .set('Origin', process.env.CORS_ORIGIN as string)
+      .set('Cookie', cookiePairs)
+      .expect(200);
+
+    // OPTIONS preflight is exempt from the Origin guard
+    const preflight = await request(app.getHttpServer())
+      .options('/api/auth/logout-all')
+      .set('Origin', 'https://evil.example')
+      .set('Access-Control-Request-Method', 'POST');
+    expect(preflight.status).not.toBe(403);
+
     const logout = await request(app.getHttpServer())
       .post('/api/auth/logout')
       .set('Cookie', cookiePairs)

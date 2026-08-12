@@ -96,7 +96,7 @@ export class DockerService {
   async createContainer(server: Server): Promise<string> {
     const dockerConfig = this.readDockerConfig();
     this.validateServerForCreate(server, dockerConfig);
-    const dataDir = this.resolveDataDir(dockerConfig.mcDataPath, server.id);
+    const dataDir = this.resolveDataDir(dockerConfig.mcDataBindSource, server.id);
     const env = this.buildEnv(server);
 
     const config = {
@@ -455,13 +455,14 @@ export class DockerService {
 
   private readDockerConfig(): {
     mcDataPath: string;
+    mcDataBindSource: string;
     network: string;
     portMin: number;
     portMax: number;
   } {
     const rawMcDataPath = this.configService.get<string>('MC_DATA_PATH', '/mc-data');
-    // compose mounts MC_DATA_PATH_HOST verbatim, so a value that changes under trim() would
-    // make the daemon bind a different directory than statfs measures — reject it
+    // compose mounts MC_DATA_PATH_HOST at the fixed /mc-data, so a value that
+    // changes under trim() would make statfs measure a different directory
     if (rawMcDataPath !== rawMcDataPath.trim()) {
       throw new BadRequestException('MC_DATA_PATH must not have surrounding whitespace');
     }
@@ -472,6 +473,22 @@ export class DockerService {
     }
     if (mcDataPath.split(/[\\/]+/).some((seg) => seg === '.' || seg === '..')) {
       throw new BadRequestException('MC_DATA_PATH must not contain . or .. segments');
+    }
+
+    // Host-side bind source for Minecraft containers. Defaults to the container
+    // path (single-directory deployments); Compose overrides it with
+    // MC_DATA_PATH_HOST so a Windows host path is passed verbatim to the daemon
+    // (Docker Desktop translates it) instead of failing path.isAbsolute.
+    const rawBindSource = this.configService.get<string>('MC_DATA_BIND_SOURCE', mcDataPath);
+    if (rawBindSource !== rawBindSource.trim()) {
+      throw new BadRequestException('MC_DATA_BIND_SOURCE must not have surrounding whitespace');
+    }
+    const mcDataBindSource = rawBindSource.trim();
+    if (!mcDataBindSource) {
+      throw new BadRequestException('MC_DATA_BIND_SOURCE is not configured');
+    }
+    if (mcDataBindSource.split(/[\\/]+/).some((seg) => seg === '.' || seg === '..')) {
+      throw new BadRequestException('MC_DATA_BIND_SOURCE must not contain . or .. segments');
     }
 
     const network = this.configService.get<string>('DOCKER_NETWORK', 'minepanel_network').trim();
@@ -494,7 +511,13 @@ export class DockerService {
       throw new BadRequestException('Invalid MC_PORT_MIN/MC_PORT_MAX configuration');
     }
 
-    return { mcDataPath: path.resolve(mcDataPath), network, portMin, portMax };
+    return {
+      mcDataPath: path.resolve(mcDataPath),
+      mcDataBindSource,
+      network,
+      portMin,
+      portMax,
+    };
   }
 
   private validateServerForCreate(
@@ -522,19 +545,16 @@ export class DockerService {
     }
   }
 
-  private resolveDataDir(mcDataPath: string, serverId: string): string {
+  private resolveDataDir(mcDataBindSource: string, serverId: string): string {
     if (!CONTAINER_NAME_PATTERN.test(serverId)) {
       throw new BadRequestException('Invalid server id');
     }
 
-    const dataRoot = path.resolve(mcDataPath);
-    const dataDir = path.resolve(dataRoot, serverId);
-
-    if (path.dirname(dataDir) !== dataRoot || path.basename(dataDir) !== serverId) {
-      throw new BadRequestException('Server data path escapes MC_DATA_PATH');
-    }
-
-    return dataDir;
+    // Daemon-resolved host path: never normalize with the Linux path module —
+    // a Windows bind source must pass through verbatim for Docker Desktop to
+    // translate it. Traversal is impossible by construction: the base is
+    // segment-validated (no . or ..) and serverId matches [a-z0-9-]+.
+    return `${mcDataBindSource.replace(/[\\/]+$/, '')}/${serverId}`;
   }
 
   private buildEnv(server: Server): string[] {

@@ -1,59 +1,48 @@
 services:
-  caddy:
-    image: caddy:alpine
-    container_name: minepanel-caddy
-    restart: unless-stopped
-    profiles: ["caddy"]
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    environment:
-      - DOMAIN=${DOMAIN}
-    depends_on:
-      - nestjs
-    networks:
-      - minepanel_network
-
   nestjs:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: minepanel-backend
+    image: ${MINEPANEL_IMAGE:-ghcr.io/minepanelproject/minepanel-backend:latest}
+    pull_policy: missing
+    expose:
+      - "3000"
+    user: root
     restart: unless-stopped
-    ports:
-      - "${PORT:-3000}:3000"
-    volumes:
-      - ${XDG_RUNTIME_DIR:-/var/run}/docker.sock:/var/run/docker.sock
-      - ${MC_DATA_PATH_HOST-${HOME:?HOME must be set for the default MC data root}/.minepanel/mc-data}:${MC_DATA_PATH_HOST-${HOME:?HOME must be set for the default MC data root}/.minepanel/mc-data}
+    security_opt:
+      - no-new-privileges:true
     environment:
-      - NODE_ENV=production
-      - DATABASE_URL=postgresql://minepanel:${POSTGRES_PASSWORD}@postgres:5432/minepanel
-      - JWT_SECRET=${JWT_SECRET}
-      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-15m}
-      - JWT_REFRESH_EXPIRES_IN=${JWT_REFRESH_EXPIRES_IN:-7d}
-      - PORT=3000
-      - CORS_ORIGIN=${CORS_ORIGIN:-https://minepanel.xyz}
-      - REQUIRE_ADMIN_APPROVAL=${REQUIRE_ADMIN_APPROVAL:-true}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-      - DOCKER_NETWORK=minepanel_network
-      - DOCKER_SOCKET=/var/run/docker.sock
-      - MC_DATA_PATH=${MC_DATA_PATH_HOST-${HOME:?HOME must be set for the default MC data root}/.minepanel/mc-data}
-      - MC_PORT_MIN=${MC_PORT_MIN:-25565}
-      - MC_PORT_MAX=${MC_PORT_MAX:-25665}
-      - MIN_FREE_DISK_MB=${MIN_FREE_DISK_MB:-2048}
-      - MAX_MEMORY_RATIO=${MAX_MEMORY_RATIO:-0.90}
-      - STOP_WARN_SECONDS=${STOP_WARN_SECONDS:-30}
-      - PANEL_NAME=${PANEL_NAME:-MinePanel}
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?}
+      JWT_SECRET: ${JWT_SECRET:?}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:?}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?}
+      CORS_ORIGIN: ${CORS_ORIGIN:?}
+      DOMAIN: ${DOMAIN:?}
+      # container-side path (the host socket is mounted at this fixed location)
+      DOCKER_SOCKET: /var/run/docker.sock
+      DOCKER_NETWORK: ${DOCKER_NETWORK:-minepanel_network}
+      MC_DATA_PATH: /mc-data
+      MC_DATA_BIND_SOURCE: ${MC_DATA_PATH_HOST:?}
+      MC_PORT_MIN: ${MC_PORT_MIN:-25565}
+      MC_PORT_MAX: ${MC_PORT_MAX:-25665}
+      MIN_FREE_DISK_MB: ${MIN_FREE_DISK_MB:-2048}
+      MAX_MEMORY_RATIO: ${MAX_MEMORY_RATIO:-0.90}
+      STOP_WARN_SECONDS: ${STOP_WARN_SECONDS:-30}
+      REQUIRE_ADMIN_APPROVAL: ${REQUIRE_ADMIN_APPROVAL:-true}
+      LOGIN_THROTTLE_LIMIT: ${LOGIN_THROTTLE_LIMIT:-5}
+      LOGIN_THROTTLE_TTL_MS: ${LOGIN_THROTTLE_TTL_MS:-10000}
+      PANEL_NAME: ${PANEL_NAME:-MinePanel}
+      PANEL_DESCRIPTION: ${PANEL_DESCRIPTION:-Minecraft server management panel API}
+      PANEL_VERSION: ${PANEL_VERSION:-1.0}
+    volumes:
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - ${MC_DATA_PATH_HOST:?}:/mc-data:ro
     depends_on:
       postgres:
         condition: service_healthy
+      minecraft-image:
+        condition: service_completed_successfully
     networks:
-      - minepanel_network
+      - app
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
@@ -63,31 +52,59 @@ services:
 
   postgres:
     image: postgres:16-alpine
-    container_name: minepanel-postgres
     restart: unless-stopped
+    environment:
+      POSTGRES_USER: minepanel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: minepanel
     volumes:
       - postgres-data:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_USER=minepanel
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=minepanel
     networks:
-      - minepanel_network
+      - app
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U minepanel"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - app
+    depends_on:
+      nestjs:
+        condition: service_started
+
+  minecraft-image:
+    image: itzg/minecraft-server:latest
+    entrypoint: ["/bin/true"]
+    restart: "no"
+    networks:
+      - mc
+
 networks:
-  minepanel_network:
+  app:
     driver: bridge
-    name: minepanel_network
+    name: ${MINEPANEL_APP_NETWORK:-minepanel-app-network}
+  mc:
+    driver: bridge
+    name: ${DOCKER_NETWORK:-minepanel_network}
 
 volumes:
   postgres-data:
-    name: minepanel-postgres-data
+    name: ${POSTGRES_VOLUME_NAME:-minepanel-postgres-data}
   caddy-data:
-    name: minepanel-caddy-data
+    name: ${CADDY_DATA_VOLUME_NAME:-minepanel-caddy-data}
   caddy-config:
-    name: minepanel-caddy-config
+    name: ${CADDY_CONFIG_VOLUME_NAME:-minepanel-caddy-config}

@@ -22,9 +22,9 @@ class DatabaseConnection implements OnModuleDestroy {
     try {
       await this.client`SELECT 1`;
       Logger.log('Database connected', 'DbModule');
-    } catch (error) {
-      Logger.error('Database connection failed', error, 'DbModule');
-      process.exit(1);
+    } catch {
+      Logger.error('Database connection failed', 'DbModule');
+      throw new Error('Database connection failed');
     }
   }
 

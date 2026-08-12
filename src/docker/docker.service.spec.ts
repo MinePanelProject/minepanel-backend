@@ -386,6 +386,42 @@ describe('DockerService', () => {
       );
     });
 
+    it('uses MC_DATA_BIND_SOURCE verbatim when configured (Windows host path)', async () => {
+      fakeDocker.createContainer.mockResolvedValue({ id: 'c1' });
+      configMock.map.set('MC_DATA_PATH', '/mc-data');
+      configMock.map.set('MC_DATA_BIND_SOURCE', 'C:\\Users\\me\\.minepanel\\mc-data');
+
+      await expect(service.createContainer(makeServer())).resolves.toBe('c1');
+      expect(fakeDocker.createContainer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          HostConfig: expect.objectContaining({
+            // passed through to the daemon unnormalized; Docker Desktop translates it
+            Binds: ['C:\\Users\\me\\.minepanel\\mc-data/abc-123:/data'],
+          }),
+        }),
+      );
+    });
+
+    it('rejects dot-segment MC_DATA_BIND_SOURCE before calling docker', async () => {
+      configMock.map.set('MC_DATA_PATH', '/mc-data');
+      configMock.map.set('MC_DATA_BIND_SOURCE', '/mc-data/../etc');
+
+      await expect(service.createContainer(makeServer())).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(fakeDocker.createContainer).not.toHaveBeenCalled();
+    });
+
+    it('rejects whitespace-padded MC_DATA_BIND_SOURCE', async () => {
+      configMock.map.set('MC_DATA_PATH', '/mc-data');
+      configMock.map.set('MC_DATA_BIND_SOURCE', ' /mc-data ');
+
+      await expect(service.createContainer(makeServer())).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(fakeDocker.createContainer).not.toHaveBeenCalled();
+    });
+
     it('resolves a valid data directory for a normal server id', async () => {
       fakeDocker.createContainer.mockResolvedValue({ id: 'c1' });
 

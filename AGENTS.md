@@ -28,7 +28,7 @@ src/
     filters/db-exception.filter.ts
     crypto.util.ts           # AES-256-GCM encrypt/decrypt
     custom-logger.ts
-test/                        # e2e specs (require live Postgres + Docker; not run in CI)
+test/                        # e2e specs (require live Postgres + Docker; run isolated in CI, never blocking the PR test gate)
 drizzle/                     # generated SQL migrations + meta (drizzle-kit output)
 docs/                        # deployment, servers, auth-architecture, access-control
 .github/workflows/ci.yml     # CI: Bun 1.3.14, frozen install, Biome check, build, Jest
@@ -70,7 +70,7 @@ bun run format                   # biome format --write .
 bun run test                     # jest (dev)
 bun run test:ci                  # jest --runInBand (CI — deterministic, canonical for CI)
 bun run test:cov                 # jest --coverage (optional, writes coverage/)
-bun run test:e2e                 # requires live Postgres + Docker — never in CI
+bun run test:e2e                 # requires live Postgres + Docker — isolated CI job, not part of the PR test gate
 
 # Database (Drizzle Kit)
 bun db:push                      # sync schema to DB (dev)
@@ -206,7 +206,7 @@ try {
 ```
 
 - Bare `catch { return false; }` (no binding) is acceptable only when the failure has a defined fallback value (Docker ping, backup-code JSON parsing). Never swallow an exception and continue without an alternate return path.
-- Startup invariants: missing critical secrets or an unrecoverable database connection fail fast — `main.ts` and `DbModule` log via `Logger` and call `process.exit(1)`. Docker unavailability at startup is NOT fatal: `DockerModule` logs the unreachable daemon and continues in degraded mode (health reports 503, Docker operations throw 503). Do not add new `process.exit` call sites elsewhere.
+- Startup invariants: missing critical secrets or an unrecoverable database connection fail fast — `main.ts` preflights production config and runs Drizzle migrations before `NestFactory.create`, with a single sanitized `process.exit(1)` boundary in `main.ts` (DbModule throws and lets the boundary handle it). Docker unavailability at startup is NOT fatal: `DockerModule` logs the unreachable daemon and continues in degraded mode (health reports 503, Docker operations throw 503). Do not add new `process.exit` call sites elsewhere.
 - Password verification always runs `bcrypt.compare(input, user?.passwordHash ?? DUMMY_PASSWORD_HASH)` — never reveal whether a user exists.
 
 ## 11. Comments and Docstrings
@@ -241,7 +241,7 @@ const module: TestingModule = await Test.createTestingModule({
 - Fixtures use factory helpers: a `makeUser(overrides)` function returning a full `User` object with sensible defaults, overridden per test.
 - Assertions favor `await expect(...).resolves.toEqual(...)` / `.rejects.toBeInstanceOf(UnauthorizedException)`; use `.toHaveBeenCalledWith(...)` for delegation checks.
 - Unit tests must never touch a real PostgreSQL database or Docker daemon — the `DRIZZLE` and `DOCKERODE` tokens are always mocked with chained `jest.fn()` builders.
-- e2e specs live in `test/` and require live Postgres + Docker; they are not part of CI.
+- e2e specs live in `test/` and require live Postgres + Docker; they run in an isolated CI job with a fresh stack and are not part of the PR test gate.
 
 ## 13. Git
 

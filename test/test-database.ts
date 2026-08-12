@@ -18,7 +18,7 @@ const canonicalDatabaseTarget = (value: string): string => {
   let host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (host.length === 0) throw new Error('database URL must include a host');
   if (host.endsWith('.')) host = host.slice(0, -1);
-  if (host === 'localhost' || host === '::1' || host === '0.0.0.0' || LOOPBACK_IPV4.test(host)) {
+  if (host === 'localhost' || host === '::1' || LOOPBACK_IPV4.test(host)) {
     host = '127.0.0.1';
   }
 
@@ -33,6 +33,12 @@ export const assertSafeTestDatabase = (): string => {
   const testUrl = process.env.TEST_DATABASE_URL;
   if (!testUrl) throw new Error('TEST_DATABASE_URL is required');
   const testTarget = canonicalDatabaseTarget(testUrl);
+
+  // suites may create/drop databases on the test server: only a loopback
+  // target is acceptable, never a remote or shared host
+  if (!testTarget.startsWith('127.0.0.1:')) {
+    throw new Error('TEST_DATABASE_URL must target a loopback host (localhost/127.0.0.1)');
+  }
 
   const ambientUrl = process.env.DATABASE_URL;
   if (ambientUrl && testTarget === canonicalDatabaseTarget(ambientUrl)) {

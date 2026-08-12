@@ -1,6 +1,6 @@
 {
   "name": "minepanel-backend",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "description": "",
   "author": "",
   "private": true,
@@ -10,7 +10,7 @@
   },
   "packageManager": "bun@1.3.14",
   "scripts": {
-    "build": "nest build",
+    "build": "nest build && bun scripts/postbuild.mjs",
     "format": "biome format --write .",
     "start": "nest start",
     "start:dev": "nest start --watch",

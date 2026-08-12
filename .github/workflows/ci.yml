@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [master]
+    tags: ['v*']
 
 permissions:
   contents: read
@@ -18,10 +19,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
 
@@ -58,10 +59,10 @@ jobs:
       DATABASE_URL: postgresql://minepanel:minepanel@localhost:5432/minepanel
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
 
@@ -70,3 +71,280 @@ jobs:
 
       - name: Apply full migration chain (fresh database)
         run: bun run db:migrate
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [test, migration]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: minepanel_test
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: minepanel_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U minepanel_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://minepanel_test:testpass@localhost:5432/minepanel_test
+      DATABASE_URL: postgresql://unused:unused@127.0.0.1:1/ambient_sentinel
+      JWT_SECRET: e2e-jwt-secret-must-be-at-least-some-characters-long
+      JWT_EXPIRES_IN: 15m
+      ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+      CORS_ORIGIN: http://localhost:3000
+      REQUIRE_ADMIN_APPROVAL: 'false'
+      PANEL_VERSION: 1.0.0
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Apply migrations to test database
+        run: bun run db:migrate
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+
+      - name: Run e2e tests
+        run: bun run test:e2e -- --runInBand --detectOpenHandles
+
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [test, migration]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: minepanel
+          POSTGRES_PASSWORD: minepanel
+          POSTGRES_DB: minepanel
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U minepanel"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build image (amd64, load)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: minepanel-backend:smoke
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test container (degraded mode, no daemon access)
+        run: |
+          # PR-built images never receive any Docker daemon socket (a daemon is
+          # not a trusted isolation boundary). The app degrades gracefully
+          # without one; this proves migrations finish before listen and the
+          # HTTP layer responds. The daemon-backed health-200 smoke runs in the
+          # trusted publish job only.
+          docker run -d --name minepanel-smoke --network host \
+            -e NODE_ENV=production \
+            -e DATABASE_URL=postgresql://minepanel:minepanel@localhost:5432/minepanel \
+            -e JWT_SECRET=smoke-jwt-secret-must-be-at-least-some-characters-long \
+            -e JWT_EXPIRES_IN=15m \
+            -e ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
+            -e CORS_ORIGIN=http://localhost:3000 \
+            -e DOCKER_SOCKET=/var/run/docker.sock \
+            minepanel-backend:smoke
+
+          ok=0
+          for attempt in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://localhost:3000/health || true)
+            if [ "$code" = "200" ] || [ "$code" = "503" ]; then
+              echo "health endpoint responding with $code (degraded mode expected without daemon)"
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$ok" != "1" ]; then
+            echo "health endpoint never responded"
+            docker logs minepanel-smoke
+            exit 1
+          fi
+
+      - name: Verify migrations finished before listen
+        run: |
+          docker logs minepanel-smoke 2>&1 | grep -F 'Database migrations complete'
+
+      - name: Verify image contents
+        run: |
+          docker run --rm minepanel-backend:smoke sh -c '
+            test ! -d /app/src &&
+            test ! -d /app/test &&
+            test ! -d /app/prisma &&
+            test ! -f /app/node_modules/.bin/drizzle-kit &&
+            test -d /app/drizzle &&
+            echo "image contents ok"
+          '
+
+      - name: Verify bcrypt loads in runtime image
+        run: |
+          docker run --rm --entrypoint bun minepanel-backend:smoke \
+            -e 'import("bcrypt").then(() => console.log("bcrypt ok"))'
+
+      - name: Stop smoke container
+        if: always()
+        run: docker rm -f minepanel-smoke || true
+
+      - name: Scan image for CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: minepanel-backend:smoke
+          format: table
+          exit-code: '1'
+          severity: CRITICAL
+
+      - name: Scan image for fixed HIGH vulnerabilities
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: minepanel-backend:smoke
+          format: table
+          exit-code: '1'
+          severity: HIGH
+          ignore-unfixed: true
+
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [test, migration, e2e, image]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: read
+      packages: write
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: minepanel
+          POSTGRES_PASSWORD: minepanel
+          POSTGRES_DB: minepanel
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U minepanel"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Lowercase repository name
+        id: repo
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.repo.outputs.image }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            type=sha,prefix=sha-,format=long
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build image for trusted smoke (amd64, load)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: minepanel-backend:release-smoke
+          platforms: linux/amd64
+          cache-from: type=gha
+
+      - name: Smoke test published image with real daemon (trusted push only)
+        run: |
+          # trusted-push job: mounting the runner socket here is the same trust
+          # boundary as the runner executing the publish steps (PRs never see a
+          # daemon — the image job runs degraded-mode only)
+          docker run -d --name minepanel-release-smoke --network host \
+            -e NODE_ENV=production \
+            -e DATABASE_URL=postgresql://minepanel:minepanel@localhost:5432/minepanel \
+            -e JWT_SECRET=smoke-jwt-secret-must-be-at-least-some-characters-long \
+            -e JWT_EXPIRES_IN=15m \
+            -e ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
+            -e CORS_ORIGIN=http://localhost:3000 \
+            -e DOCKER_SOCKET=/var/run/docker.sock \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            minepanel-backend:release-smoke
+
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:3000/health > /dev/null 2>&1; then
+              echo "health check passed (db + docker ok)"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "health check failed"
+          docker logs minepanel-release-smoke
+          exit 1
+
+      - name: Verify migrations finished before listen
+        run: |
+          docker logs minepanel-release-smoke 2>&1 | grep -F 'Database migrations complete'
+
+      - name: Stop release smoke container
+        if: always()
+        run: docker rm -f minepanel-release-smoke || true
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

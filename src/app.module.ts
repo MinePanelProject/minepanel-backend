@@ -7,6 +7,7 @@ import { AppController } from './app.controller';
 import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
+import { CsrfOriginGuard } from './common/guards/csrf-origin.guard';
 import { DbModule } from './db/db.module';
 import { DockerModule } from './docker/docker.module';
 import { GatewayModule } from './gateway/gateway.module';
@@ -36,6 +37,10 @@ import { UsersModule } from './users/users.module';
   ],
   controllers: [AppController],
   providers: [
+    {
+      provide: APP_GUARD,
+      useClass: CsrfOriginGuard,
+    },
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard,
