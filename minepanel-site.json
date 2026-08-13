@@ -40,10 +40,10 @@
       "id": "1",
       "label": "Phase 1",
       "name": "Foundation — v1.0",
-      "status": "wip",
+      "status": "completed",
       "description": "The core deployable release. Everything needed to spin up and manage Minecraft servers from a single docker-compose on your own machine.",
-      "progress": 93,
-      "progressLabel": "~93% complete",
+      "progress": 100,
+      "progressLabel": "100% complete",
       "items": [
         { "text": "JWT auth via HttpOnly cookies", "done": true },
         { "text": "Register & login endpoints", "done": true },
@@ -70,8 +70,8 @@
         { "text": "Concurrent operation protection (Postgres atomic CAS)", "done": true },
         { "text": "Host metrics via WebSocket (CPU, RAM, disk)", "done": true },
         { "text": "Unit + integration tests", "done": true },
-        { "text": "CI/CD pipeline (GitHub Actions \u2192 GHCR)", "done": false },
-        { "text": "Docker deployment (docker-compose + Caddy auto-HTTPS, migrations on boot)", "done": false }
+        { "text": "CI/CD pipeline (GitHub Actions \u2192 GHCR)", "done": true },
+        { "text": "Docker deployment (docker-compose + Caddy auto-HTTPS, migrations on boot)", "done": true }
       ]
     },
     {

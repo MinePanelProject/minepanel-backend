@@ -14,8 +14,7 @@
 
 ---
 
-> [!WARNING]
-> **Phase 1 — v1.0.** Core features (auth, server lifecycle, host metrics, deployment) are implemented. See the [roadmap](https://minepanel.xyz/#roadmap) for later phases.
+> **Phase 1 — v1.0 is complete and production-ready.** Auth (JWT cookies, 2FA, admin approval), server lifecycle, host metrics over WebSocket, and the one-command Docker deployment (Caddy auto-HTTPS, Drizzle migrations on boot, multi-arch images on GHCR) are all shipped. Later phases (access control, marketplace, backups) are planned — see the [roadmap](https://minepanel.xyz/#roadmap).
 
 ---
 
