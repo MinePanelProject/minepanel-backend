@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-08-12",
+  "updatedAt": "2026-08-13",
   "meta": {
     "title": "MinePanel - Self-Hosted Minecraft Server Manager",
     "tagline": "Self-hosted Minecraft server management, the right way.",
@@ -19,12 +19,13 @@
   "techStack": [
     { "label": "TypeScript 5", "type": "lang" },
     { "label": "NestJS v11", "type": "lang" },
-    { "label": "Node.js 20", "type": "lang" },
-    { "label": "Bun (runtime)", "type": "infra" },
+    { "label": "Bun 1.3", "type": "lang" },
     { "label": "PostgreSQL 16", "type": "db" },
     { "label": "Drizzle ORM", "type": "db" },
     { "label": "Docker / Dockerode", "type": "infra" },
+    { "label": "Caddy (auto-HTTPS)", "type": "infra" },
     { "label": "JWT · HttpOnly Cookies", "type": "auth" },
+    { "label": "2FA · TOTP", "type": "auth" },
     { "label": "Socket.IO (WebSocket)", "type": "lang" },
     { "label": "Helmet · Throttler", "type": "auth" },
     { "label": "RCON Protocol", "type": "infra" },
