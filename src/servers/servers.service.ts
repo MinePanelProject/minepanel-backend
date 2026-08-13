@@ -11,14 +11,21 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { and, asc, count, eq, isNull, ne, type SQL, sql } from 'drizzle-orm';
+import { and, asc, count, eq, exists, isNull, ne, or, type SQL, sql } from 'drizzle-orm';
 import { deferred } from 'src/common/deferred';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
-import { type NewServer, type Server, type ServerStatus, servers } from 'src/db/schema';
+import {
+  type NewServer,
+  type Server,
+  type ServerStatus,
+  serverAccess,
+  servers,
+} from 'src/db/schema';
 import { DockerService } from 'src/docker/docker.service';
 import { CreateServerDto } from './dto/create-server.dto';
 import { ListServersQueryDto } from './dto/list-servers-query.dto';
 import { type PublicServer, toPublicServer } from './public-server';
+import { type ServerPrincipal } from './server-access';
 
 type Tx = Parameters<Parameters<DrizzleDB['transaction']>[0]>[0];
 
@@ -137,7 +144,7 @@ export class ServersService implements OnModuleInit {
     return { kind: 'state', status: 'STOPPED', containerId: null };
   }
 
-  async createServer(dto: CreateServerDto, ownerId: string): Promise<PublicServer> {
+  async createServer(dto: CreateServerDto, principal: ServerPrincipal): Promise<PublicServer> {
     const config = this.parseResourceConfig();
     const hostInfo = await this.dockerService.getHostInfo();
     const diskInfo = await this.dockerService.getHostDiskInfo();
@@ -174,7 +181,8 @@ export class ServersService implements OnModuleInit {
         onlineMode: dto.onlineMode ?? true,
         viewDistance: dto.viewDistance ?? 10,
         allowFlight: dto.allowFlight ?? false,
-        ownerId,
+        ownerId: principal.id,
+        accessType: dto.accessType ?? 'OPEN',
       };
 
       const [row] = await tx.insert(servers).values(newServer).returning();
@@ -221,8 +229,11 @@ export class ServersService implements OnModuleInit {
     return toPublicServer(running);
   }
 
-  async listServers(query: ListServersQueryDto): Promise<{ data: PublicServer[]; total: number }> {
-    const where = ne(servers.status, 'CREATING');
+  async listServers(
+    query: ListServersQueryDto,
+    principal: ServerPrincipal,
+  ): Promise<{ data: PublicServer[]; total: number }> {
+    const where = this.buildVisibilityPredicate(principal);
 
     const [rows, [{ total }]] = await Promise.all([
       this.db
@@ -241,13 +252,13 @@ export class ServersService implements OnModuleInit {
     };
   }
 
-  async getServer(id: string): Promise<PublicServer> {
-    const row = await this.loadVisibleServer(id);
+  async getServer(id: string, principal: ServerPrincipal): Promise<PublicServer> {
+    const row = await this.loadVisibleServer(id, principal);
     return toPublicServer(row);
   }
 
-  async startServer(id: string): Promise<PublicServer> {
-    const row = await this.loadVisibleServer(id);
+  async startServer(id: string, principal: ServerPrincipal): Promise<PublicServer> {
+    const row = await this.loadVisibleServer(id, principal);
 
     if (row.status !== 'STOPPED') {
       throw new ConflictException('Server is not in STOPPED state');
@@ -308,8 +319,8 @@ export class ServersService implements OnModuleInit {
     return toPublicServer(running);
   }
 
-  async stopServer(id: string): Promise<PublicServer> {
-    const row = await this.loadVisibleServer(id);
+  async stopServer(id: string, principal: ServerPrincipal): Promise<PublicServer> {
+    const row = await this.loadVisibleServer(id, principal);
 
     if (row.status !== 'RUNNING') {
       throw new ConflictException('Server is not in RUNNING state');
@@ -355,8 +366,8 @@ export class ServersService implements OnModuleInit {
     return toPublicServer(stopped);
   }
 
-  async restartServer(id: string): Promise<PublicServer> {
-    const row = await this.loadVisibleServer(id);
+  async restartServer(id: string, principal: ServerPrincipal): Promise<PublicServer> {
+    const row = await this.loadVisibleServer(id, principal);
 
     if (row.status !== 'RUNNING') {
       throw new ConflictException('Server is not in RUNNING state');
@@ -451,8 +462,8 @@ export class ServersService implements OnModuleInit {
     }
   }
 
-  async deleteServer(id: string): Promise<void> {
-    const row = await this.loadVisibleServer(id);
+  async deleteServer(id: string, principal: ServerPrincipal): Promise<void> {
+    const row = await this.loadVisibleServer(id, principal);
 
     if (row.status !== 'STOPPED') {
       throw new ConflictException('Server is not in STOPPED state');
@@ -639,11 +650,11 @@ export class ServersService implements OnModuleInit {
     return row ?? null;
   }
 
-  private async loadVisibleServer(id: string): Promise<Server> {
+  private async loadVisibleServer(id: string, principal: ServerPrincipal): Promise<Server> {
     const [row] = await this.db
       .select()
       .from(servers)
-      .where(and(eq(servers.id, id), ne(servers.status, 'CREATING')))
+      .where(and(eq(servers.id, id), this.buildVisibilityPredicate(principal)))
       .limit(1);
 
     if (!row) {
@@ -651,6 +662,27 @@ export class ServersService implements OnModuleInit {
     }
 
     return row;
+  }
+
+  private buildVisibilityPredicate(principal: ServerPrincipal): SQL {
+    const notCreating = ne(servers.status, 'CREATING');
+
+    if (principal.role === 'ADMIN') {
+      return notCreating;
+    }
+
+    const approvedAccess = this.db
+      .select()
+      .from(serverAccess)
+      .where(
+        and(
+          eq(serverAccess.userId, principal.id),
+          eq(serverAccess.serverId, servers.id),
+          eq(serverAccess.status, 'APPROVED'),
+        ),
+      );
+
+    return and(notCreating, or(eq(servers.accessType, 'OPEN'), exists(approvedAccess))) as SQL;
   }
 
   private async getCurrentAllocationMb(

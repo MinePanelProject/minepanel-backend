@@ -40,6 +40,7 @@ const makeServer = (overrides?: Partial<Server>): Server => ({
   worldPath: null,
   rconPassword: null,
   ownerId: 'owner-1',
+  accessType: 'OPEN',
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
   updatedAt: new Date('2026-01-01T00:00:00.000Z'),
   ...overrides,

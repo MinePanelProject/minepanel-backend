@@ -8,6 +8,14 @@ import type { UserParamDto } from './dto/user-param.dto';
 
 jest.mock('./admin.service', () => ({ AdminService: class AdminService {} }));
 
+const publicPermission = {
+  id: 'perm-1',
+  userId: 'user-1',
+  permission: 'SERVER_LIFECYCLE' as const,
+  serverId: null,
+  createdAt: new Date(),
+};
+
 const publicUser: PublicUser = {
   id: 'user-1',
   email: 'user@example.com',
@@ -26,7 +34,14 @@ const publicUser: PublicUser = {
 describe('AdminController', () => {
   let adminService: Pick<
     AdminService,
-    'listUsers' | 'updateStatus' | 'updateRole' | 'resetPassword' | 'removeTwoFactor'
+    | 'listUsers'
+    | 'updateStatus'
+    | 'updateRole'
+    | 'resetPassword'
+    | 'removeTwoFactor'
+    | 'listModPermissions'
+    | 'grantModPermission'
+    | 'revokeModPermission'
   >;
   let controller: AdminController;
 
@@ -37,6 +52,9 @@ describe('AdminController', () => {
       updateRole: jest.fn(),
       resetPassword: jest.fn(),
       removeTwoFactor: jest.fn(),
+      listModPermissions: jest.fn(),
+      grantModPermission: jest.fn(),
+      revokeModPermission: jest.fn(),
     };
     controller = new AdminController(adminService as AdminService);
   });
@@ -87,5 +105,33 @@ describe('AdminController', () => {
       publicUser,
     );
     expect(adminService.removeTwoFactor).toHaveBeenCalledWith('user-1');
+  });
+
+  it('delegates permission listing with the user id', async () => {
+    adminService.listModPermissions = jest.fn().mockResolvedValue([publicPermission]);
+
+    await expect(controller.listPermissions({ id: 'user-1' } as UserParamDto)).resolves.toEqual([
+      publicPermission,
+    ]);
+    expect(adminService.listModPermissions).toHaveBeenCalledWith('user-1');
+  });
+
+  it('delegates permission grants with the user id and DTO', async () => {
+    adminService.grantModPermission = jest.fn().mockResolvedValue(publicPermission);
+    const dto = { permission: 'SERVER_LIFECYCLE' as const, serverId: 'server-1' };
+
+    await expect(
+      controller.grantPermission({ id: 'user-1' } as UserParamDto, dto),
+    ).resolves.toEqual(publicPermission);
+    expect(adminService.grantModPermission).toHaveBeenCalledWith('user-1', dto);
+  });
+
+  it('delegates permission revocation with the user id and permission grant id', async () => {
+    adminService.revokeModPermission = jest.fn().mockResolvedValue(undefined);
+
+    await expect(
+      controller.revokePermission({ id: 'user-1', permId: 'perm-1' } as never),
+    ).resolves.toBeUndefined();
+    expect(adminService.revokeModPermission).toHaveBeenCalledWith('user-1', 'perm-1');
   });
 });

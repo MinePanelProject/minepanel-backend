@@ -12,6 +12,8 @@ The socket path is configurable via `DOCKER_SOCKET` (default: `/var/run/docker.s
 
 > **Implemented (Phase 1 slice):** socket connection, ping, hardened container create/start/stop/remove, container inspect, host RAM/CPU via `docker.info`, host disk via `fs.statfs`, server lifecycle endpoints (`ServersService`) with atomic CAS state transitions, resource guardrails, startup reconciliation, managed-container recovery, and RCON-aware graceful stop with player warning.
 >
+> **Implemented (Phase 1.5 Round 1):** server visibility (`OPEN`/`REQUEST`/`PRIVATE`), `ServerAccess` request/approval/revocation, MOD granular permissions (`PermissionsGuard` + `mod_permissions`), and lifecycle enforcement (`SERVER_LIFECYCLE`).
+>
 > **Deferred:** container stats, log streaming, external RCON service/pool, console command endpoints, encrypted `rconPassword` persistence.
 
 ```
@@ -96,17 +98,22 @@ If the Docker socket is unavailable at startup or becomes unreachable at runtime
 
 ### Endpoints
 
-| Method | Path                 | Auth         | Description                        |
-|--------|----------------------|--------------|------------------------------------|
-| POST   | /servers             | ADMIN        | Create and start a new server      |
-| GET    | /servers             | JWT          | List visible servers               |
-| GET    | /servers/:id         | JWT          | Get single server details          |
-| POST   | /servers/:id/start   | ADMIN \| MOD | Start a stopped server             |
-| POST   | /servers/:id/stop    | ADMIN \| MOD | Stop a running server              |
-| POST   | /servers/:id/restart | ADMIN \| MOD | Restart a running server           |
-| DELETE | /servers/:id         | ADMIN        | Delete server + remove container   |
+| Method | Path                                  | Auth         | Description                                  |
+|--------|---------------------------------------|--------------|----------------------------------------------|
+| POST   | /servers                              | ADMIN        | Create and start a new server                |
+| GET    | /servers                              | JWT          | List visible servers                         |
+| GET    | /servers/:id                          | JWT          | Get single server details                    |
+| POST   | /servers/:id/start                    | ADMIN \| MOD | Start a stopped server (needs `SERVER_LIFECYCLE`) |
+| POST   | /servers/:id/stop                     | ADMIN \| MOD | Stop a running server (needs `SERVER_LIFECYCLE`)  |
+| POST   | /servers/:id/restart                  | ADMIN \| MOD | Restart a running server (needs `SERVER_LIFECYCLE`) |
+| DELETE | /servers/:id                          | ADMIN        | Delete server + remove container             |
+| POST   | /servers/:id/request-access           | JWT          | Request access to a REQUEST server           |
+| GET    | /servers/:id/my-access-request        | JWT          | Get own access request status                |
+| GET    | /servers/:id/access-requests          | ADMIN        | List pending access requests                 |
+| POST   | /servers/:id/access-requests/:userId/approve | ADMIN | Approve/assign access for a user    |
+| DELETE | /servers/:id/access-requests/:userId  | ADMIN        | Reject pending request or revoke access      |
 
-> Phase 1: all authenticated users can read all visible servers. MODs can operate every server. Per-server PBAC (`SERVER_LIFECYCLE`) is deferred to Phase 1.5.
+> MODs require the `SERVER_LIFECYCLE` permission (global or scoped to the server) for start/stop/restart. ADMIN bypasses PBAC and visibility checks.
 
 ### State machine
 
@@ -151,7 +158,7 @@ Compensation: if create returns an ambiguous result, a deterministic managed-con
 
 ```
 POST /servers/:id/start
-  1. fetch visible Server, 404 if absent/hidden
+  1. fetch visible Server for the requester, 404 if absent/hidden/CreaTING
   2. 409 if not STOPPED; 409 'Server container is not provisioned' if containerId is null
   3. preflight disk + memory checks (excluding target server)
   4. under advisory lock: recompute allocation, CAS STOPPED → STARTING
@@ -160,11 +167,13 @@ POST /servers/:id/start
   7. ambiguous Docker failure → CAS STARTING → ERROR
 ```
 
+Visibility and PBAC are enforced before any Docker call. A MOD without `SERVER_LIFECYCLE` on the server gets `403` from `PermissionsGuard`; a non-owner USER without visibility gets `404`.
+
 ### Stop server flow
 
 ```
 POST /servers/:id/stop
-  1. fetch visible Server, 404 if absent/hidden, 409 if not RUNNING
+  1. fetch visible Server for the requester, 404 if absent/hidden/CreaTING, 409 if not RUNNING
   2. parse STOP_WARN_SECONDS (default 30, range 0-300); malformed → 503, no mutation
   3. CAS RUNNING → STOPPING
   4. graceful stop helper:
@@ -178,13 +187,15 @@ POST /servers/:id/stop
   6. ambiguous Docker failure → CAS STOPPING → ERROR; known Docker rejection → restore RUNNING
 ```
 
+Visibility and PBAC are enforced before any Docker call.
+
 The explicit `DockerService.stopContainer` is mandatory even though the itzg image's `mc-server-runner` PID1 traps `SIGTERM` and sends `stop` over RCON: Docker marks `HasBeenManuallyStopped` **before** delivering the signal, so the `unless-stopped` restart policy cannot relaunch the container behind a `STOPPED` DB row. `stopContainer` distinguishes `204` (`stopped`) from `304` (`already-stopped`); both finalize to `STOPPED` because the container is exited. RCON is provided by the bundled `rcon-cli` inside the container over a non-interactive `docker exec`; the image manages its own random RCON password in `/data/.rcon-cli.*` and no password is stored in the backend.
 
 ### Restart server flow
 
 ```
 POST /servers/:id/restart
-  1. fetch visible Server, 404 if absent/hidden, 409 if not RUNNING
+  1. fetch visible Server for the requester, 404 if absent/hidden/CreaTING, 409 if not RUNNING
   2. parse STOP_WARN_SECONDS (default 30, range 0-300); malformed → 503, no mutation
   3. CAS RUNNING → STOPPING
   4. graceful stop helper (same sequence as stop)
@@ -195,19 +206,23 @@ POST /servers/:id/restart
   9. stop-phase ambiguous failure → ERROR; post-stop admission/start failure → STOPPED
 ```
 
+Visibility and PBAC are enforced before any Docker call.
+
 Restart never uses the Docker restart primitive; it always stops the container first and only admits the start phase after `stopContainer` confirms the container is stopped.
 
 ### Delete server flow
 
 ```
 DELETE /servers/:id (ADMIN only)
-  1. fetch visible Server, 404 if absent/hidden, 409 if not STOPPED
+  1. fetch visible Server for the requester, 404 if absent/hidden/CreaTING, 409 if not STOPPED
   2. CAS STOPPED → STOPPING
   3. if containerId is set, DockerService.removeContainer(containerId)
   4. DELETE FROM servers WHERE id AND status = STOPPING
   5. remove failure: inspect container — confirmed absent → delete row;
      confirmed running → ERROR (reconciliation heals); unconfirmable → ERROR, keep row
 ```
+
+Visibility is enforced before any Docker call. ADMIN-only route; no PBAC permission applies.
 
 ### Startup reconciliation
 
@@ -221,7 +236,6 @@ Every reconciliation write compares the full observed snapshot (`status`, `conta
 
 - Per-container stats, log streaming, and real-time container events (host `system.stats` is delivered — see [docs/realtime.md](./realtime.md)).
 - External RCON service, connection pool, console command endpoints, and encrypted `rconPassword` persistence.
-- Per-server PBAC / `ServerAccess` filtering.
 - Backups, world/version management, and delayed volume cleanup.
 
 ---
@@ -230,7 +244,7 @@ Every reconciliation write compares the full observed snapshot (`status`, `conta
 
 | Field       | Type           | Notes                          |
 |-------------|----------------|--------------------------------|
-| id          | String         | cuid PK                        |
+| id          | String         | UUID PK                        |
 | name        | String         |                                |
 | provider    | ServerProvider | VANILLA \| PAPER \| PURPUR \| FABRIC \| FORGE |
 | version     | String         | e.g. "1.21.1"                  |
@@ -251,14 +265,30 @@ Every reconciliation write compares the full observed snapshot (`status`, `conta
 
 ## GET /servers — Filtering by access
 
-The list endpoint must filter results based on the requesting user's access:
+The list endpoint applies the same visibility predicate to both the row query and the count:
 
-- **ADMIN** → sees all servers
+```sql
+status != 'CREATING'
+AND (
+  role = 'ADMIN'
+  OR accessType = 'OPEN'
+  OR EXISTS (
+    SELECT 1 FROM server_access
+    WHERE userId = :principalId
+      AND serverId = servers.id
+      AND status = 'APPROVED'
+  )
+)
+```
+
+- **ADMIN** → sees all non-CREATING servers.
 - **MOD / USER** → sees only:
   - servers with `accessType: OPEN`
-  - servers where they have an approved `ServerAccess` record (Phase 1.5)
+  - servers where they have an approved `ServerAccess` record
 
-For Phase 1 (before ServerAccess table exists): all authenticated users see all servers. Filtering added in Phase 1.5.
+`CREATING` rows are never visible. Hidden, absent, or provisional targets always return `404 'Server not found'` — never `403` — so access type and existence are not disclosed.
+
+The total returned matches the filtered row set. Pagination (`limit`/`offset`) is applied after filtering and ordering by `createdAt, id`.
 
 ---
 

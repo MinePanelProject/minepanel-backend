@@ -13,6 +13,8 @@ import {
   MinLength,
 } from 'class-validator';
 import {
+  type AccessType,
+  accessTypeEnum,
   type Difficulty,
   DifficultyEnum,
   type Gamemode,
@@ -100,6 +102,11 @@ export class CreateServerDto {
   @Min(2)
   @Max(32)
   viewDistance?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsIn(accessTypeEnum.enumValues)
+  accessType?: AccessType;
 
   @ApiProperty({ required: false })
   @IsOptional()

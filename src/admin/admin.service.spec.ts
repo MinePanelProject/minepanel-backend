@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import type { DrizzleDB } from 'src/db/db.module';
-import { refreshTokens, type User } from 'src/db/schema';
+import { modPermissions, refreshTokens, type User } from 'src/db/schema';
 import { AdminService } from './admin.service';
 
 const makeUser = (overrides: Partial<User> = {}): User => ({
@@ -315,6 +315,210 @@ describe('AdminService', () => {
         { totpEnabled: false, totpSecret: null, totpBackupCodes: null },
       ]);
       expect(update).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('mod permissions', () => {
+    let permService: AdminService;
+    let permClient: {
+      select: jest.Mock;
+      insert: jest.Mock;
+      update: jest.Mock;
+      delete: jest.Mock;
+      execute: jest.Mock;
+      transaction: jest.Mock;
+    };
+    let permSelectResults: unknown[][];
+    let permInsertReturning: unknown[][];
+    let permUpdatedValues: Record<string, unknown>[];
+    let permDeletedTables: unknown[];
+    let permExecuteCalls: unknown[];
+
+    const makeSelect = () => {
+      const chain = {
+        from: jest.fn(() => chain),
+        where: jest.fn(() => chain),
+        orderBy: jest.fn(async () => permSelectResults.shift() ?? []),
+        limit: jest.fn(async () => permSelectResults.shift() ?? []),
+      };
+      return chain;
+    };
+
+    beforeEach(() => {
+      permSelectResults = [];
+      permInsertReturning = [];
+      permUpdatedValues = [];
+      permDeletedTables = [];
+      permExecuteCalls = [];
+
+      permClient = {
+        select: jest.fn(makeSelect),
+        insert: jest.fn(() => ({
+          values: jest.fn((values: Record<string, unknown>) => {
+            const returningRows = permInsertReturning.shift() ?? [];
+            return {
+              onConflictDoNothing: jest.fn(() => ({
+                returning: jest.fn().mockResolvedValue(returningRows),
+              })),
+            };
+          }),
+        })),
+        update: jest.fn(() => ({
+          set: jest.fn((values: Record<string, unknown>) => {
+            permUpdatedValues.push(values);
+            return {
+              where: jest.fn(() => ({
+                returning: jest.fn(async () => []),
+              })),
+            };
+          }),
+        })),
+        delete: jest.fn((table: unknown) => {
+          permDeletedTables.push(table);
+          return {
+            where: jest.fn(() => ({
+              returning: jest.fn(async () => permSelectResults.shift() ?? []),
+            })),
+          };
+        }),
+        execute: jest.fn(async (...args: unknown[]) => {
+          permExecuteCalls.push(args);
+          return [];
+        }),
+        transaction: jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+          callback(permClient),
+        ),
+      };
+
+      permService = new AdminService(permClient as unknown as DrizzleDB);
+    });
+
+    it('lists mod permissions ordered by createdAt and id', async () => {
+      permSelectResults = [
+        [makeUser({ role: 'MOD' })],
+        [{ id: 'perm-1', permission: 'SERVER_LIFECYCLE' }],
+      ];
+
+      const result = await permService.listModPermissions('user-1');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].permission).toBe('SERVER_LIFECYCLE');
+    });
+
+    it('throws NotFoundException when listing permissions for a missing user', async () => {
+      permSelectResults = [[]];
+
+      await expect(permService.listModPermissions('missing')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('grants a global permission to a MOD user', async () => {
+      permSelectResults = [[makeUser({ role: 'MOD' })], []];
+      permInsertReturning = [
+        [{ id: 'perm-1', userId: 'user-1', permission: 'SERVER_LIFECYCLE', serverId: null }],
+      ];
+
+      const result = await permService.grantModPermission('user-1', {
+        permission: 'SERVER_LIFECYCLE',
+      });
+
+      expect(result.permission).toBe('SERVER_LIFECYCLE');
+      expect(result.serverId).toBeNull();
+      expect(permExecuteCalls).toHaveLength(1);
+    });
+
+    it('grants a scoped permission when the server exists', async () => {
+      permSelectResults = [[makeUser({ role: 'MOD' })], [{ id: 'server-1' }], []];
+      permInsertReturning = [
+        [{ id: 'perm-1', userId: 'user-1', permission: 'SERVER_LIFECYCLE', serverId: 'server-1' }],
+      ];
+
+      const result = await permService.grantModPermission('user-1', {
+        permission: 'SERVER_LIFECYCLE',
+        serverId: 'server-1',
+      });
+
+      expect(result.serverId).toBe('server-1');
+    });
+
+    it('rejects a scoped grant when the server does not exist', async () => {
+      permSelectResults = [[makeUser({ role: 'MOD' })], []];
+
+      await expect(
+        permService.grantModPermission('user-1', {
+          permission: 'SERVER_LIFECYCLE',
+          serverId: 'missing',
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('rejects a grant when the target is not a MOD', async () => {
+      permSelectResults = [[makeUser({ role: 'USER' })]];
+
+      await expect(
+        permService.grantModPermission('user-1', { permission: 'SERVER_LIFECYCLE' }),
+      ).rejects.toMatchObject({
+        status: 400,
+        response: { message: 'User is not a MOD' },
+      });
+    });
+
+    it('rejects a duplicate global grant with 409', async () => {
+      permSelectResults = [[makeUser({ role: 'MOD' })], [], [{ id: 'perm-1' }]];
+      permInsertReturning = [[]];
+
+      await expect(
+        permService.grantModPermission('user-1', { permission: 'SERVER_LIFECYCLE' }),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { message: 'Permission grant already exists' },
+      });
+    });
+
+    it('rejects whitespace serverId values so only null/omitted means global', async () => {
+      permSelectResults = [[makeUser({ role: 'MOD' })]];
+
+      await expect(
+        permService.grantModPermission('user-1', {
+          permission: 'SERVER_LIFECYCLE',
+          serverId: '   ',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('revokes a permission by id and userId, preventing cross-user IDOR', async () => {
+      permSelectResults = [[makeUser({})], [{ id: 'perm-1' }]];
+
+      await expect(permService.revokeModPermission('user-1', 'perm-1')).resolves.toBeUndefined();
+      expect(permDeletedTables).toContain(modPermissions);
+    });
+
+    it('returns 404 when revoking a permission id belonging to another user', async () => {
+      permSelectResults = [[makeUser({})], []];
+
+      await expect(permService.revokeModPermission('user-1', 'perm-2')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('returns 404 when revoking a permission for a missing user', async () => {
+      permSelectResults = [[]];
+
+      await expect(permService.revokeModPermission('missing', 'perm-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('deletes all mod permissions during a role change under the advisory lock', async () => {
+      rows = [makeUser({ role: 'MOD' })];
+      updatedRows = [makeUser({ role: 'USER' })];
+
+      await service.updateRole('user-1', 'USER');
+
+      expect(deleteMock).toHaveBeenCalledWith(modPermissions);
+      expect(deleteTables).toContain(modPermissions);
+      expect(execute).toHaveBeenCalled();
     });
   });
 });

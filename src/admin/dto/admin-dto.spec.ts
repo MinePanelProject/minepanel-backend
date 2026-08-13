@@ -1,5 +1,7 @@
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
+import { AdminPermissionParamDto } from './admin-permission-param.dto';
+import { GrantModPermissionDto } from './grant-mod-permission.dto';
 import { ListUsersQueryDto } from './list-users-query.dto';
 import { UpdateUserRoleDto } from './update-user-role.dto';
 import { UpdateUserStatusDto } from './update-user-status.dto';
@@ -67,5 +69,89 @@ describe('UserParamDto', () => {
 
   it.each(['', '   '])('rejects blank id %s', (id) => {
     expect(validateSync(plainToInstance(UserParamDto, { id }))).not.toHaveLength(0);
+  });
+});
+
+describe('GrantModPermissionDto', () => {
+  it('accepts a global grant with omitted serverId', () => {
+    expect(
+      validateSync(plainToInstance(GrantModPermissionDto, { permission: 'SERVER_LIFECYCLE' })),
+    ).toHaveLength(0);
+  });
+
+  it('accepts a global grant with explicit null serverId', () => {
+    expect(
+      validateSync(
+        plainToInstance(GrantModPermissionDto, { permission: 'SERVER_LIFECYCLE', serverId: null }),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('accepts a scoped grant with a non-empty serverId', () => {
+    expect(
+      validateSync(
+        plainToInstance(GrantModPermissionDto, {
+          permission: 'SERVER_LIFECYCLE',
+          serverId: 'server-1',
+        }),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it.each([
+    'INVALID',
+    'SERVER_LIFECYCLE ',
+  ])('rejects an invalid permission value %s', (permission) => {
+    expect(validateSync(plainToInstance(GrantModPermissionDto, { permission }))).not.toHaveLength(
+      0,
+    );
+  });
+
+  it.each([
+    '',
+    '   ',
+  ])('rejects a blank serverId %s so only null/omitted means global', (serverId) => {
+    expect(
+      validateSync(
+        plainToInstance(GrantModPermissionDto, { permission: 'SERVER_LIFECYCLE', serverId }),
+      ),
+    ).not.toHaveLength(0);
+  });
+});
+
+describe('AdminPermissionParamDto', () => {
+  it('accepts a user id and a permission grant id', () => {
+    expect(
+      validateSync(plainToInstance(AdminPermissionParamDto, { id: 'user-1', permId: 'perm-1' })),
+    ).toHaveLength(0);
+  });
+
+  it('rejects a missing user id', () => {
+    expect(
+      validateSync(plainToInstance(AdminPermissionParamDto, { permId: 'perm-1' })),
+    ).not.toHaveLength(0);
+  });
+
+  it('rejects a missing permission grant id', () => {
+    expect(
+      validateSync(plainToInstance(AdminPermissionParamDto, { id: 'user-1' })),
+    ).not.toHaveLength(0);
+  });
+
+  it.each([
+    ['id', ''],
+    ['permId', ''],
+    ['id', '   '],
+    ['permId', '   '],
+  ])('rejects a blank %s value %s', (field, value) => {
+    expect(
+      validateSync(
+        plainToInstance(AdminPermissionParamDto, {
+          id: 'user-1',
+          permId: 'perm-1',
+          [field]: value,
+        }),
+      ),
+    ).not.toHaveLength(0);
   });
 });

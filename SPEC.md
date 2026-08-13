@@ -1413,7 +1413,7 @@ Body: { event, timestamp, data: { ...event-specific fields } }
 
 #### Known implementation deltas (to fix)
 
-- **`schema.ts` is missing Phase 1.5 fields** — `users.googleId`, `users.githubId`, `users.minecraftVerified`; `servers.accessType`, `servers.discordWebhook`. These will be added as Drizzle migrations when Phase 1.5 starts.
+- **`schema.ts` is missing Phase 1.5 fields** — `users.googleId`, `users.githubId`, `users.minecraftVerified`; `servers.discordWebhook`. These will be added as Drizzle migrations when the corresponding Phase 1.5 features start.
 - **`users.passwordHash` is `notNull()` in schema** but spec requires `nullable` (OAuth-only users have no password). Fix before Phase 1.5 OAuth work.
 
 ### Phase 1.5 - Access Control + OAuth (post-core)

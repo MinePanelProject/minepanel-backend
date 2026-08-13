@@ -81,8 +81,8 @@
       "name": "Access Control & OAuth",
       "status": "planned",
       "description": "Fine-grained access control, social login, Minecraft account linking, and per-server visibility modes.",
-      "progress": 0,
-      "progressLabel": "0% — starts after Phase 1",
+      "progress": 40,
+      "progressLabel": "40% — authorization spine complete",
       "items": [
         { "text": "Google OAuth (frontend-initiated token flow)", "done": false },
         { "text": "GitHub OAuth (frontend-initiated token flow)", "done": false },
@@ -90,12 +90,10 @@
         { "text": "Offline player UUID linking", "done": false },
         { "text": "Magic link login (passwordless — requires SMTP)", "done": false },
         { "text": "Invite tokens & registration approval modes", "done": false },
-        { "text": "Server visibility: OPEN / REQUEST / PRIVATE", "done": false },
-        { "text": "Access request & approval workflow", "done": false },
-        { "text": "MOD granular permissions (PBAC per server)", "done": false },
-        { "text": "PermissionsGuard + @RequiresPermission decorator", "done": false },
-        { "text": "User status: PENDING / ACTIVE / BANNED enforcement", "done": false },
-        { "text": "Admin user management endpoints", "done": false }
+        { "text": "Server visibility: OPEN / REQUEST / PRIVATE", "done": true },
+        { "text": "Access request & approval workflow", "done": true },
+        { "text": "MOD granular permissions (PBAC per server)", "done": true },
+        { "text": "PermissionsGuard + @RequiresPermission decorator", "done": true }
       ]
     },
     {

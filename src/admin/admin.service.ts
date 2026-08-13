@@ -7,10 +7,18 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { and, count, eq, type SQL, sql } from 'drizzle-orm';
+import { and, asc, count, eq, isNull, type SQL, sql } from 'drizzle-orm';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
-import { type Role, refreshTokens, type UserStatus, users } from 'src/db/schema';
+import {
+  modPermissions,
+  type Role,
+  refreshTokens,
+  servers,
+  type UserStatus,
+  users,
+} from 'src/db/schema';
 import { type PublicUser, toPublicUser } from 'src/users/public-user';
+import { type GrantModPermissionDto } from './dto/grant-mod-permission.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 
 type AdminTransaction = Parameters<Parameters<DrizzleDB['transaction']>[0]>[0];
@@ -92,8 +100,96 @@ export class AdminService {
         .where(eq(users.id, userId))
         .returning();
 
+      await tx.delete(modPermissions).where(eq(modPermissions.userId, userId));
+
       return toPublicUser(updated);
     });
+  }
+
+  async listModPermissions(userId: string): Promise<(typeof modPermissions.$inferSelect)[]> {
+    const [target] = await this.db.select().from(users).where(eq(users.id, userId)).limit(1);
+    if (!target) {
+      throw new NotFoundException('User not found');
+    }
+
+    return this.db
+      .select()
+      .from(modPermissions)
+      .where(eq(modPermissions.userId, userId))
+      .orderBy(asc(modPermissions.createdAt), asc(modPermissions.id));
+  }
+
+  async grantModPermission(
+    userId: string,
+    dto: GrantModPermissionDto,
+  ): Promise<typeof modPermissions.$inferSelect> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${LAST_ADMIN_LOCK_KEY})`);
+
+      const [target] = await tx.select().from(users).where(eq(users.id, userId)).limit(1);
+      if (!target) {
+        throw new NotFoundException('User not found');
+      }
+      if (target.role !== 'MOD') {
+        throw new BadRequestException('User is not a MOD');
+      }
+
+      const rawServerId = dto.serverId ?? null;
+      if (rawServerId !== null && rawServerId.trim() === '') {
+        throw new BadRequestException('serverId must not be blank');
+      }
+      const serverId = rawServerId === null ? null : rawServerId.trim();
+      if (serverId) {
+        const [server] = await tx.select().from(servers).where(eq(servers.id, serverId)).limit(1);
+        if (!server) {
+          throw new NotFoundException('Server not found');
+        }
+      }
+
+      const [inserted] = await tx
+        .insert(modPermissions)
+        .values({ userId, permission: dto.permission, serverId })
+        .onConflictDoNothing()
+        .returning();
+
+      if (inserted) return inserted;
+
+      const [existing] = await tx
+        .select()
+        .from(modPermissions)
+        .where(
+          and(
+            eq(modPermissions.userId, userId),
+            eq(modPermissions.permission, dto.permission),
+            serverId === null
+              ? isNull(modPermissions.serverId)
+              : eq(modPermissions.serverId, serverId),
+          ),
+        )
+        .limit(1);
+
+      if (!existing) {
+        throw new ConflictException('Permission grant already exists');
+      }
+
+      throw new ConflictException('Permission grant already exists');
+    });
+  }
+
+  async revokeModPermission(userId: string, permId: string): Promise<void> {
+    const [target] = await this.db.select().from(users).where(eq(users.id, userId)).limit(1);
+    if (!target) {
+      throw new NotFoundException('User not found');
+    }
+
+    const result = await this.db
+      .delete(modPermissions)
+      .where(and(eq(modPermissions.id, permId), eq(modPermissions.userId, userId)))
+      .returning({ id: modPermissions.id });
+
+    if (result.length === 0) {
+      throw new NotFoundException('Permission grant not found');
+    }
   }
 
   async resetPassword(userId: string): Promise<{ tempPassword: string }> {

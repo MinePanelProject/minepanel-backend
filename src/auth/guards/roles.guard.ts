@@ -22,12 +22,10 @@ export class RolesGuard implements CanActivate {
     }
     const role = request.user.role;
 
-    const match = roles.includes(role);
-
-    if (!match) {
-      throw new ForbiddenException();
+    if (role === 'ADMIN' || roles.includes(role)) {
+      return true;
     }
 
-    return true;
+    throw new ForbiddenException();
   }
 }

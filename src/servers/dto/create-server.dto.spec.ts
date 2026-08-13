@@ -79,4 +79,26 @@ describe('CreateServerDto', () => {
     expect(dto.version).toBe('1.21.1');
     await expect(validate(dto)).resolves.toEqual([]);
   });
+
+  it.each(['OPEN', 'REQUEST', 'PRIVATE'])('accepts accessType %s', async (accessType) => {
+    const dto = plainToInstance(CreateServerDto, { ...validCreatePayload, accessType });
+
+    await expect(validate(dto)).resolves.toEqual([]);
+  });
+
+  it('defaults accessType to OPEN when omitted', async () => {
+    const dto = plainToInstance(CreateServerDto, validCreatePayload);
+
+    await expect(validate(dto)).resolves.toEqual([]);
+    expect(dto.accessType).toBeUndefined();
+  });
+
+  it('rejects an invalid accessType value', async () => {
+    const dto = plainToInstance(CreateServerDto, {
+      ...validCreatePayload,
+      accessType: 'RESTRICTED',
+    });
+
+    await expect(validate(dto)).resolves.not.toEqual([]);
+  });
 });

@@ -25,6 +25,18 @@
       }
     }
   },
+  "overrides": [
+    {
+      "includes": ["**/*.spec.ts", "**/*.e2e-spec.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noThenProperty": "off"
+          }
+        }
+      }
+    }
+  ],
   "formatter": {
     "enabled": true,
     "indentStyle": "space",

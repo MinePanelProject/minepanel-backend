@@ -90,9 +90,9 @@ describe('Database migrations (PostgreSQL e2e)', () => {
     return folder;
   };
 
-  const copyTwoMigrationFolder = async (): Promise<string> => {
+  const copyThreeMigrationFolder = async (): Promise<string> => {
     const journal = await readJournal();
-    const entries = journal.entries.slice(0, 2);
+    const entries = journal.entries.slice(0, 3);
     const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-e2e-upgrade-'));
     tempFolders.push(folder);
 
@@ -112,6 +112,80 @@ describe('Database migrations (PostgreSQL e2e)', () => {
 
     return folder;
   };
+
+  const seedPrePhase15Server = async (databaseUrl: string): Promise<string> => {
+    const serverId = crypto.randomUUID();
+    await withDatabaseConnection(databaseUrl, async (sql) => {
+      // explicit IDs are required; the repo uses crypto.randomUUID() as a
+      // Drizzle runtime default, not a database default
+      await sql`
+        INSERT INTO servers (
+          id, name, provider, version, port, status, max_players, difficulty,
+          gamemode, pvp, memory_limit_mb, online_mode, view_distance, allow_flight,
+          owner_id
+        ) VALUES (
+          ${serverId}, 'Legacy', 'PAPER', '1.21.1', 25565, 'STOPPED', 20, 'NORMAL',
+          'SURVIVAL', true, 2048, true, 10, false,
+          (SELECT id FROM users WHERE username = 'migration-admin' LIMIT 1)
+        )
+      `;
+    });
+    return serverId;
+  };
+
+  const seedMigrationAdmin = async (databaseUrl: string): Promise<void> => {
+    await withDatabaseConnection(databaseUrl, async (sql) => {
+      await sql`
+        INSERT INTO users (
+          id, email, username, password_hash, role, status
+        ) VALUES (
+          ${crypto.randomUUID()}, 'admin@example.com', 'migration-admin',
+          'not-used', 'ADMIN', 'ACTIVE'
+        )
+      `;
+    });
+  };
+
+  const readServerAccessType = async (
+    databaseUrl: string,
+    serverId: string,
+  ): Promise<string | null> =>
+    withDatabaseConnection(databaseUrl, async (sql) => {
+      const rows = await sql`SELECT access_type FROM servers WHERE id = ${serverId}`;
+      return (rows[0]?.access_type as string | undefined) ?? null;
+    });
+
+  const hasAccessTypeEnum = async (databaseUrl: string): Promise<boolean> =>
+    withDatabaseConnection(databaseUrl, async (sql) => {
+      // regtype casts throw on missing types; use the catalog directly so the
+      // pre-0003 state can be asserted as false without erroring
+      const rows = await sql`
+        SELECT 1 FROM pg_enum e
+        JOIN pg_type t ON t.oid = e.enumtypid
+        WHERE t.typname = 'access_type' AND t.typnamespace = 'public'::regnamespace
+          AND e.enumlabel = 'PRIVATE'
+      `;
+      return rows.length > 0;
+    });
+
+  const hasServerAccessCheck = async (databaseUrl: string): Promise<boolean> =>
+    withDatabaseConnection(databaseUrl, async (sql) => {
+      const rows = await sql`
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'server_access'
+          AND constraint_name = 'server_access_status_approved_at_total_check'
+      `;
+      return rows.length > 0;
+    });
+
+  const hasModPermissionPartialUnique = async (databaseUrl: string): Promise<boolean> =>
+    withDatabaseConnection(databaseUrl, async (sql) => {
+      const rows = await sql`
+        SELECT 1 FROM pg_indexes
+        WHERE indexname = 'mod_permissions_user_permission_unique_idx'
+      `;
+      return rows.length > 0;
+    });
 
   beforeAll(async () => {
     originalDatabaseUrl = process.env.DATABASE_URL;
@@ -171,9 +245,10 @@ describe('Database migrations (PostgreSQL e2e)', () => {
 
     await runProductionMigrations(databaseUrl, realMigrationsFolder);
 
-    await expect(journalRowCount(databaseUrl)).resolves.toBe(3);
+    await expect(journalRowCount(databaseUrl)).resolves.toBe(4);
     await expect(serversTableExists(databaseUrl)).resolves.toBe(true);
     await expect(hasCreatingStatus(databaseUrl)).resolves.toBe(true);
+    await expect(hasAccessTypeEnum(databaseUrl)).resolves.toBe(true);
   });
 
   it('is a no-op when rerun against an already migrated database', async () => {
@@ -182,7 +257,7 @@ describe('Database migrations (PostgreSQL e2e)', () => {
     await runProductionMigrations(databaseUrl, realMigrationsFolder);
     await runProductionMigrations(databaseUrl, realMigrationsFolder);
 
-    await expect(journalRowCount(databaseUrl)).resolves.toBe(3);
+    await expect(journalRowCount(databaseUrl)).resolves.toBe(4);
     await expect(hasCreatingStatus(databaseUrl)).resolves.toBe(true);
   });
 
@@ -194,21 +269,28 @@ describe('Database migrations (PostgreSQL e2e)', () => {
       runProductionMigrations(databaseUrl, realMigrationsFolder),
     ]);
 
-    await expect(journalRowCount(databaseUrl)).resolves.toBe(3);
+    await expect(journalRowCount(databaseUrl)).resolves.toBe(4);
     await expect(hasCreatingStatus(databaseUrl)).resolves.toBe(true);
   });
 
-  it('applies only missing migrations on an upgraded database', async () => {
+  it('applies only missing migrations on an upgraded database and defaults accessType to OPEN', async () => {
     const databaseUrl = await createBlankDatabase('upgrade');
-    const twoMigrationFolder = await copyTwoMigrationFolder();
+    const threeMigrationFolder = await copyThreeMigrationFolder();
 
-    await runProductionMigrations(databaseUrl, twoMigrationFolder);
-    await expect(journalRowCount(databaseUrl)).resolves.toBe(2);
-    await expect(hasCreatingStatus(databaseUrl)).resolves.toBe(false);
-
-    await runProductionMigrations(databaseUrl, realMigrationsFolder);
+    await runProductionMigrations(databaseUrl, threeMigrationFolder);
     await expect(journalRowCount(databaseUrl)).resolves.toBe(3);
     await expect(hasCreatingStatus(databaseUrl)).resolves.toBe(true);
+    await expect(hasAccessTypeEnum(databaseUrl)).resolves.toBe(false);
+
+    await seedMigrationAdmin(databaseUrl);
+    const serverId = await seedPrePhase15Server(databaseUrl);
+
+    await runProductionMigrations(databaseUrl, realMigrationsFolder);
+    await expect(journalRowCount(databaseUrl)).resolves.toBe(4);
+    await expect(readServerAccessType(databaseUrl, serverId)).resolves.toBe('OPEN');
+    await expect(hasAccessTypeEnum(databaseUrl)).resolves.toBe(true);
+    await expect(hasServerAccessCheck(databaseUrl)).resolves.toBe(true);
+    await expect(hasModPermissionPartialUnique(databaseUrl)).resolves.toBe(true);
   });
 
   it('rejects a corrupted migrations folder without writing partial journal rows', async () => {

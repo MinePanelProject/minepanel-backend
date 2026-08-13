@@ -45,4 +45,22 @@ describe('RolesGuard', () => {
       ForbiddenException,
     );
   });
+
+  it('allows ADMIN to bypass any explicit role list', async () => {
+    reflector.getAllAndOverride = jest.fn().mockReturnValue(['MOD']);
+
+    await expect(guard.canActivate(makeContext('ADMIN'))).resolves.toBe(true);
+  });
+
+  it('allows ADMIN to bypass even when no listed role matches', async () => {
+    reflector.getAllAndOverride = jest.fn().mockReturnValue(['USER']);
+
+    await expect(guard.canActivate(makeContext('ADMIN'))).resolves.toBe(true);
+  });
+
+  it('still requires literal membership for non-ADMIN principals', async () => {
+    reflector.getAllAndOverride = jest.fn().mockReturnValue(['MOD']);
+
+    await expect(guard.canActivate(makeContext('USER'))).rejects.toBeInstanceOf(ForbiddenException);
+  });
 });

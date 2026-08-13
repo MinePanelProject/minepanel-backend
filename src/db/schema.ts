@@ -1,4 +1,17 @@
-import { boolean, integer, pgEnum, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import {
+  boolean,
+  check,
+  index,
+  integer,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  unique,
+  uniqueIndex,
+  varchar,
+} from 'drizzle-orm/pg-core';
 
 // --- Enums ---
 
@@ -24,6 +37,16 @@ export const GamemodeEnum = pgEnum('server_gamemode', [
   'CREATIVE',
   'ADVENTURE',
   'SPECTATOR',
+]);
+export const accessTypeEnum = pgEnum('access_type', ['OPEN', 'REQUEST', 'PRIVATE']);
+export const serverAccessStatusEnum = pgEnum('server_access_status', ['PENDING', 'APPROVED']);
+export const modPermissionEnum = pgEnum('mod_permission', [
+  'SERVER_LIFECYCLE',
+  'SERVER_CONFIG',
+  'PLUGIN_MANAGEMENT',
+  'WHITELIST_MANAGEMENT',
+  'USER_MANAGEMENT',
+  'FILE_MANAGER',
 ]);
 
 export const userStatusEnum = pgEnum('user_status', ['ACTIVE', 'PENDING', 'BANNED']);
@@ -101,12 +124,76 @@ export const servers = pgTable('servers', {
   ownerId: text('owner_id')
     .notNull()
     .references(() => users.id),
+  accessType: accessTypeEnum('access_type').default('OPEN').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at')
     .defaultNow()
     .notNull()
     .$onUpdateFn(() => new Date()),
 });
+
+export const serverAccess = pgTable(
+  'server_access',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    serverId: text('server_id')
+      .notNull()
+      .references(() => servers.id, { onDelete: 'cascade' }),
+    status: serverAccessStatusEnum('status').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    approvedAt: timestamp('approved_at'),
+  },
+  (table) => [
+    unique('server_access_user_id_server_id_unique').on(table.userId, table.serverId),
+    index('server_access_server_id_status_created_at_id_idx').on(
+      table.serverId,
+      table.status,
+      table.createdAt,
+      table.id,
+    ),
+    index('server_access_user_id_server_id_idx').on(table.userId, table.serverId),
+    check(
+      'server_access_status_approved_at_total_check',
+      sql`(${table.status} = 'PENDING' AND ${table.approvedAt} IS NULL) OR (${table.status} = 'APPROVED' AND ${table.approvedAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
+export const modPermissions = pgTable(
+  'mod_permissions',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    permission: modPermissionEnum('permission').notNull(),
+    serverId: text('server_id').references(() => servers.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('mod_permissions_user_permission_unique_idx')
+      .on(table.userId, table.permission)
+      .where(sql`${table.serverId} IS NULL`),
+    unique('mod_permissions_user_permission_server_unique').on(
+      table.userId,
+      table.permission,
+      table.serverId,
+    ),
+    index('mod_permissions_server_id_idx').on(table.serverId),
+    index('mod_permissions_user_permission_server_lookup_idx').on(
+      table.userId,
+      table.permission,
+      table.serverId,
+    ),
+  ],
+);
 
 // --- Inferred types ---
 
@@ -115,9 +202,16 @@ export type NewUser = typeof users.$inferInsert;
 export type RefreshToken = typeof refreshTokens.$inferSelect;
 export type Server = typeof servers.$inferSelect;
 export type NewServer = typeof servers.$inferInsert;
+export type ServerAccess = typeof serverAccess.$inferSelect;
+export type NewServerAccess = typeof serverAccess.$inferInsert;
+export type ModPermission = (typeof modPermissionEnum.enumValues)[number];
+export type ModPermissionRow = typeof modPermissions.$inferSelect;
+export type NewModPermission = typeof modPermissions.$inferInsert;
 export type Role = (typeof roleEnum.enumValues)[number];
 export type ServerProvider = (typeof serverProviderEnum.enumValues)[number];
 export type ServerStatus = (typeof serverStatusEnum.enumValues)[number];
+export type AccessType = (typeof accessTypeEnum.enumValues)[number];
+export type ServerAccessStatus = (typeof serverAccessStatusEnum.enumValues)[number];
 export type Difficulty = (typeof DifficultyEnum.enumValues)[number];
 export type Gamemode = (typeof GamemodeEnum.enumValues)[number];
 export type UserStatus = (typeof userStatusEnum.enumValues)[number];

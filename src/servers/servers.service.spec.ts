@@ -17,6 +17,7 @@ import {
   RconUnavailableError,
 } from 'src/docker/docker.service';
 import { ListServersQueryDto } from './dto/list-servers-query.dto';
+import { type ServerPrincipal } from './server-access';
 import { ServersService } from './servers.service';
 
 type QueryChain<T> = Promise<T> & {
@@ -26,13 +27,35 @@ type QueryChain<T> = Promise<T> & {
   offset: jest.Mock;
 };
 
-const makeQuery = <T>(result: T): QueryChain<T> => {
-  const query = Promise.resolve(result) as QueryChain<T>;
-  query.where = jest.fn(() => query);
-  query.orderBy = jest.fn(() => query);
-  query.limit = jest.fn(() => query);
-  query.offset = jest.fn(() => query);
-  return query;
+const makeQuery = <T>(getResult: () => T): QueryChain<T> => {
+  // lazy thenable: the result getter runs exactly once, only when the query is
+  // awaited — embedded EXISTS subqueries (built but never awaited) consume no
+  // result slot, mirroring the implementation
+  let _result: T | undefined;
+  const _consumed = false;
+
+  // lazy thenable: the result getter runs exactly once, only when the query is
+  // awaited — embedded EXISTS subqueries (built but never awaited) consume no
+  // result slot, mirroring the implementation
+  class LazyQuery {
+    private result: T | undefined;
+    private consumed = false;
+
+    then(onFulfilled: (value: T) => unknown) {
+      if (!this.consumed) {
+        this.result = getResult();
+        this.consumed = true;
+      }
+      return Promise.resolve(this.result).then(onFulfilled);
+    }
+
+    where = jest.fn(() => this);
+    orderBy = jest.fn(() => this);
+    limit = jest.fn(() => this);
+    offset = jest.fn(() => this);
+  }
+
+  return new LazyQuery() as unknown as QueryChain<T>;
 };
 
 const makeServer = (overrides: Partial<Server> = {}): Server => ({
@@ -56,6 +79,7 @@ const makeServer = (overrides: Partial<Server> = {}): Server => ({
   worldPath: '/mc-data/server-1',
   rconPassword: 'secret',
   ownerId: 'owner-1',
+  accessType: 'OPEN',
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
   updatedAt: new Date('2026-01-01T00:00:00.000Z'),
   ...overrides,
@@ -84,6 +108,8 @@ const makeInspect = (overrides: Partial<ContainerInspectState> = {}): ContainerI
 });
 
 const docker503 = () => new ServiceUnavailableException('Docker daemon unreachable');
+
+const adminPrincipal: ServerPrincipal = { id: 'authenticated-owner', role: 'ADMIN' };
 
 const resourceResponse = (error: unknown): unknown =>
   error instanceof HttpException ? error.getResponse() : undefined;
@@ -150,7 +176,7 @@ describe('ServersService', () => {
 
     db = {
       select: jest.fn(() => {
-        const query = makeQuery(selectResults.shift() ?? []);
+        const query = makeQuery(() => selectResults.shift() ?? []);
         queryChains.push(query);
         return { from: jest.fn(() => query) };
       }),
@@ -223,12 +249,107 @@ describe('ServersService', () => {
     service = module.get<ServersService>(ServersService);
   });
 
+  describe('visibility and requester propagation', () => {
+    it('lets ADMIN list and count all non-CREATING rows', async () => {
+      const visible = makeServer({ accessType: 'PRIVATE' });
+      selectResults.push([visible], [{ total: 1 }]);
+
+      const result = await service.listServers(new ListServersQueryDto(), adminPrincipal);
+
+      expect(result.total).toBe(1);
+      expect(result.data[0].id).toBe('server-1');
+    });
+
+    it('lets a USER see OPEN servers', async () => {
+      const open = makeServer({ accessType: 'OPEN' });
+      // lazy mock: embedded EXISTS subqueries consume no slot; rows then count
+      selectResults.push([open], [{ total: 1 }]);
+
+      const result = await service.listServers(new ListServersQueryDto(), {
+        id: 'user-1',
+        role: 'USER',
+      });
+
+      expect(result.total).toBe(1);
+      expect(result.data[0].accessType).toBe('OPEN');
+    });
+
+    it('hides REQUEST and PRIVATE servers from a USER without approved access', async () => {
+      selectResults.push([]);
+
+      await expect(
+        service.getServer('server-1', { id: 'user-1', role: 'USER' }),
+      ).rejects.toMatchObject({
+        status: 404,
+        response: { message: 'Server not found' },
+      });
+    });
+
+    it('lets a USER see REQUEST servers after access approval', async () => {
+      const requestServer = makeServer({ accessType: 'REQUEST' });
+      selectResults.push([requestServer]);
+
+      const result = await service.getServer('server-1', { id: 'user-1', role: 'USER' });
+
+      expect(result.id).toBe('server-1');
+      expect(result.accessType).toBe('REQUEST');
+    });
+
+    it('applies the same visibility predicate to list rows and total count', async () => {
+      // 1 select call for the EXISTS subquery builder + 1 rows + 1 count
+      selectResults.push([], [{ total: 0 }]);
+
+      await service.listServers(new ListServersQueryDto(), { id: 'user-1', role: 'USER' });
+
+      expect(db.select).toHaveBeenCalledTimes(3);
+    });
+
+    it('returns 404 before any Docker work when a USER targets a hidden server', async () => {
+      selectResults.push([]);
+
+      await expect(
+        service.startServer('server-1', { id: 'user-1', role: 'USER' }),
+      ).rejects.toMatchObject({
+        status: 404,
+        response: { message: 'Server not found' },
+      });
+      expect(docker.getHostInfo).not.toHaveBeenCalled();
+      expect(docker.startContainer).not.toHaveBeenCalled();
+    });
+
+    it('propagates the requester principal to create, start, stop, and delete', async () => {
+      const creating = makeServer({ status: 'CREATING', containerId: null });
+      const withId = makeServer({ status: 'CREATING' });
+      const running = makeServer({ status: 'RUNNING' });
+      const stopped = makeServer({ status: 'STOPPED' });
+      selectResults.push([]);
+      insertResults.push(creating);
+      updateResults.push([withId], [running]);
+
+      const userPrincipal = { id: 'owner-2', role: 'USER' as const };
+      await service.createServer(makeDto(), userPrincipal);
+      expect(insertedValues[0]).toEqual(expect.objectContaining({ ownerId: 'owner-2' }));
+
+      selectResults.push([running]);
+      updateResults.push([makeServer({ status: 'STOPPING' })], [stopped]);
+      await service.stopServer('server-1', userPrincipal);
+
+      selectResults.push([stopped], [running]);
+      updateResults.push([makeServer({ status: 'STARTING' })], [running]);
+      await service.startServer('server-1', userPrincipal);
+
+      selectResults.push([stopped]);
+      updateResults.push([makeServer({ status: 'STOPPING' })]);
+      await service.deleteServer('server-1', userPrincipal);
+    });
+  });
+
   describe('reads and projection', () => {
     it('lists visible rows with total, defaults, stable ordering, and no private fields', async () => {
       const visible = makeServer();
       selectResults.push([visible], [{ total: 1 }]);
 
-      const result = await service.listServers(new ListServersQueryDto());
+      const result = await service.listServers(new ListServersQueryDto(), adminPrincipal);
 
       expect(result).toEqual({ data: [expect.objectContaining({ id: 'server-1' })], total: 1 });
       expect(result.data[0]).not.toHaveProperty('rconPassword');
@@ -242,7 +363,7 @@ describe('ServersService', () => {
     it('honors explicit pagination values', async () => {
       selectResults.push([], [{ total: 0 }]);
 
-      await service.listServers({ limit: 7, offset: 14 });
+      await service.listServers({ limit: 7, offset: 14 }, adminPrincipal);
 
       expect(queryChains[0].limit).toHaveBeenCalledWith(7);
       expect(queryChains[0].offset).toHaveBeenCalledWith(14);
@@ -251,7 +372,7 @@ describe('ServersService', () => {
     it('returns a public projection for a single visible row', async () => {
       selectResults.push([makeServer()]);
 
-      const result = await service.getServer('server-1');
+      const result = await service.getServer('server-1', adminPrincipal);
 
       expect(result.id).toBe('server-1');
       expect(result).not.toHaveProperty('rconPassword');
@@ -262,30 +383,32 @@ describe('ServersService', () => {
     it('hides CREATING rows as not found', async () => {
       selectResults.push([]);
 
-      await expect(service.getServer('creating')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.getServer('creating', adminPrincipal)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
 
     it('distinguishes absent rows from visible wrong-state conflicts', async () => {
       selectResults.push([]);
-      await expect(service.startServer('missing')).rejects.toMatchObject({
+      await expect(service.startServer('missing', adminPrincipal)).rejects.toMatchObject({
         response: expect.objectContaining({ message: 'Server not found' }),
         status: 404,
       });
 
       selectResults.push([makeServer({ status: 'RUNNING' })]);
-      await expect(service.startServer('server-1')).rejects.toMatchObject({
+      await expect(service.startServer('server-1', adminPrincipal)).rejects.toMatchObject({
         response: expect.objectContaining({ message: 'Server is not in STOPPED state' }),
         status: 409,
       });
 
       selectResults.push([makeServer({ status: 'STOPPED' })]);
-      await expect(service.stopServer('server-1')).rejects.toMatchObject({
+      await expect(service.stopServer('server-1', adminPrincipal)).rejects.toMatchObject({
         response: expect.objectContaining({ message: 'Server is not in RUNNING state' }),
         status: 409,
       });
 
       selectResults.push([makeServer({ status: 'RUNNING' })]);
-      await expect(service.deleteServer('server-1')).rejects.toMatchObject({
+      await expect(service.deleteServer('server-1', adminPrincipal)).rejects.toMatchObject({
         response: expect.objectContaining({ message: 'Server is not in STOPPED state' }),
         status: 409,
       });
@@ -297,7 +420,7 @@ describe('ServersService', () => {
       configValues = { MIN_FREE_DISK_MB: '0', MAX_MEMORY_RATIO: '0.9' };
       selectResults.push([]);
 
-      await expect(service.createServer(makeDto(), 'owner-1')).rejects.toMatchObject({
+      await expect(service.createServer(makeDto(), adminPrincipal)).rejects.toMatchObject({
         response: expect.objectContaining({ message: 'Host resource information unavailable' }),
         status: 503,
       });
@@ -311,7 +434,7 @@ describe('ServersService', () => {
 
       let error: unknown;
       try {
-        await service.createServer(makeDto(), 'owner-1');
+        await service.createServer(makeDto(), adminPrincipal);
       } catch (caught) {
         error = caught;
       }
@@ -333,7 +456,7 @@ describe('ServersService', () => {
 
       let error: unknown;
       try {
-        await service.createServer(makeDto({ memoryLimitMb: 4096 }), 'owner-1');
+        await service.createServer(makeDto({ memoryLimitMb: 4096 }), adminPrincipal);
       } catch (caught) {
         error = caught;
       }
@@ -355,7 +478,7 @@ describe('ServersService', () => {
       insertResults.push(makeServer({ status: 'CREATING', containerId: null }));
       updateResults.push([makeServer({ status: 'CREATING' })], [makeServer({ status: 'RUNNING' })]);
 
-      await service.createServer(makeDto(), 'owner-1');
+      await service.createServer(makeDto(), adminPrincipal);
 
       // the create allocation query must not filter STOPPED rows
       expect(queryChains[0].where).not.toHaveBeenCalled();
@@ -364,7 +487,7 @@ describe('ServersService', () => {
     it('fails closed for a null total RAM measurement', async () => {
       setResources({ totalRamMb: null, cpuCount: 8 }, { totalDiskMb: 100000, freeDiskMb: 5000 });
 
-      await expect(service.createServer(makeDto(), 'owner-1')).rejects.toMatchObject({
+      await expect(service.createServer(makeDto(), adminPrincipal)).rejects.toMatchObject({
         response: expect.objectContaining({ message: 'Host resource information unavailable' }),
         status: 503,
       });
@@ -375,7 +498,7 @@ describe('ServersService', () => {
     it('fails closed for a null CPU measurement', async () => {
       setResources({ totalRamMb: 8192, cpuCount: null }, { totalDiskMb: 100000, freeDiskMb: 5000 });
 
-      await expect(service.createServer(makeDto(), 'owner-1')).rejects.toMatchObject({
+      await expect(service.createServer(makeDto(), adminPrincipal)).rejects.toMatchObject({
         response: expect.objectContaining({ message: 'Host resource information unavailable' }),
         status: 503,
       });
@@ -389,7 +512,7 @@ describe('ServersService', () => {
       selectResults.push([]);
       insertResults.push(makeServer({ status: 'CREATING', containerId: null }));
 
-      await expect(service.createServer(makeDto(), 'owner-1')).rejects.toBe(error);
+      await expect(service.createServer(makeDto(), adminPrincipal)).rejects.toBe(error);
 
       expect(db.delete).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
@@ -400,7 +523,7 @@ describe('ServersService', () => {
       docker.getHostInfo = jest.fn().mockResolvedValue({ totalRamMb: 8192, cpuCount: 8 });
       docker.getHostDiskInfo = jest.fn().mockRejectedValue(error);
 
-      await expect(service.createServer(makeDto(), 'owner-1')).rejects.toBe(error);
+      await expect(service.createServer(makeDto(), adminPrincipal)).rejects.toBe(error);
       expect(db.transaction).not.toHaveBeenCalled();
       expect(docker.createContainer).not.toHaveBeenCalled();
     });
@@ -411,7 +534,7 @@ describe('ServersService', () => {
         throw new InternalServerErrorException('disk read failed');
       });
 
-      await expect(service.createServer(makeDto(), 'owner-1')).rejects.toBeInstanceOf(
+      await expect(service.createServer(makeDto(), adminPrincipal)).rejects.toBeInstanceOf(
         InternalServerErrorException,
       );
       expect(calls).toEqual(['hostInfo', 'diskInfo']);
@@ -427,7 +550,7 @@ describe('ServersService', () => {
       insertResults.push(creating);
       updateResults.push([withId], [running]);
 
-      const result = await service.createServer(makeDto(), 'authenticated-owner');
+      const result = await service.createServer(makeDto(), adminPrincipal);
 
       expect(result).toEqual(expect.objectContaining({ id: 'server-1', status: 'RUNNING' }));
       expect(result).not.toHaveProperty('containerId');
@@ -463,7 +586,7 @@ describe('ServersService', () => {
       updateResults.push([makeServer({ status: 'CREATING' })], [makeServer({ status: 'RUNNING' })]);
       selectResults.push([]);
 
-      await service.createServer(dto, 'authenticated-owner');
+      await service.createServer(dto, adminPrincipal);
 
       expect(insertedValues[0]).toEqual(
         expect.objectContaining({ ownerId: 'authenticated-owner' }),
@@ -477,7 +600,7 @@ describe('ServersService', () => {
       selectResults.push([]);
       insertResults.push(makeServer({ status: 'CREATING', containerId: null }));
 
-      await expect(service.createServer(makeDto(), 'owner-1')).rejects.toBe(error);
+      await expect(service.createServer(makeDto(), adminPrincipal)).rejects.toBe(error);
 
       expect(docker.findManagedContainer).toHaveBeenCalledWith('server-1');
       expect(db.delete).toHaveBeenCalledTimes(1);
@@ -491,7 +614,7 @@ describe('ServersService', () => {
       selectResults.push([]);
       insertResults.push(makeServer({ status: 'CREATING', containerId: null }));
 
-      await expect(service.createServer(makeDto(), 'owner-1')).rejects.toBe(error);
+      await expect(service.createServer(makeDto(), adminPrincipal)).rejects.toBe(error);
 
       expect(db.delete).not.toHaveBeenCalled();
       expect(updatedValues).toEqual([
@@ -506,7 +629,7 @@ describe('ServersService', () => {
       selectResults.push([]);
       insertResults.push(makeServer({ status: 'CREATING', containerId: null }));
 
-      await expect(service.createServer(makeDto(), 'owner-1')).rejects.toBe(error);
+      await expect(service.createServer(makeDto(), adminPrincipal)).rejects.toBe(error);
       expect(db.delete).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
     });
@@ -521,7 +644,7 @@ describe('ServersService', () => {
       insertResults.push(created);
       updateResults.push([]);
 
-      await expect(service.createServer(makeDto(), 'owner-1')).rejects.toBeInstanceOf(
+      await expect(service.createServer(makeDto(), adminPrincipal)).rejects.toBeInstanceOf(
         InternalServerErrorException,
       );
 
@@ -537,7 +660,7 @@ describe('ServersService', () => {
       selectResults.push([stopped], []);
       updateResults.push([starting], [running]);
 
-      const result = await service.startServer('server-1');
+      const result = await service.startServer('server-1', adminPrincipal);
 
       expect(result.status).toBe('RUNNING');
       expect(docker.startContainer).toHaveBeenCalledTimes(1);
@@ -547,7 +670,7 @@ describe('ServersService', () => {
     it('rejects an unprovisioned server before resource checks or Docker calls', async () => {
       selectResults.push([makeServer({ containerId: null })]);
 
-      await expect(service.startServer('server-1')).rejects.toMatchObject({
+      await expect(service.startServer('server-1', adminPrincipal)).rejects.toMatchObject({
         response: expect.objectContaining({ message: 'Server container is not provisioned' }),
         status: 409,
       });
@@ -559,7 +682,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer()], []);
       updateResults.push([]);
 
-      await expect(service.startServer('server-1')).rejects.toMatchObject({
+      await expect(service.startServer('server-1', adminPrincipal)).rejects.toMatchObject({
         response: expect.objectContaining({ message: 'Server is not in STOPPED state' }),
         status: 409,
       });
@@ -572,7 +695,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer()], []);
       updateResults.push([makeServer({ status: 'STARTING' })], [makeServer({ status: 'ERROR' })]);
 
-      await expect(service.startServer('server-1')).rejects.toBe(error);
+      await expect(service.startServer('server-1', adminPrincipal)).rejects.toBe(error);
 
       expect(updatedValues.map((value) => value.status)).toEqual(['STARTING', 'ERROR']);
       expect(updatedValues.map((value) => value.status)).not.toContain('STOPPED');
@@ -584,7 +707,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer()], []);
       updateResults.push([makeServer({ status: 'STARTING' })], [makeServer({ status: 'STOPPED' })]);
 
-      await expect(service.startServer('server-1')).rejects.toBe(error);
+      await expect(service.startServer('server-1', adminPrincipal)).rejects.toBe(error);
 
       expect(updatedValues.map((value) => value.status)).toEqual(['STARTING', 'STOPPED']);
     });
@@ -597,7 +720,7 @@ describe('ServersService', () => {
         [makeServer({ status: 'ERROR' })],
       );
 
-      await expect(service.startServer('server-1')).rejects.toBeInstanceOf(
+      await expect(service.startServer('server-1', adminPrincipal)).rejects.toBeInstanceOf(
         InternalServerErrorException,
       );
       expect(docker.startContainer).toHaveBeenCalledTimes(1);
@@ -610,7 +733,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'RUNNING' })]);
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'STOPPED' })]);
 
-      const result = await service.stopServer('server-1');
+      const result = await service.stopServer('server-1', adminPrincipal);
 
       expect(result.status).toBe('STOPPED');
       expect(docker.stopContainer).toHaveBeenCalledWith('container-1', 10);
@@ -621,7 +744,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'RUNNING' })]);
       updateResults.push([]);
 
-      await expect(service.stopServer('server-1')).rejects.toMatchObject({
+      await expect(service.stopServer('server-1', adminPrincipal)).rejects.toMatchObject({
         response: expect.objectContaining({ message: 'Server is not in RUNNING state' }),
         status: 409,
       });
@@ -634,7 +757,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'RUNNING' })]);
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'ERROR' })]);
 
-      await expect(service.stopServer('server-1')).rejects.toBe(error);
+      await expect(service.stopServer('server-1', adminPrincipal)).rejects.toBe(error);
       expect(updatedValues.map((value) => value.status)).toEqual(['STOPPING', 'ERROR']);
     });
 
@@ -644,7 +767,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'RUNNING' })]);
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'RUNNING' })]);
 
-      await expect(service.stopServer('server-1')).rejects.toBe(error);
+      await expect(service.stopServer('server-1', adminPrincipal)).rejects.toBe(error);
       expect(updatedValues.map((value) => value.status)).toEqual(['STOPPING', 'RUNNING']);
     });
   });
@@ -659,7 +782,7 @@ describe('ServersService', () => {
         [makeServer({ status: 'RUNNING' })],
       );
 
-      const result = await service.restartServer('server-1');
+      const result = await service.restartServer('server-1', adminPrincipal);
 
       expect(result.status).toBe('RUNNING');
       expect(docker.stopContainer).toHaveBeenCalledWith('container-1', 10);
@@ -681,7 +804,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'RUNNING' })]);
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'ERROR' })]);
 
-      await expect(service.restartServer('server-1')).rejects.toBe(error);
+      await expect(service.restartServer('server-1', adminPrincipal)).rejects.toBe(error);
       expect(docker.startContainer).not.toHaveBeenCalled();
       expect(updatedValues.map((value) => value.status)).toEqual(['STOPPING', 'ERROR']);
     });
@@ -691,7 +814,9 @@ describe('ServersService', () => {
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'STOPPED' })]);
       setResources(undefined, { totalDiskMb: 1000, freeDiskMb: 100 });
 
-      await expect(service.restartServer('server-1')).rejects.toMatchObject({ status: 422 });
+      await expect(service.restartServer('server-1', adminPrincipal)).rejects.toMatchObject({
+        status: 422,
+      });
 
       expect(docker.stopContainer).toHaveBeenCalledTimes(1);
       expect(docker.startContainer).not.toHaveBeenCalled();
@@ -708,7 +833,7 @@ describe('ServersService', () => {
         [makeServer({ status: 'ERROR' })],
       );
 
-      await expect(service.restartServer('server-1')).rejects.toBe(error);
+      await expect(service.restartServer('server-1', adminPrincipal)).rejects.toBe(error);
 
       expect(successfulUpdatedValues.map((value) => value.status)).toEqual([
         'STOPPING',
@@ -727,7 +852,7 @@ describe('ServersService', () => {
         [makeServer({ status: 'STOPPED' })],
       );
 
-      await expect(service.restartServer('server-1')).rejects.toBe(error);
+      await expect(service.restartServer('server-1', adminPrincipal)).rejects.toBe(error);
 
       expect(successfulUpdatedValues.map((value) => value.status)).toEqual([
         'STOPPING',
@@ -766,7 +891,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'RUNNING' })]);
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'STOPPED' })]);
 
-      const _promise = service.stopServer('server-1');
+      const _promise = service.stopServer('server-1', adminPrincipal);
       await flush();
       expect(events).toEqual(['rcon:say §cServer closing in 5 seconds...']);
       jest.advanceTimersByTime(5_000);
@@ -798,7 +923,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'RUNNING' })]);
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'STOPPED' })]);
 
-      const promise = service.stopServer('server-1');
+      const promise = service.stopServer('server-1', adminPrincipal);
       await flush();
       expect(events).toEqual(['rcon:say', 'rcon:save-all']);
       expect(jest.getTimerCount()).toBe(1);
@@ -814,7 +939,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'RUNNING' })]);
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'STOPPED' })]);
 
-      await expect(service.stopServer('server-1')).resolves.toEqual(
+      await expect(service.stopServer('server-1', adminPrincipal)).resolves.toEqual(
         expect.objectContaining({ status: 'STOPPED' }),
       );
       expect(docker.executeRconCommand).toHaveBeenCalledTimes(1);
@@ -859,7 +984,7 @@ describe('ServersService', () => {
         [makeServer({ status: expectedStatus })],
       );
 
-      const result = service.stopServer('server-1');
+      const result = service.stopServer('server-1', adminPrincipal);
       if (finalDockerError) {
         await expect(result).rejects.toBe(finalDockerError);
       } else {
@@ -883,7 +1008,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'RUNNING' })]);
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'STOPPED' })]);
 
-      const promise = service.stopServer('server-1');
+      const promise = service.stopServer('server-1', adminPrincipal);
       await flush();
       jest.advanceTimersByTime(2_000);
       await flush();
@@ -902,7 +1027,7 @@ describe('ServersService', () => {
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'ERROR' })]);
 
       jest.useFakeTimers();
-      const promise = service.stopServer('server-1');
+      const promise = service.stopServer('server-1', adminPrincipal);
       await flush();
       jest.advanceTimersByTime(3_000);
       await expect(promise).rejects.toBe(error);
@@ -919,7 +1044,7 @@ describe('ServersService', () => {
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'RUNNING' })]);
 
       jest.useFakeTimers();
-      const promise = service.stopServer('server-1');
+      const promise = service.stopServer('server-1', adminPrincipal);
       await flush();
       jest.advanceTimersByTime(3_000);
       await expect(promise).rejects.toBe(error);
@@ -935,7 +1060,7 @@ describe('ServersService', () => {
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'STOPPED' })]);
 
       jest.useFakeTimers();
-      const promise = service.stopServer('server-1');
+      const promise = service.stopServer('server-1', adminPrincipal);
       await flush();
       jest.advanceTimersByTime(3_000);
       await expect(promise).rejects.toBe(error);
@@ -954,7 +1079,7 @@ describe('ServersService', () => {
       configValues.STOP_WARN_SECONDS = raw;
       selectResults.push([makeServer({ status: 'RUNNING' })]);
 
-      await expect(service.stopServer('server-1')).rejects.toMatchObject({
+      await expect(service.stopServer('server-1', adminPrincipal)).rejects.toMatchObject({
         status: 503,
         response: { message: 'Graceful shutdown configuration unavailable' },
       });
@@ -996,13 +1121,13 @@ describe('ServersService', () => {
         })),
       }));
 
-      const first = service.stopServer('server-1');
+      const first = service.stopServer('server-1', adminPrincipal);
       await flush();
       const losers = await Promise.allSettled([
-        service.stopServer('server-1'),
-        service.startServer('server-1'),
-        service.restartServer('server-1'),
-        service.deleteServer('server-1'),
+        service.stopServer('server-1', adminPrincipal),
+        service.startServer('server-1', adminPrincipal),
+        service.restartServer('server-1', adminPrincipal),
+        service.deleteServer('server-1', adminPrincipal),
       ]);
       expect(losers.every((result) => result.status === 'rejected')).toBe(true);
       expect(docker.stopContainer).not.toHaveBeenCalled();
@@ -1041,7 +1166,7 @@ describe('ServersService', () => {
         [makeServer({ status: 'RUNNING' })],
       );
 
-      const promise = service.restartServer('server-1');
+      const promise = service.restartServer('server-1', adminPrincipal);
       await flush();
       jest.advanceTimersByTime(3_000);
       await flush();
@@ -1059,7 +1184,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'STOPPED' })]);
       updateResults.push([makeServer({ status: 'STOPPING' })]);
 
-      await expect(service.deleteServer('server-1')).resolves.toBeUndefined();
+      await expect(service.deleteServer('server-1', adminPrincipal)).resolves.toBeUndefined();
 
       expect(docker.removeContainer).toHaveBeenCalledWith('container-1');
       expect(db.delete).toHaveBeenCalledTimes(1);
@@ -1069,7 +1194,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'STOPPED', containerId: null })]);
       updateResults.push([makeServer({ status: 'STOPPING', containerId: null })]);
 
-      await expect(service.deleteServer('server-1')).resolves.toBeUndefined();
+      await expect(service.deleteServer('server-1', adminPrincipal)).resolves.toBeUndefined();
 
       expect(docker.removeContainer).not.toHaveBeenCalled();
       expect(db.delete).toHaveBeenCalledTimes(1);
@@ -1079,7 +1204,9 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'STOPPED' })]);
       updateResults.push([]);
 
-      await expect(service.deleteServer('server-1')).rejects.toMatchObject({ status: 409 });
+      await expect(service.deleteServer('server-1', adminPrincipal)).rejects.toMatchObject({
+        status: 409,
+      });
       expect(docker.removeContainer).not.toHaveBeenCalled();
       expect(db.delete).not.toHaveBeenCalled();
     });
@@ -1093,7 +1220,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'STOPPED' })]);
       updateResults.push([makeServer({ status: 'STOPPING' })]);
 
-      await expect(service.deleteServer('server-1')).resolves.toBeUndefined();
+      await expect(service.deleteServer('server-1', adminPrincipal)).resolves.toBeUndefined();
       expect(db.delete).toHaveBeenCalled();
       expect(updatedValues.map((value) => value.status)).toEqual(['STOPPING']);
     });
@@ -1105,7 +1232,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'STOPPED' })]);
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'ERROR' })]);
 
-      await expect(service.deleteServer('server-1')).rejects.toBe(error);
+      await expect(service.deleteServer('server-1', adminPrincipal)).rejects.toBe(error);
       expect(db.delete).not.toHaveBeenCalled();
       expect(updatedValues.map((value) => value.status)).toEqual(['STOPPING', 'ERROR']);
       expect(updatedValues.map((value) => value.status)).not.toContain('STOPPED');
@@ -1118,7 +1245,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'STOPPED' })]);
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'ERROR' })]);
 
-      await expect(service.deleteServer('server-1')).rejects.toBe(error);
+      await expect(service.deleteServer('server-1', adminPrincipal)).rejects.toBe(error);
       expect(db.delete).not.toHaveBeenCalled();
       expect(updatedValues.map((value) => value.status)).toEqual(['STOPPING', 'ERROR']);
     });
@@ -1132,7 +1259,7 @@ describe('ServersService', () => {
       selectResults.push([makeServer({ status: 'STOPPED' })]);
       updateResults.push([makeServer({ status: 'STOPPING' })]);
 
-      await expect(service.deleteServer('server-1')).resolves.toBeUndefined();
+      await expect(service.deleteServer('server-1', adminPrincipal)).resolves.toBeUndefined();
       expect(db.delete).toHaveBeenCalled();
     });
   });
@@ -1230,8 +1357,8 @@ describe('ServersService', () => {
       );
 
       const results = await Promise.allSettled([
-        service.startServer('server-1'),
-        service.startServer('server-1'),
+        service.startServer('server-1', adminPrincipal),
+        service.startServer('server-1', adminPrincipal),
       ]);
 
       expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
@@ -1245,8 +1372,8 @@ describe('ServersService', () => {
       updateResults.push([makeServer({ status: 'STOPPING' })], []);
 
       const results = await Promise.allSettled([
-        service.startServer('server-1'),
-        service.deleteServer('server-1'),
+        service.startServer('server-1', adminPrincipal),
+        service.deleteServer('server-1', adminPrincipal),
       ]);
 
       expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
