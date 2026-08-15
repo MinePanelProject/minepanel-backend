@@ -112,7 +112,7 @@
         { "text": "System event feed (DOCKER / SERVERS / SCHEDULER)", "done": false },
         { "text": "Docker image pull via panel UI", "done": false },
         { "text": "GET /system/stats admin endpoint", "done": false },
-        { "text": "Frontend \u2014 minepanel-frontend repo kickoff", "done": false }
+        { "text": "Frontend \u2014 minepanel-pwa repo kickoff", "done": false }
       ]
     },
     {

@@ -35,13 +35,15 @@ MinePanel is a self-hosted Minecraft server management panel. A single `docker c
 
 | Client | Repo | Tech | Status |
 |--------|------|------|--------|
-| Web dashboard | `minepanel-frontend` | React 19 + Vite 7 + Tailwind 4 | `[ACCEPTED]` — separate repo, under active development; not part of this backend's compose file |
+| Web dashboard (hosted PWA) | `minepanel-pwa` | React 19 + Vite 7 + TypeScript + Tailwind 4 | `[ACCEPTED]` — separate repository planned; repository not created yet; hosted at `app.minepanel.xyz`; not part of this backend's compose file |
 | Mobile app | `minepanel-mobile` | KMP + Compose Multiplatform (iOS + Android) | `[PROPOSED]` — Phase 6 |
 | Backend API | `minepanel-backend` (this repo) | NestJS 11 + PostgreSQL | `[IMPLEMENTED]` |
 
 The backend is client-agnostic. Role-based guards (`ADMIN` / `MOD` / `USER`) plus per-server access rules and MOD granular permissions enforce access at the API level.
 
-**Hosted multi-backend frontend (`minepanel.xyz`)** — `[PROPOSED]` and `[DECISION REQUIRED]`: the current product vision is a centrally hosted frontend that connects to arbitrary self-hosted backends using cross-origin HttpOnly cookies. Section 8.5 analyses why `SameSite=None; Secure` alone cannot deliver this across the modern browser matrix and requires owner decision D-1. Until then the supported deployment model is same-origin (frontend served from the same domain as the backend, or a dev frontend on `localhost:5173` with `CORS_ORIGIN` set).
+**Hosted multi-backend dashboard (`app.minepanel.xyz`)** — `[PROPOSED]` and `[DECISION REQUIRED]`: the current product vision is a centrally hosted web dashboard (`minepanel-pwa` — a static React SPA / installable PWA, distinct from the `minepanel-site` marketing website at `minepanel.xyz`) that connects to arbitrary self-hosted backends using cross-origin HttpOnly cookies. Section 8.5 analyses why `SameSite=None; Secure` alone cannot deliver this across the modern browser matrix and requires owner decision D-1. Until then the supported deployment model is same-origin (frontend served from the same domain as the backend, or a dev frontend on `localhost:5173` with `CORS_ORIGIN` set).
+
+Direct browser access from `https://app.minepanel.xyz` to LAN/private-network instances (RFC1918 addresses, `.local` hostnames, or other browser-untrusted origins) is **not automatically guaranteed** by the generic HTTPS multi-backend architecture: browsers apply stricter mixed-content and certificate rules to such origins. The intended hosted path is browser-trusted public HTTPS backend origins; private-network endpoints are a separate compatibility concern requiring validation.
 
 **Key design decisions (accepted):**
 
@@ -239,6 +241,8 @@ Global prefix `api` (except `/health`); Swagger UI at `/docs` (public — backlo
 | GET | `/api/info` | `{ name, version }` from `PANEL_NAME` / `PANEL_VERSION` (frontend instance listing) |
 | GET | `/docs` | Swagger UI (public in current builds) |
 
+**Capability discovery `[ACCEPTED]` — backlog B-P2-11:** the hosted `minepanel-pwa` must determine backend capabilities without relying on arbitrary version comparisons. `GET /api/info` (or its future replacement) SHOULD eventually expose explicit protocol/capability information — API compatibility, partitioned-cookie (CHIPS) auth support, PKCE authorization-code fallback support, and WebSocket-ticket support. The response shape is not defined yet and nothing is implemented today.
+
 ### 7.2 Setup
 
 | Method | Path | Auth | Description |
@@ -368,17 +372,17 @@ Known nuance (B-P3-4): a MOD with a global `SERVER_LIFECYCLE` grant can pass the
 
 ### 8.5 Hosted-frontend cross-origin authentication `[DECISION REQUIRED: D-1]` — blocker for the hosted frontend
 
-The current vision: `minepanel.xyz` connects to arbitrary self-hosted backends using cross-origin HttpOnly cookies with `SameSite=None; Secure` + strict CORS.
+The current vision: the hosted dashboard (`minepanel-pwa`) at `app.minepanel.xyz` connects to arbitrary self-hosted backends using cross-origin HttpOnly cookies with `SameSite=None; Secure` + strict CORS.
 
-**Primary-source reality (2026):** `SameSite=None; Secure` is *necessary but not sufficient*. Safari's ITP blocks third-party cookies by default; Chrome retains user-choice blocking (no blanket removal, but availability is not guaranteed); Firefox Strict ETP blocks them. The cross-browser migration path is **CHIPS** (`Partitioned`): Baseline since December 2025 — Chrome 114+, Firefox 131+, Safari 18.4+ — set as `SameSite=None; Secure; Partitioned`. Partitioned cookies are scoped per top-level site, which is acceptable in this model (the only embedder is `minepanel.xyz`), but pre-CHIPS browsers (e.g. Safari < 18.4) simply cannot store the cookie.
+**Primary-source reality (2026):** `SameSite=None; Secure` is *necessary but not sufficient*. Safari's ITP blocks third-party cookies by default; Chrome retains user-choice blocking (no blanket removal, but availability is not guaranteed); Firefox Strict ETP blocks them. The cross-browser migration path is **CHIPS** (`Partitioned`): Baseline since December 2025 — Chrome 114+, Firefox 131+, Safari 18.4+ — set as `SameSite=None; Secure; Partitioned`. Partitioned cookies are scoped per top-level site, which is acceptable in this model (the only embedder is `app.minepanel.xyz`), but pre-CHIPS browsers (e.g. Safari < 18.4) simply cannot store the cookie.
 
 **Options:**
 
 | Option | Trade-offs |
 |--------|------------|
-| (a) Serve the frontend from each backend's own origin | Same-origin cookies — simplest and most robust; kills the hosted multi-backend `minepanel.xyz` model |
+| (a) Serve the frontend from each backend's own origin | Same-origin cookies — simplest and most robust; kills the hosted multi-backend `app.minepanel.xyz` model |
 | (b) CHIPS `Partitioned` HttpOnly cookies | Works under third-party-cookie blocking on Baseline browsers; explicit support matrix; pre-CHIPS Safari broken |
-| (c) Backend-issued proof-of-possession flow | Top-level redirect to the backend makes it first-party for issuance (PKCE + one-time code, ≤60s) → short-lived token in JS memory (never localStorage). Works everywhere; moves a credential into JS reach (XSS) — mitigated with 15m access tokens, rotation-on-exchange, strict CSP |
+| (c) PKCE authorization-code fallback with memory-only bearer access token | Top-level redirect to the backend makes it first-party for issuance (PKCE + one-time code, ≤60s) → short-lived bearer token in JS memory (never localStorage). Works everywhere; moves a credential into JS reach (XSS) — mitigated with 15m access tokens, rotation-on-exchange, strict CSP |
 | (d) Same-origin auth bridge/proxy | Proxy hop per backend; no security gain over (c) |
 
 **Recommendation (D-1): (b) as primary with (c) as documented fallback.** The old SPEC's claim that `SameSite=None; Secure` "is the only option for HttpOnly cookies cross-origin" (Italian CSRF note included) MUST be removed. This decision is a **release blocker for the hosted frontend**; the same-origin deployment remains fully supported meanwhile. References: §20.
@@ -631,7 +635,7 @@ Generated from spec/implementation gaps (this pass; runtime code unchanged). Pri
 ### P0 — release blockers (security invariants)
 
 - **B-P0-1 Setup bootstrap invariant (§8.1):** atomic transaction + advisory lock 7330 + one-time setup token (`SETUP_TOKEN` or logged random) + throttle on `/setup/init`. Fixes multi-admin race and first-boot claim.
-- **B-P0-2 Hosted-frontend auth decision (D-1) must be resolved and implemented before any hosted `minepanel.xyz` work (§8.5).** Same-origin deployment is unaffected.
+- **B-P0-2 Hosted-frontend auth decision (D-1) must be resolved and implemented before any hosted `app.minepanel.xyz` work (§8.5).** Same-origin deployment is unaffected.
 
 ### P1 — important before stable v1
 
@@ -663,6 +667,7 @@ Generated from spec/implementation gaps (this pass; runtime code unchanged). Pri
 - **B-P2-8** Fix `system.stats` free-RAM semantics (container cgroup vs host); or document.
 - **B-P2-9** Password hashing upgrade (D-9): HMAC-SHA384 pepper pre-hash (or Argon2id later) + UTF-8 byte measurement, no silent truncation (§18.1).
 - **B-P2-10** Declarative env validation (Joi/Zod) instead of manual preflight.
+- **B-P2-11** Capability discovery in `/api/info` (§7.1): expose explicit protocol/capability flags (API compatibility, CHIPS auth support, PKCE fallback support, WebSocket-ticket support) so the hosted `minepanel-pwa` never infers behavior from version strings.
 
 ### P3 — hygiene / accept-and-document
 
@@ -766,7 +771,7 @@ Running server: `save-off` → `save-all flush` → snapshot copy → `save-on` 
 
 | # | Decision | Options (recommendation) | Blocking |
 |---|----------|--------------------------|----------|
-| D-1 | Hosted-frontend cross-origin auth (§8.5) | (a) same-origin frontend per backend · (b) CHIPS `Partitioned` cookies · (c) proof-of-possession exchange · (d) bridge — **(b) primary + (c) fallback** | Hosted `minepanel.xyz` frontend |
+| D-1 | Hosted-frontend cross-origin auth (§8.5) | (a) same-origin frontend per backend · (b) CHIPS `Partitioned` cookies · (c) PKCE authorization-code fallback with memory-only bearer access token · (d) bridge — **(b) primary + (c) fallback** | Hosted dashboard at `app.minepanel.xyz` |
 | D-2 | Setup token mandatory? (§8.1) — **(mandatory)** | mandatory vs optional | Stable v1 |
 | D-3 | Deletion semantics (§11.6) — **v1 retain-data; tombstone deferred** | v1 retain-data vs tombstone+24h now | Stable v1 documentation |
 | D-4 | Shipped socket default (§10.2) — **keep rootful default** | rootful vs rootless default | Compose config |

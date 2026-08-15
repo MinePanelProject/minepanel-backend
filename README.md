@@ -24,7 +24,7 @@
 
 MinePanel is a self-hosted Minecraft server management panel. It runs entirely on your own hardware via Docker — no cloud lock-in, no external services.
 
-The backend is a **NestJS REST + WebSocket API** that manages user authentication, spawns Minecraft server containers through the Docker socket, and exposes all panel operations to the web frontend (separate `minepanel-frontend` repo).
+The backend is a **NestJS REST + WebSocket API** that manages user authentication, spawns Minecraft server containers through the Docker socket, and exposes all panel operations to the web dashboard (separate `minepanel-pwa` repo — planned, not created yet).
 
 ---
 
@@ -82,7 +82,7 @@ Edit `.env` — the required values are:
 
 ```env
 DOMAIN=your-domain.com
-CORS_ORIGIN=https://minepanel.xyz
+CORS_ORIGIN=https://your-domain.com
 POSTGRES_PASSWORD=strong-random-password
 JWT_SECRET=long-random-string
 # Generate exactly 32 random bytes encoded as 64 hexadecimal characters: openssl rand -hex 32
