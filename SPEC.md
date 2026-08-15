@@ -1,2534 +1,819 @@
-# MinePanel Backend - Architecture Specification
+# MinePanel — Project Specification
 
-## Overview
+## 1. Document purpose, authority and status legend
 
-MinePanel is a self-hosted Minecraft server management panel. A single `docker compose up` brings up the entire stack on the user's own host — no external services, no cloud dependencies.
+This document is the authoritative, internally consistent source of truth for the MinePanel project: product vision, implemented behavior, accepted architecture, accepted implementation backlog, future proposals and open decisions. When this specification disagrees with any other repository document, this specification wins; when it disagrees with the code, the code is the immediate truth and the discrepancy is recorded here as a correction or backlog item.
 
-**What it does:** the backend manages PostgreSQL for state, controls Minecraft server containers via the Docker socket, and exposes a REST + WebSocket API consumed by the frontend.
+Every feature statement below carries one of these status markers:
 
-**Ecosystem — three clients, one backend API:**
+| Marker | Meaning |
+|--------|---------|
+| `[IMPLEMENTED]` | Verified in the current code, schema, migrations and tests at the commit named in §2. |
+| `[ACCEPTED]` | Approved target behavior or architecture that is not yet implemented; tracked in the backlog (§16). |
+| `[PROPOSED]` | Future design that still requires validation or a product/architecture decision; phase-marked (§17). |
+| `[CONTRADICTED]` | A previous specification or configuration claim disproved by current code; the observed current behavior is documented with its correction/backlog item. |
+| `[DECISION REQUIRED]` | An unresolved choice that materially affects security, compatibility, product behavior or deployment. Silently picking one is forbidden; see the decision register (§19). |
 
-| Client | Repo | Tech | Audience |
-|--------|------|------|----------|
-| Web dashboard | `minepanel-frontend` | SvelteKit (planned) | ADMIN, MOD, USER |
-| Mobile app | `minepanel-mobile` | KMP + Compose Multiplatform (iOS + Android) | USER, MOD |
-| Backend API | `minepanel-backend` (this repo) | NestJS + PostgreSQL | — |
+Normative language, defined once and used consistently:
 
-The backend is fully agnostic of the client. Role-based guards (`ADMIN` / `MOD` / `USER`) enforce access at the API level. Each client adapts its UI to the authenticated user's role — same API, different experiences.
+- **MUST** — a required invariant or contract; violating it is a defect or a security hole.
+- **SHOULD** — a strong recommendation; a valid exception must be justified in the code or docs.
+- **MAY** — optional behavior; no default obligation either way.
 
-**Key design decisions:**
-- **Self-hosted first**: the entire stack (backend + database + MC servers) runs on the user's machine. The only external calls are optional (Discord webhooks, Mojang UUID API, Hangar/Modrinth for versions)
-- **Multi-backend**: the hosted frontend (`minepanel.xyz`) supports multiple independent self-hosted backends. Each user points the frontend at their own instance URL. Cross-origin cookies work via `SameSite=None; Secure` + strict CORS
-- **No external queue or cache**: Postgres is the only stateful dependency. No Redis, no BullMQ, no CDN — cron jobs run in-process via `@nestjs/schedule`, caches are in-memory
-- **Role system**: three roles (`ADMIN`, `MOD`, `USER`) with PBAC granular permissions for MODs (per-server capabilities without full admin access)
-- **Not admin-only**: unlike most MC panels, regular players have a dedicated portal — server status, access requests, player profile, push notifications (mobile)
+## 2. Current release status and last verified implementation commit
 
-**Development phases:**
-- **Phase 1** — v1.0 deployable: auth (JWT cookies, sessions, password change, rate limiting), server lifecycle (create/start/stop/delete/list), Docker service, health check, host metrics via WebSocket, security hardening, Docker deployment
-- **Phase 1.5** — access control: server visibility (OPEN/REQUEST/PRIVATE), MOD permissions, Google/GitHub OAuth, Minecraft account linking, magic links (SMTP optional), invite tokens
-- **Phase 2** — developer platform: audit log, API key authentication, outbound webhooks, historical metrics
-- **Phase 3** — operations: WebSocket real-time (logs, players), RCON, backups (local + cloud S3/GCS/SFTP), scheduled tasks, notifications, file manager, player management
-- **Phase 4** — marketplace: plugin/mod browser (Modrinth, Hangar, CurseForge), server wizard presets, template clone
-- **Phase 5** — networking: Velocity proxy with auto-generated config, Bedrock server support
-- **Phase 6** — mobile app: KMP (Kotlin Multiplatform + Compose Multiplatform) app with push notifications, quick server control, player portal
+- **Status: release candidate, not "production-ready".** The Phase 1 scope is implemented and CI-green, but the open decisions in §19 and the P0/P1 backlog in §16 must be resolved before the project can honestly be called production-ready.
+- **Last verified implementation commit:** `7b542f3` — `feat: add per-server authorization spine` (master, 2026-08-13). All behavior claims in this document were verified against this HEAD by code inspection and the CI runs listed in §14.
+- **Version truth:** `package.json` says `1.0.0`; `PANEL_VERSION` defaults to `"1.0"`; the Swagger fallback is `"N/A"`; CI pins `1.0.0`. This inconsistency is tracked as backlog item B-P2-6.
+- **License:** `package.json` declares `"license": "UNLICENSED"` and `"private": true`; there is **no** LICENSE file and the project must not be described as open-source. Picking a license is owner decision D-11.
 
----
+## 3. Product scope and supported clients
 
-## Container Architecture
+MinePanel is a self-hosted Minecraft server management panel. A single `docker compose up` on the operator's own host brings up the backend, PostgreSQL, Caddy (HTTPS) and the Minecraft container runtime. The backend manages PostgreSQL for state, controls Minecraft server containers through the Docker socket, and exposes a REST + WebSocket API.
+
+**Clients — implemented vs planned:**
+
+| Client | Repo | Tech | Status |
+|--------|------|------|--------|
+| Web dashboard | `minepanel-frontend` | React 19 + Vite 7 + Tailwind 4 | `[ACCEPTED]` — separate repo, under active development; not part of this backend's compose file |
+| Mobile app | `minepanel-mobile` | KMP + Compose Multiplatform (iOS + Android) | `[PROPOSED]` — Phase 6 |
+| Backend API | `minepanel-backend` (this repo) | NestJS 11 + PostgreSQL | `[IMPLEMENTED]` |
+
+The backend is client-agnostic. Role-based guards (`ADMIN` / `MOD` / `USER`) plus per-server access rules and MOD granular permissions enforce access at the API level.
+
+**Hosted multi-backend frontend (`minepanel.xyz`)** — `[PROPOSED]` and `[DECISION REQUIRED]`: the current product vision is a centrally hosted frontend that connects to arbitrary self-hosted backends using cross-origin HttpOnly cookies. Section 8.5 analyses why `SameSite=None; Secure` alone cannot deliver this across the modern browser matrix and requires owner decision D-1. Until then the supported deployment model is same-origin (frontend served from the same domain as the backend, or a dev frontend on `localhost:5173` with `CORS_ORIGIN` set).
+
+**Key design decisions (accepted):**
+
+- **Self-hosted first**: backend + database + MC servers run on the operator's machine. External calls are optional (Discord webhooks, Mojang UUID API, Hangar/Modrinth metadata in future phases).
+- **No external queue or cache**: PostgreSQL is the only stateful dependency. No Redis, no BullMQ, no CDN.
+- **Not admin-only**: regular players have a dedicated portal surface in the roadmap (access requests, player profile, notifications — Phase 6).
+- **`[ACCEPTED]`** the backend data mount is **read-only**; every future write feature (backups, file manager, plugins) must route through the write architecture decided in §10.4 (owner decision D-8).
+
+**Development phases (canonical numbering — used consistently everywhere):**
+
+- **Phase 1 — Foundation (v1.0 RC):** auth (JWT cookies, sessions, password change, 2FA, temp-password recovery), rate limiting, server lifecycle, Docker service, health, host metrics over WebSocket, admin user management, server access control (per-server authorization spine), Docker deployment. `[IMPLEMENTED]`.
+- **Phase 1.5 — Access Control + OAuth:** Google/GitHub OAuth, magic links (SMTP optional), invitation flows, MOD permission dashboard refinement. `[PROPOSED]`.
+- **Phase 2 — Developer platform:** audit log, API keys, outbound webhooks, system events, historical metrics. `[PROPOSED]`.
+- **Phase 3 — Operations:** WebSocket real-time server events, console, backups, scheduled tasks, notifications, file manager, player management, plugin management. `[PROPOSED]`.
+- **Phase 4 — Creation wizard & presets:** preset-driven server creation, mod picker, template clone. `[PROPOSED]`.
+- **Phase 5 — Networking:** Velocity proxy, Bedrock support. `[PROPOSED]`.
+- **Phase 6 — Mobile app & player portal.** `[PROPOSED]`.
+
+## 4. Deployment topology and trust boundaries
+
+### 4.1 Compose topology `[IMPLEMENTED]`
 
 ```text
-User runs: docker compose up -d
+Operator runs: docker compose up -d
 
 ┌──────────────────────────────────────────────────────────────┐
-│                        Docker Host                           │
+│                       Docker Host                            │
 │                                                              │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │  minepanel-nestjs (container)                        │   │
-│  │  - NestJS backend                  Port: 3000 (internal)│  │
-│  │  - Socket: /var/run/docker.sock (host bind, fixed path) │  │
-│  │  - Volume: MC_DATA_PATH_HOST -> /mc-data (read-only)    │  │
-│  │  - Networks: app (Caddy/Postgres); creates MC containers│  │
-│  │    on the mc bridge via the Docker socket (no direct    │  │
-│  │    mc-network membership — RCON uses docker exec)        │  │
-│  └──────────────────┬───────────────────────────────────┘   │
-│                     │ Postgres                               │
-│                     ↓                                        │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │  minepanel-postgres (container)                      │   │
-│  │  - PostgreSQL 16          Volume: postgres-data/     │   │
-│  │  - Network: app (minepanel-app-network)              │   │
-│  └──────────────────────────────────────────────────────┘   │
+│  ┌───────────────┐    app network (minepanel-app-network)    │
+│  │ caddy         │──80/443 (only published ports)──► Internet│
+│  │ (TLS, HTTPS)  │                                           │
+│  └───────┬───────┘                                           │
+│          │ reverse_proxy nestjs:3000                         │
+│  ┌───────▼───────┐                                           │
+│  │ minepanel-    │ expose 3000 (no host port); user: root;   │
+│  │ nestjs        │ no-new-privileges; :ro data mount;        │
+│  │ (Bun runtime) │ docker socket mounted; NOT on mc network  │
+│  └──┬──────┬─────┘                                           │
+│     │      │                                                 │
+│     │      └── Docker socket: DOCKER_SOCKET → /var/run/      │
+│     │          docker.sock (rootful default; rootless via    │
+│     │          DOCKER_SOCKET override — see §10.2)           │
+│     ▼                                                        │
+│  ┌───────────────┐   app network                             │
+│  │ postgres:16   │   (no published ports)                    │
+│  └───────────────┘                                           │
 │                                                              │
-│                     ↓ Docker socket — spawns MC containers   │
-│                                                              │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │  mc-{id}-1  (itzg/minecraft-server)  Port: 2556x     │   │
-│  │  - Volume: {MC_DATA_PATH}/{serverId}:/data (bind)   │   │
-│  │  - Network: minepanel_network                        │   │
-│  └──────────────────────────────────────────────────────┘   │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │  mc-{id}-2  (itzg/minecraft-server)  Port: 2556x     │   │
-│  │  - Volume: {MC_DATA_PATH}/{serverId}:/data (bind)   │   │
-│  │  - Network: minepanel_network                        │   │
-│  └──────────────────────────────────────────────────────┘   │
-│                                                              │
-│  ┄ Phase 5 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄  │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │  mc-proxy-1  (Velocity)              Port: 25565     │   │
-│  │  - Routes players to backend servers (internal only) │   │
-│  │  - velocity.toml auto-generated by NestJS            │   │
-│  │  - Network: minepanel_network                        │   │
-│  └──────────────────────────────────────────────────────┘   │
+│  ┌───────────────────────────────────────────────────────────┐│
+│  │ mc network (minepanel_network / DOCKER_NETWORK)           ││
+│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐           ││
+│  │  │ mc-{id}-1  │  │ mc-{id}-2  │  │ mc-{id}-N  │           ││
+│  │  │ itzg image │  │ port 2556x │  │ :/data bind│           ││
+│  │  └────────────┘  └────────────┘  └────────────┘           ││
+│  └───────────────────────────────────────────────────────────┘│
+│  (created by the backend via the Docker socket — the backend  │
+│   itself has no mc-network membership; RCON uses docker exec)  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
----
+Compose services (`docker-compose.yml`):
 
-## Tech Stack
+| Service | Image | Notes |
+|---------|-------|-------|
+| `nestjs` | `$MINEPANEL_IMAGE` (default `ghcr.io/minepanelproject/minepanel-backend:latest`) | `expose: 3000` only; `user: root`; `security_opt: no-new-privileges`; healthcheck `curl /health`; depends on healthy postgres and completed `minecraft-image` prefetch |
+| `postgres` | `postgres:16-alpine` | volume `postgres-data`; healthcheck `pg_isready`; no published ports |
+| `caddy` | `caddy:2-alpine` | publishes 80/443 (+443/udp); auto-HTTPS from `$DOMAIN`; proxies to `nestjs:3000`; serves `./Caddyfile` |
+| `minecraft-image` | `itzg/minecraft-server:latest` | one-shot prefetch (`entrypoint: ["/bin/true"]`) so the first server create does not stall on a pull |
 
-### Backend (`minepanel-backend`)
+### 4.2 Trust boundaries `[IMPLEMENTED]` — MUST be preserved
 
-- **Framework:** NestJS v11
-- **Database:** PostgreSQL 16 + Drizzle ORM
-- **Docker management:** Dockerode
-- **Auth:** JWT (HttpOnly cookies) via `@nestjs/jwt` — no Passport
-- **Logging:** `nestjs-pino` (structured JSON via Pino, replaces NestJS default Logger)
-- **Language:** TypeScript 5
-- **Runtime:** Node.js 20 (dev) / Bun (prod)
-- **Package manager:** Bun
+1. **Internet ↔ Caddy.** TLS termination and the only published ports (80/443). The backend is never published; `postgres` publishes nothing. Publishing backend port 3000 directly breaks the `trust proxy = 1` assumption (`main.ts`) — `X-Forwarded-For` becomes spoofable, which defeats per-IP throttling and the CSRF same-origin check. Deployment docs MUST forbid it (§13).
+2. **Caddy ↔ backend.** Plaintext HTTP on the `app` bridge; single-host assumption; backend sets `trust proxy = 1` (`main.ts`).
+3. **Backend ↔ postgres.** Password auth, no TLS, app-network only — acceptable single-host.
+4. **Backend ↔ Docker daemon (crown jewels).** The mounted socket gives the backend root-equivalent capability on the host. The container-creation guardrails (§10.3) are normative defense-in-depth. `DOCKER_SOCKET` is a local Unix socket path only — `tcp://` endpoints are rejected at production preflight (`main.ts`).
+5. **MC containers.** Untrusted, modded game code. They run unprivileged, memory-capped, with no added Linux capabilities, on a bridge network. Known gap (backlog B-P2-4): the `mc` bridge allows unrestricted container-to-container traffic; per-server networks are `[PROPOSED]`.
+6. **Data volume.** Host directory owned via daemon binds; itzg entrypoint chowns to its runtime user at container start; the backend reads it `:ro`.
 
----
+### 4.3 Hardening backlog `[ACCEPTED]`
 
-## Module Structure
+- B-P1-10: add `NanoCpus` CPU quota and `PidsLimit` to MC container `HostConfig` (one MC server can currently starve the backend/postgres; fork-bomb surface).
+- B-P2-4: document/restrict inter-container traffic on the `mc` network; per-server networks `[PROPOSED]`.
+- B-P2-5: run the backend as a non-root user with `group_add` for the docker group instead of `user: root`.
+- B-P2-6: `cap_drop: [ALL]` + `read_only: true` + `tmpfs: /tmp` for the backend container.
+- B-P2-7: pin the itzg image (digest or explicit tag) in compose and record the resolved digest per server.
 
-```
-src/
-├── main.ts
-├── app.module.ts
-├── db/
-│   ├── db.module.ts          ← Drizzle connection + DRIZZLE token
-│   └── schema.ts             ← all table/enum definitions + inferred types
-├── auth/
-│   ├── auth.module.ts
-│   ├── auth.service.ts
-│   ├── auth.controller.ts
-│   ├── dto/
-│   │   ├── register.dto.ts
-│   │   └── login.dto.ts
-│   └── guards/
-│       ├── jwt-auth.guard.ts       ← pure CanActivate, no Passport
-│       ├── roles.guard.ts
-│       └── permissions.guard.ts   ← Phase 1.5
-├── users/
-│   ├── users.module.ts
-│   └── users.service.ts
-├── setup/
-│   ├── setup.module.ts
-│   ├── setup.service.ts
-│   └── setup.controller.ts
-├── docker/
-│   ├── docker.module.ts
-│   └── docker.service.ts
-├── servers/
-│   ├── servers.module.ts
-│   ├── servers.service.ts
-│   └── servers.controller.ts
-├── rcon/                          ← Phase 3b
-│   ├── rcon.module.ts
-│   └── rcon.service.ts
-├── plugins/                       ← Phase 3f
-│   ├── plugins.module.ts
-│   ├── plugins.service.ts
-│   └── plugins.controller.ts
-├── files/                         ← Phase 3h
-│   ├── files.module.ts
-│   ├── files.service.ts
-│   └── files.controller.ts
-├── backup/                        ← Phase 3c
-│   ├── backup.module.ts
-│   ├── backup.service.ts
-│   └── backup.controller.ts
-├── tasks/                         ← Phase 3d
-│   ├── tasks.module.ts
-│   ├── tasks.service.ts
-│   └── tasks.controller.ts
-├── notifications/                 ← Phase 3e
-│   ├── notifications.module.ts
-│   ├── notifications.service.ts
-│   └── notifications.controller.ts
-├── admin/                         ← Phase 3j
-│   ├── admin.module.ts
-│   ├── admin.service.ts
-│   └── admin.controller.ts
-├── gateway/                       ← Phase 3a (WebSocket)
-│   ├── gateway.module.ts
-│   └── events.gateway.ts
-└── common/
-    ├── decorators/
-    │   ├── public.decorator.ts
-    │   ├── roles.decorator.ts
-    │   └── permissions.decorator.ts ← Phase 1.5
-    └── filters/
-        └── db-exception.filter.ts   ← catches postgres.js errors (PG error codes)
-```
+## 5. Accepted architectural invariants
+
+These invariants are non-negotiable; future work MUST preserve them.
+
+1. **Single authoritative schema.** All tables and enums live in `src/db/schema.ts`; migrations are generated from it and MUST stay in sync (§6).
+2. **Access and refresh session tokens only in HttpOnly cookies for web clients.** `PublicUser` responses carry no session tokens. The 2FA `pre-auth` challenge is the narrow exception: it is a five-minute response-body Bearer credential that MUST authorize only `POST /api/auth/2fa/verify`. Any future bearer/ticket mechanism (§8.5, §8.6) MUST preserve the cookie-only session-token path.
+3. **Refresh tokens are server-revocable and rotated.** Rotation MUST become atomic (see §8.3); replay of a consumed token MUST yield 401.
+4. **Lifecycle transitions are compare-and-swap on status.** Every server state change runs through a CAS update; concurrent conflicting operations fail with 409 (§11.2).
+5. **Resource admission has operation-specific ordering.** Create and start admission occurs before their state mutation. Restart performs its graceful stop first, then admission; a 422 admission failure leaves the target STOPPED (§11.4).
+6. **Docker unavailability degrades without silent state claims.** Read paths keep working; initial daemon failures return 503. A lifecycle operation whose daemon outcome is uncertain MAY settle its own row as `ERROR` (§10.5, §11.1).
+7. **Setup creates exactly one administrator** — the secure bootstrap invariant (§8.1) — under any concurrency and failure pattern.
+8. **The backend data mount stays read-only** until the write architecture decision (D-8) lands (§10.4).
+9. **At least one active ADMIN always exists** (advisory-lock serialized last-admin guard, §8.7).
+10. **Fail closed** on authorization/DB uncertainty: guards reject when the database cannot confirm status/role/permission (§8.4).
 
 ---
 
-## Database Schema
+## 6. Current data model
 
-### Enums
+### 6.1 Tables `[IMPLEMENTED]`
 
-- **Role:** `ADMIN`, `MOD`, `USER`
-- **UserStatus:** `ACTIVE`, `PENDING`, `BANNED`
-- **ServerProvider:** `VANILLA`, `PAPER`, `PURPUR`, `FABRIC`, `FORGE`
-- **ServerStatus:** `STOPPED`, `CREATING`, `STARTING`, `RUNNING`, `STOPPING`, `ERROR`
-- **AccessType:** `OPEN`, `REQUEST`, `PRIVATE`
+Six tables, all defined in `src/db/schema.ts`; migrations `0000`–`0003` in `drizzle/` cumulatively match the schema exactly (no drift). Primary keys are `text` UUIDs generated by `crypto.randomUUID()` — not cuid.
 
-### Models
+**`users`**
 
-**User**
-| Field         | Type     | Notes                                      |
-|---------------|----------|--------------------------------------------|
-| id                    | String     | cuid, PK                                                      |
-| email                 | String     | unique, varchar(254)                                          |
-| username              | String     | unique, varchar(32)                                           |
-| passwordHash          | String?    | null for OAuth-only accounts                                  |
-| role                  | Role       | default: USER                                                 |
-| status                | UserStatus | default: ACTIVE (v1.0) — PENDING if REQUIRE_ADMIN_APPROVAL    |
-| totpSecret            | String?    | TOTP secret key (encrypted at rest) — null if 2FA not set up |
-| totpEnabled           | Boolean    | default: false — true only after confirm step                 |
-| totpBackupCodes       | String?    | JSON array of hashed backup codes (8 codes, single-use)       |
-| tempPasswordHash      | String?    | bcrypt hash of admin-generated temp password                  |
-| tempPasswordExpiresAt | DateTime?  | 24h TTL; null if no temp password active                      |
-| mustChangePassword    | Boolean    | default: false — true forces password change before any other action |
-| googleId              | String?    | unique, set on Google OAuth login (Phase 1.5)                 |
-| githubId              | String?    | unique, set on GitHub OAuth login (Phase 1.5)                 |
-| minecraftUUID         | String?    | unique (Phase 1.5)                                            |
-| minecraftName         | String?    | (Phase 1.5)                                                   |
-| minecraftVerified     | Boolean    | default: false — true = premium verified (Phase 1.5)          |
-| createdAt             | DateTime   |                                                               |
-| updatedAt     | DateTime |                                            |
-| servers       | Server[]       | relation                             |
-| refreshTokens | RefreshToken[] | relation                             |
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | text | PK, UUID |
+| `email` | varchar(254) | not null, unique (case-sensitive) |
+| `username` | varchar(32) | not null, unique (case-sensitive) |
+| `passwordHash` | text | **not null** (OAuth-only accounts are a Phase 1.5 schema change; see §17.1) |
+| `role` | enum `ADMIN`\|`MOD`\|`USER` | default `USER` |
+| `status` | enum `ACTIVE`\|`PENDING`\|`BANNED` | default `ACTIVE` |
+| `totpSecret` | text | null; AES-256-GCM encrypted |
+| `totpEnabled` | boolean | default false |
+| `totpBackupCodes` | text | null; JSON array of bcrypt-hashed backup codes |
+| `tempPasswordHash` | text | null; admin-generated recovery credential |
+| `tempPasswordExpiresAt` | timestamptz | null |
+| `mustChangePassword` | boolean | default false |
+| `minecraftUUID` | text | unique, null — column exists, **no code path writes it today** |
+| `minecraftName` | text | null — column exists, no code path writes it today |
+| `createdAt` / `updatedAt` | timestamptz | default now; updatedAt auto-updates |
 
-**SetupState** (singleton)
-| Field               | Type     | Notes              |
-|---------------------|----------|--------------------|
-| id                  | String   | default: singleton |
-| initialAdminCreated | Boolean  | default: false     |
-| createdAt           | DateTime |                    |
-| updatedAt           | DateTime |                    |
+**`refresh_tokens`**
 
-**RefreshToken**
-| Field       | Type      | Notes                                             |
-|-------------|-----------|---------------------------------------------------|
-| id          | String    | cuid, PK                                          |
-| token       | String    | unique, hashed                                    |
-| userId      | String    | FK -> User                                        |
-| userAgent   | String?   | browser/device string from `User-Agent` header    |
-| lastUsedAt  | DateTime  | updated on every `/auth/refresh` call             |
-| expiresAt   | DateTime  |                                                   |
-| createdAt   | DateTime  |                                                   |
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | text | PK, UUID |
+| `token` | text | not null, unique — the **bcrypt hash** of the refresh JWT |
+| `userId` | text | not null, FK → users, `onDelete: cascade` |
+| `expiresAt` | timestamptz | not null |
+| `createdAt` | timestamptz | default now |
 
-**MagicLinkToken** (Phase 1.5 — requires SMTP)
-| Field     | Type     | Notes                                          |
-|-----------|----------|------------------------------------------------|
-| id        | String   | cuid PK                                        |
-| email     | String   | target email address                           |
-| token     | String   | unique, hashed — sent in URL/email             |
-| expiresAt | DateTime | default: now + 15 minutes                      |
-| usedAt    | DateTime?| set on successful verification — single use    |
-| createdAt | DateTime |                                                |
+> There are **no** `userAgent` / `lastUsedAt` columns; the old SPEC claimed both. Session metadata is an accepted backlog item (§8.3). No index exists on `userId` or `expiresAt` (backlog B-P1-3).
 
-**ApiKey** (Phase 2)
-| Field       | Type      | Notes                                            |
-|-------------|-----------|--------------------------------------------------|
-| id          | String    | cuid PK                                          |
-| name        | String    | friendly label (e.g. "CI deploy script")        |
-| key         | String    | unique, hashed — shown plaintext only at creation|
-| userId      | String    | FK → User (owner)                               |
-| lastUsedAt  | DateTime? |                                                  |
-| expiresAt   | DateTime? | null = never expires                             |
-| createdAt   | DateTime  |                                                  |
+**`setup_state`** — singleton row (`id = 'singleton'`): `initialAdminCreated` boolean, `createdAt`, `updatedAt`.
 
-**Webhook** (Phase 2)
-| Field     | Type     | Notes                                                    |
-|-----------|----------|----------------------------------------------------------|
-| id        | String   | cuid PK                                                  |
-| name      | String   | friendly label                                           |
-| url       | String   | HTTPS endpoint to POST to                               |
-| events    | String[] | list of subscribed event names (see Webhooks section)   |
-| secret    | String   | used for HMAC-SHA256 signature (`X-MinePanel-Signature`)|
-| enabled   | Boolean  | default: true                                           |
-| createdAt | DateTime |                                                          |
+**`servers`**
 
-**Server**
-| Field           | Type           | Notes                                         |
-|-----------------|----------------|-----------------------------------------------|
-| id              | String         | cuid, PK                                      |
-| name            | String         |                                               |
-| provider        | ServerProvider |                                               |
-| version         | String         |                                               |
-| port            | Int            | unique                                        |
-| containerId     | String?        | unique, set after Docker create               |
-| status          | ServerStatus   | default: STOPPED                              |
-| accessType      | AccessType     | default: OPEN (Phase 1.5)                     |
-| onlineMode      | Boolean        | default: true — false = offline/cracked       |
-| maxPlayers      | Int            | default: 20                                   |
-| difficulty      | String         | default: normal                               |
-| gamemode        | String         | default: survival                             |
-| pvp             | Boolean        | default: true                                 |
-| memoryLimitMb   | Int            | default: 2048, min: 512                       |
-| worldPath       | String?        |                                               |
-| rconPassword    | String?        | generated at creation, stored encrypted       |
-| discordWebhook  | String?        | optional Discord webhook URL for notifications|
-| pendingDeleteAt | DateTime?      | set on delete; volume cleaned up after this   |
-| ownerId         | String         | FK → User                                     |
-| createdAt       | DateTime       |                                               |
-| updatedAt       | DateTime       |                                               |
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | text | PK, UUID |
+| `name` | text | not null |
+| `provider` | enum `VANILLA`\|`PAPER`\|`PURPUR`\|`FABRIC`\|`FORGE` | not null |
+| `version` | text | not null |
+| `port` | integer | not null, unique |
+| `containerId` | text | unique, null until provisioned |
+| `status` | enum `STOPPED`\|`CREATING`\|`STARTING`\|`RUNNING`\|`STOPPING`\|`ERROR` | default `STOPPED` |
+| `maxPlayers` | integer | default 20 |
+| `difficulty` | enum `PEACEFUL`\|`EASY`\|`NORMAL`\|`HARD` | default `NORMAL` |
+| `gamemode` | enum `SURVIVAL`\|`CREATIVE`\|`ADVENTURE`\|`SPECTATOR` | default `SURVIVAL` |
+| `pvp` | boolean | default true |
+| `memoryLimitMb` | integer | default 2048 |
+| `motd` | text | null |
+| `levelSeed` | text | null |
+| `onlineMode` | boolean | default true |
+| `viewDistance` | integer | default 10 |
+| `allowFlight` | boolean | default false |
+| `worldPath` | text | null — unused by code |
+| `rconPassword` | text | null — **column exists but is not written** (backlog B-P1-11) |
+| `ownerId` | text | not null, FK → users (creator) |
+| `accessType` | enum `OPEN`\|`REQUEST`\|`PRIVATE` | default `OPEN` |
+| `createdAt` / `updatedAt` | timestamptz | |
 
-**Ban**
-| Field     | Type      | Notes                                   |
-|-----------|-----------|-----------------------------------------|
-| id        | String    | cuid PK                                 |
-| serverId  | String    | FK → Server                             |
-| uuid      | String    | banned player UUID                      |
-| username  | String    | last-known username (display only)      |
-| reason    | String?   |                                         |
-| bannedBy  | String    | FK → User                               |
-| expiresAt | DateTime? | null = permanent ban                    |
-| createdAt | DateTime  |                                         |
+> No `pendingDeleteAt` column exists (the old SPEC's deletion design was never built; §11.6) and no `discordWebhook` column exists (Phase 3 notification feature).
+
+**`server_access`** — join table: `userId` FK cascade, `serverId` FK cascade, `status` enum `PENDING`\|`APPROVED`, `createdAt`, `approvedAt`. Constraints: unique `(userId, serverId)`; CHECK `(status = 'PENDING' AND approvedAt IS NULL) OR (status = 'APPROVED' AND approvedAt IS NOT NULL)`; indexes on `(serverId, status, createdAt, id)` and `(userId, serverId)`. There is no `DENIED` status — rejection is represented by deleting the row.
+
+**`mod_permissions`** — `userId` FK cascade, `permission` enum (`SERVER_LIFECYCLE`, `SERVER_CONFIG`, `PLUGIN_MANAGEMENT`, `WHITELIST_MANAGEMENT`, `USER_MANAGEMENT`, `FILE_MANAGER`), `serverId` nullable FK cascade, `createdAt`. Partial unique index on `(userId, permission)` where `serverId IS NULL`; unique on `(userId, permission, serverId)`; index on `(userId, permission, serverId)`.
+
+### 6.2 Tables that do NOT exist yet `[ACCEPTED]/[PROPOSED]`
+
+The old SPEC listed these as current models. They are future work, defined in §17: `Ban`, `MagicLinkToken`, `ApiKey`, `Webhook`, `SystemEvent`, `AuditLog`, `MetricSnapshot`, `Backup`, `ScheduledTask`, `Notification`, `ServerPlugin`, `ServerMod`, `ServerProxy`. `users.googleId`, `users.githubId`, `users.minecraftVerified`, `servers.discordWebhook` are future columns. `users.passwordHash` MUST become nullable for Phase 1.5 OAuth (§17.1).
+
+### 6.3 Enums
+
+`role`, `user_status`, `server_provider`, `server_status`, `server_difficulty`, `server_gamemode`, `access_type`, `server_access_status`, `mod_permission` — exact values in §6.1.
 
 ---
 
-## API Endpoints
+## 7. Current HTTP and WebSocket API
 
-### Panel info
+Global prefix `api` (except `/health`); Swagger UI at `/docs` (public — backlog B-P3-3 to gate it). All routes below are `[IMPLEMENTED]`; `[PROPOSED]` endpoints live in §17 and are never mixed into these tables.
 
-| Method | Path         | Auth   | Description                                      |
-|--------|--------------|--------|--------------------------------------------------|
-| GET    | /api/info    | No     | Returns `{ name, version }` for frontend listing |
-| GET    | /panel/logo  | Public | Panel instance logo (PNG, cached)                |
-| PUT    | /panel/logo  | ADMIN  | Upload custom panel logo                         |
-| DELETE | /panel/logo  | ADMIN  | Reset panel logo to default                      |
+### 7.1 Public
 
-> Used by the frontend to show a friendly panel name when the user manages multiple backend instances. `name` comes from the `PANEL_NAME` env var (default: `"MinePanel"`).
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Liveness: `{ status: 'ok'\|'degraded', db, docker, version }`; 503 when degraded. Uses `SELECT 1` + `docker.ping()`. |
+| GET | `/api/info` | `{ name, version }` from `PANEL_NAME` / `PANEL_VERSION` (frontend instance listing) |
+| GET | `/docs` | Swagger UI (public in current builds) |
 
-### Setup
+### 7.2 Setup
 
-| Method | Path           | Auth | Description                          |
-|--------|----------------|------|--------------------------------------|
-| GET    | /setup/status  | No   | Check if admin created               |
-| POST   | /setup/init    | No   | Create first admin (only works once) |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/setup/status` | Public | `{ initialAdminCreated, nextStep: 'register_admin'\|'complete' }` |
+| POST | `/api/setup/init` | Public | Create first admin; 403 `First admin already created` once complete. **Race-unsafe today — see §8.1 (P0)**. No route throttle today (backlog with §8.1). |
 
-### Auth
+### 7.3 Auth
 
-| Method | Path                    | Auth | Description                                    |
-|--------|-------------------------|------|------------------------------------------------|
-| POST   | /auth/register          | No   | Register user (starts PENDING if REQUIRE_ADMIN_APPROVAL=true) |
-| POST   | /auth/login             | No   | Login — returns JWT or 2FA challenge if TOTP enabled          |
-| POST   | /auth/2fa/verify        | Pre-auth token | Verify TOTP code after login, issue full JWT         |
-| POST   | /auth/2fa/setup         | JWT  | Generate TOTP secret + QR URI (returns secret, not yet active)|
-| POST   | /auth/2fa/confirm       | JWT  | Confirm first TOTP code — activates 2FA, returns backup codes |
-| DELETE | /auth/2fa/disable       | JWT  | Disable 2FA (requires current TOTP code or backup code)       |
-| POST   | /auth/refresh           | No   | Refresh access token, rotates refresh token                   |
-| POST   | /auth/logout            | JWT  | Revoke current refresh token, clear cookies    |
-| POST   | /auth/logout-all        | JWT  | Revoke all refresh tokens, invalidate all sessions            |
-| GET    | /auth/profile           | JWT  | Get current user                               |
-| PATCH  | /auth/profile           | JWT  | Update profile (username, email)               |
-| PATCH  | /auth/password          | JWT  | Change own password (requires current password, rotates all sessions) |
-| GET    | /auth/sessions          | JWT  | List own active sessions (refresh tokens)      |
-| DELETE | /auth/sessions/:id      | JWT  | Revoke a specific session by token id          |
-| POST   | /auth/magic-link        | No   | Request magic link — sends OTP email (requires SMTP, Phase 1.5) |
-| GET    | /auth/magic-link/verify | No   | Verify magic link token, issue JWT cookies (Phase 1.5)        |
-| POST   | /auth/google/token      | No   | Verify Google ID token from frontend, issue JWT (Phase 1.5)   |
-| POST   | /auth/github/token      | No   | Verify GitHub token from frontend, issue JWT (Phase 1.5)      |
-| GET    | /auth/minecraft         | JWT  | Start Microsoft OAuth for Minecraft linking (Phase 1.5)       |
-| GET    | /auth/minecraft/callback| JWT  | Handle Microsoft callback, store verified UUID (Phase 1.5)    |
-| PATCH  | /auth/profile/minecraft | JWT  | Manual Minecraft link (offline/non-premium, Phase 1.5)        |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/auth/register` | Public, throttle 5/10s | 201 `{ message }`; PENDING if `REQUIRE_ADMIN_APPROVAL=true`, else ACTIVE; 409 `User already exists` |
+| POST | `/api/auth/login` | Public, throttle 5/10s | 200 `PublicUser` + cookies, or `{ requiresTwoFactor, preAuthToken }`; 401 `Wrong credentials` (timing-equalized); 403 `AccountPending`/`AccountBanned` |
+| POST | `/api/auth/refresh` | Public, throttle 5/10s | Rotates refresh token, sets new cookies. **Missing/malformed/expired refresh currently → 500 (bug, B-P1-2)** |
+| POST | `/api/auth/logout` | JWT | Revokes the presented refresh row, clears cookies |
+| POST | `/api/auth/logout-all` | JWT | Revokes all refresh rows, clears cookies |
+| GET | `/api/auth/profile` | JWT | Current user (`req.user` shape) |
+| PATCH | `/api/auth/profile` | JWT | Update **username only** (email is not editable through any endpoint today); 400 `No changes` when identical |
+| PATCH | `/api/auth/password` | JWT | Change password; requires `currentPassword`; keeps current session, revokes others (normal flow) or all (forced recovery flow) |
+| GET | `/api/auth/sessions` | JWT | List refresh-token rows (id, userId, expiresAt, createdAt) — currently **includes expired rows** (B-P1-3) |
+| DELETE | `/api/auth/sessions/:id` | JWT | Revoke own session; silently succeeds for missing rows |
+| POST | `/api/auth/2fa/setup` | JWT | Returns `{ secret, uri }`; secret encrypted at rest |
+| POST | `/api/auth/2fa/confirm` | JWT | Verifies first code, enables 2FA, returns 8 single-use backup codes |
+| POST | `/api/auth/2fa/verify` | Pre-auth Bearer, throttle 5/600s | Completes 2FA login, sets cookies |
+| DELETE | `/api/auth/2fa/disable` | JWT | Requires valid TOTP or backup code |
 
-### Users
+### 7.4 Admin (user management lives here — there is no `/users` controller)
 
-| Method | Path               | Auth  | Description                                        |
-|--------|--------------------|-------|----------------------------------------------------|
-| GET    | /users             | ADMIN | List all panel users                               |
-| GET    | /users/:id         | JWT   | Get user profile (ADMIN or self only)              |
-| PATCH  | /users/me          | JWT   | Update own profile (username, email)               |
-| PATCH  | /users/:id/role    | ADMIN | Change user role (USER ↔ MOD)                      |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/admin/users` | ADMIN | List, filter by `status`/`role` |
+| PATCH | `/api/admin/users/:id/status` | ADMIN | Approve/ban/unban; last-active-admin guard; **ban deletes all refresh sessions** |
+| PATCH | `/api/admin/users/:id/role` | ADMIN | Change role; last-active-admin guard; clears mod permissions |
+| POST | `/api/admin/users/:id/reset-password` | ADMIN | Returns one-time `{ tempPassword }` (16 chars base64url, 24h TTL, forces change, revokes all sessions) |
+| DELETE | `/api/admin/users/:id/2fa` | ADMIN | Emergency 2FA removal |
+| GET | `/api/admin/users/:id/permissions` | ADMIN | List MOD permission grants |
+| POST | `/api/admin/users/:id/permissions` | ADMIN | Grant (global or per-server); 409 on duplicate |
+| DELETE | `/api/admin/users/:id/permissions/:permId` | ADMIN | Revoke; 404 if missing |
 
-### API Keys (Phase 2)
+### 7.5 Servers
 
-| Method | Path                  | Auth | Description                                          |
-|--------|-----------------------|------|------------------------------------------------------|
-| GET    | /auth/api-keys        | JWT  | List own API keys (key value not shown after creation)|
-| POST   | /auth/api-keys        | JWT  | Create API key — returns plaintext key **once only** |
-| DELETE | /auth/api-keys/:id    | JWT  | Revoke API key                                       |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/servers` | ADMIN | **Create and start** in one operation; 201; resource checks 422; rolls back on Docker failure |
+| GET | `/api/servers` | JWT | List visible servers; `?limit&offset` (default 20, max 100); `{ data, total }` |
+| GET | `/api/servers/:id` | JWT | Get visible server; 404 for non-visible |
+| POST | `/api/servers/:id/start` | ADMIN \| MOD + `SERVER_LIFECYCLE` | 409 unless STOPPED; container must exist |
+| POST | `/api/servers/:id/stop` | ADMIN \| MOD + `SERVER_LIFECYCLE` | Graceful stop (RCON warn → save-all → docker stop) |
+| POST | `/api/servers/:id/restart` | ADMIN \| MOD + `SERVER_LIFECYCLE` | Stop sequence then start sequence |
+| DELETE | `/api/servers/:id` | ADMIN | Returns **202 but is fully synchronous**: removes container and DB row; **data directory is retained on the host** (§11.6) |
 
-### Servers
+### 7.6 Server access
 
-| Method | Path                    | Auth         | Description                        |
-|--------|-------------------------|--------------|------------------------------------|
-| POST   | /servers                | ADMIN        | Create MC server                   |
-| GET    | /servers                | JWT          | List servers (filtered by access)  |
-| GET    | /servers/:id            | JWT          | Get single server                  |
-| PATCH  | /servers/:id            | ADMIN \| MOD | Update server settings             |
-| POST   | /servers/:id/start      | ADMIN \| MOD | Start server (409 if not STOPPED)  |
-| POST   | /servers/:id/stop       | ADMIN \| MOD | Graceful stop (warn → save → stop) |
-| POST   | /servers/:id/restart    | ADMIN \| MOD | Graceful stop → start sequence     |
-| DELETE | /servers/:id            | ADMIN        | Delete server (202 Accepted, async)|
-| GET    | /versions               | JWT          | List available versions per provider|
-| PATCH  | /servers/:id/version    | ADMIN        | Update MC version (auto-backup first)|
-| GET    | /servers/:id/icon       | JWT          | Get server icon (PNG, ETag cached)  |
-| PUT    | /servers/:id/icon       | ADMIN \| MOD | Upload custom server icon (64×64 PNG)|
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/servers/:id/request-access` | JWT | REQUEST servers: create PENDING row (201); OPEN → 409; PRIVATE → 404 (non-disclosure); ADMIN → 409 |
+| GET | `/api/servers/:id/my-access-request` | JWT | Own row (`{ status, requestedAt, approvedAt }`); 404 for OPEN/PRIVATE/none |
+| GET | `/api/servers/:id/access-requests` | ADMIN | Pending requests for REQUEST servers |
+| POST | `/api/servers/:id/access-requests/:userId/approve` | ADMIN | PENDING → APPROVED, or direct APPROVED insert (PRIVATE/REQUEST); ADMIN target → 400 |
+| DELETE | `/api/servers/:id/access-requests/:userId` | ADMIN | Reject or revoke (row deleted; no DENIED status) |
 
-### Webhooks (Phase 2)
+### 7.7 WebSocket `[IMPLEMENTED — minimal]`
 
-| Method | Path               | Auth  | Description                                  |
-|--------|--------------------|-------|----------------------------------------------|
-| GET    | /webhooks          | ADMIN | List configured webhooks                     |
-| POST   | /webhooks          | ADMIN | Create webhook (url, events[], secret)       |
-| PATCH  | /webhooks/:id      | ADMIN | Update webhook (url, events, enabled)        |
-| DELETE | /webhooks/:id      | ADMIN | Delete webhook                               |
-| POST   | /webhooks/:id/test | ADMIN | Send a test payload to verify the endpoint  |
-
-### System
-
-| Method | Path          | Auth   | Description                              |
-|--------|---------------|--------|------------------------------------------|
-| GET    | /health       | Public | Liveness check (db + docker status)      |
-| GET    | /system/stats | ADMIN  | Host resource usage overview             |
-| GET    | /audit-log    | ADMIN  | Audit log (Phase 2, filter by action/resourceId/userId) |
-
-`GET /health` response:
-```json
-{ "status": "ok", "db": "ok", "docker": "ok", "version": "0.1.0" }
-```
-- `db`: executes `SELECT 1` via Drizzle
-- `docker`: calls `docker.ping()` (Dockerode)
-- If either fails: HTTP 503 with `"status": "degraded"` and the failing service marked `"error"`
-- `@Public()` — no auth required; used by Docker healthcheck and monitoring
-
-**Docker daemon unreachable — graceful degradation:**
-
-If the Docker socket is unavailable at startup or becomes unreachable at runtime:
-- `GET /health` returns HTTP 503 `{ "status": "degraded", "docker": "error" }`
-- All endpoints that call `DockerService` (`start`, `stop`, `create`, etc.) return HTTP 503 `{ "statusCode": 503, "message": "Docker daemon unreachable" }` — **no DB state is mutated** (server status remains unchanged)
-- `GET /servers`, `GET /servers/:id`, and read-only endpoints continue to function normally using DB data
-- The WebSocket stats stream stops emitting `server.stats` events; the frontend should show stale/unknown stats after a timeout
-
-Docker healthcheck (in `docker-compose.yml`):
-```yaml
-healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-  interval: 30s
-  timeout: 10s
-  retries: 3
-```
-
-`GET /system/stats` response shape:
-```json
-{
-  "host": {
-    "totalRamMb": 16384,
-    "usedRamMb": 9000,
-    "freeRamMb": 7384,
-    "cpuCount": 8,
-    "totalDiskMb": 512000,
-    "freeDiskMb": 120000
-  },
-  "servers": {
-    "total": 3,
-    "running": 2,
-    "allocatedRamMb": 8192
-  }
-}
-```
-
-### System Events (Phase 2)
-
-| Method | Path              | Auth  | Description                                                  |
-|--------|-------------------|-------|--------------------------------------------------------------|
-| GET    | /system/events    | ADMIN | List system events (filter: `?level=&source=&limit=&offset=`) |
-
-`SystemEvent` table:
-
-| Field     | Type     | Notes                                                                 |
-|-----------|----------|-----------------------------------------------------------------------|
-| id        | String   | cuid PK                                                               |
-| level     | Enum     | `INFO`, `WARN`, `ERROR`                                               |
-| source    | Enum     | `DOCKER`, `SERVERS`, `HEALTH`, `SCHEDULER`                            |
-| message   | String   | Human-readable description                                            |
-| metadata  | Json?    | Extra context (e.g. `{ serverId, containerId, errorCode }`)           |
-| createdAt | DateTime |                                                                       |
-
-**Who writes events:**
-
-| Source      | Examples                                                                 |
-|-------------|--------------------------------------------------------------------------|
-| `DOCKER`    | Docker daemon unreachable, container OOM-killed, image pull failed       |
-| `SERVERS`   | Startup reconciliation changes, resource check failures, graceful shutdown |
-| `HEALTH`    | DB ping failed, Docker ping failed                                       |
-| `SCHEDULER` | Scheduled task failed, cron re-registration at boot                     |
-
-Events are written by the relevant service directly (no interceptor needed — these are internal events, not user actions). Retention: last 10 000 rows, older rows auto-deleted by a weekly cron. Surfaced in the Admin dashboard as a filterable event feed, distinct from the audit log (which records user actions) and notifications (which require user acknowledgement).
+- Default namespace (`/`), socket.io v4, CORS locked to the canonical origin (adapter `allowRequest`: handshakes carrying an Origin must match exactly; header size limits).
+- **Auth:** `access_token` cookie in the handshake, or one `auth` event `{ accessToken }` within 5 seconds; otherwise silent disconnect. Reservation cap 100 pending connections.
+- **Eligibility:** ADMIN only, excluding temporary-auth sessions (`mustChangePassword`).
+- **Events:** one event today — `system.stats` `{ totalRamMb, usedRamMb, freeDiskMb, cpuCount }` every 10s (volatile, cached ≤10s), token re-validated each tick. `usedRamMb = hostTotal − containerFree` (container cgroup free memory; documented caveat, B-P2-8).
+- **Contradiction to fix:** JS cannot read the HttpOnly access token, so the `auth`-event fallback is unusable by browsers; and the adapter rejects cookie-carrying handshakes without an Origin (mobile clients). Accepted fix: one-time WS ticket (B-P1-4, §8.6). The richer event set in the old SPEC (server.status/log/console, subscribe) is `[PROPOSED]` Phase 3 (§17.3).
 
 ---
 
-### Server Access (Phase 1.5)
+## 8. Authentication and session security
 
-| Method | Path                                         | Auth      | Description                        |
-|--------|----------------------------------------------|-----------|------------------------------------|
-| POST   | /servers/:id/request-access                  | JWT       | Request access to a server                          |
-| GET    | /servers/:id/my-access-request               | JWT       | Get own access request status (PENDING/APPROVED)    |
-| GET    | /servers/:id/access-requests                 | ADMIN     | List all pending access requests                    |
-| POST   | /servers/:id/access-requests/:userId/approve | ADMIN     | Approve a user's access request                     |
-| DELETE | /servers/:id/access-requests/:userId         | ADMIN     | Reject or revoke access                             |
+### 8.1 First-run setup invariant `[DECISION REQUIRED: D-2]` — P0
 
-### Admin (v1.0)
+Current `POST /api/setup/init` (`setup.service.ts`) is read-then-write: check `initialAdminCreated` → hash → insert admin → mark created. There is **no transaction, no advisory lock, no compare-and-swap, no setup secret, no route throttle**. Two provable failure modes:
 
-| Method | Path                             | Auth  | Description                              |
-|--------|----------------------------------|-------|------------------------------------------|
-| GET    | /admin/users                          | ADMIN | List all users (filterable by status, role)               |
-| PATCH  | /admin/users/:id/status               | ADMIN | Approve (PENDING→ACTIVE) / ban / unban a user             |
-| PATCH  | /admin/users/:id/role                 | ADMIN | Change user role — protected: cannot demote last ADMIN    |
-| POST   | /admin/users/:id/reset-password       | ADMIN | Generate one-time temp password (24h TTL, force-change on login) |
-| DELETE | /admin/users/:id/2fa                  | ADMIN | Disable 2FA for a user (emergency recovery)               |
+1. Concurrent requests both pass the check → **two administrators created**.
+2. User insert succeeds but the mark step fails → setup reports incomplete while an admin exists; anyone can create another.
 
-### Admin (Phase 1.5)
+Between Caddy certificate issuance and the operator's first visit, the endpoint is Internet-reachable — a scanner can claim a fresh instance.
 
-| Method | Path                             | Auth  | Description                              |
-|--------|----------------------------------|-------|------------------------------------------|
-| GET    | /admin/users/:id/permissions          | ADMIN | List MOD permissions for a user                           |
-| POST   | /admin/users/:id/permissions          | ADMIN | Assign a permission to a MOD                              |
-| DELETE | /admin/users/:id/permissions/:permId  | ADMIN | Revoke a permission from a MOD                            |
+**Accepted design (pending owner confirmation of the token UX):**
 
-### Endpoint behaviors: server lifecycle
+- `[ACCEPTED]` One transaction under `pg_advisory_xact_lock(7330)`: re-read `setup_state` → if `initialAdminCreated` → 409 `SetupAlreadyComplete` → insert admin → set flag → commit.
+- `[ACCEPTED]` A one-time setup secret: `SETUP_TOKEN` env if set; otherwise 24 random bytes (base64url) generated per boot **until setup completes** and printed once to the container log (`docker compose logs nestjs`). Compared timing-safe (SHA-256).
+- `[ACCEPTED]` Throttle `/api/setup/init` 5/10 min per IP.
+- **D-2:** token mandatory vs optional — recommendation: **mandatory**. Without it, first-boot claim remains possible; with it, only someone who can read the operator's logs can bootstrap.
 
-#### `POST /servers/:id/stop` and `POST /servers/:id/restart` — graceful shutdown
+The old SPEC text ("only works once") MUST be read as "once, sequentially, today" — not a secure invariant.
 
-A graceful shutdown warns online players and flushes world data before stopping the container. This prevents chunk corruption and data loss.
+### 8.2 Cookies and tokens `[IMPLEMENTED]`
 
-**`ServersService.stopServer()` sequence**:
-```
-1. set server status = STOPPING in DB
-2. if RCON connection available:
-   a. sendCommand('say §cServer closing in {STOP_WARN_SECONDS} seconds...')
-   b. wait STOP_WARN_SECONDS
-   c. sendCommand('save-all')
-   d. wait 3s  (allow chunk writes to complete)
-   e. sendCommand('stop')
-   f. wait up to 15s for container to stop naturally
-3. if RCON unavailable (server still starting up) OR 15s timeout exceeded:
-   → docker.getContainer(id).stop({ t: 10 })  (SIGTERM + 10s grace, then SIGKILL)
-4. set status = STOPPED in DB
-5. emit server.status WebSocket event
-```
+- Cookie names: `access_token` (15 min TTL), `refresh_token` (7 days). Both `HttpOnly`; `secure` only when `NODE_ENV=production`; `sameSite: 'none'` in production, `'lax'` in development. The controller omits `path`, but Express emits `Path=/` by default; B-P2-6 makes that intent explicit and evaluates the `__Host-` prefix in production.
+- Access JWT: `{ sub, type: 'access', username, role, temporaryAuth? }` — TTL from `JWT_EXPIRES_IN` via `JwtModule` `signOptions`.
+- Refresh JWT: `{ sub, type: 'refresh', temporaryAuth? }` — **hardcoded `7d`**; `JWT_REFRESH_EXPIRES_IN` is declared but never read (B-P1-5: consume it or delete it). Stored **bcrypt-hashed** in `refresh_tokens`.
+- `type` claims pin token purpose: only `type: 'refresh'` may rotate; only `type: 'access'` passes the JWT guard; `pre-auth` is a five-minute response-body Bearer token restricted to `POST /api/auth/2fa/verify`.
+- Login and refresh return `PublicUser` plus session cookies. A 2FA-required login instead returns `{ requiresTwoFactor: true, preAuthToken }` without setting session cookies; the browser-visible pre-auth exception is scoped in §5.2. This is why the WS `auth`-event fallback remains dead for browsers (§7.7).
 
-`POST /servers/:id/restart` calls the full stop sequence, then the start sequence — it does **not** use `docker restart` (which would bypass the graceful shutdown).
+### 8.3 Refresh rotation contract `[ACCEPTED]` — P1
 
-If the server is in `STARTING` state and RCON is not yet available, the warning step is skipped and the container is stopped directly.
+Current implementation rotates on **every** refresh (no 24h sliding rule — the old SPEC and `docs/auth-architecture.md` are wrong on this), but consumption is **delete-then-insert without a transaction**: two concurrent refreshes with the same token can both mint successors → two live sessions from one token. Replay of an already-rotated token does 401. Missing/malformed/expired refresh → **500** `Internal server error` (JWT errors fall through the exception filter catch-all; B-P1-2).
 
-#### `DELETE /servers/:id` — deletion policy
+**Accepted contract (backlog B-P1-1):**
 
-Server must be STOPPED — returns 409 if RUNNING or STARTING.
+- Atomic rotation in one transaction: `SELECT … FOR UPDATE` → bcrypt-compare → `DELETE` → `INSERT` successor → commit; the losing concurrent request sees no row and gets 401.
+- Add the refresh row id as `jti` so lookup is O(1) instead of the current O(n) bcrypt fan-out over all the user's tokens (a self-DoS amplifier under the 5/10s throttle).
+- All refresh failures → **401** with a stable machine code: `RefreshTokenMissing` (no cookie), `RefreshTokenMalformed`, `RefreshTokenExpired`, `TokenWrongPurpose`, `RefreshTokenInvalid`. Never 500.
+- Expiry synchronization: consume `JWT_REFRESH_EXPIRES_IN` once at boot and derive JWT `expiresIn`, DB `expiresAt` and cookie `maxAge` from it; remove the hardcoded `7d` literals.
+- Cleanup: lazy per-user sweep inside the rotation transaction + a daily in-process sweep of expired rows (no scheduler dependency exists yet — see §16 B-P1-6 for the `@nestjs/schedule` decision).
+- `GET /sessions` MUST filter `expiresAt > now()`. `lastUsedAt`/`userAgent` columns are `[ACCEPTED]`.
+- Indexes: `refresh_tokens(user_id)` and `refresh_tokens(expires_at)` (B-P1-3).
+- Frontend MUST single-flight `/auth/refresh` (two racing tabs ⇒ one tab's cookie is dead by design under strict rotation).
+- Theft detection (revoke a whole token family on reuse) is `[PROPOSED]`, not built.
 
-**`ServersService.deleteServer()` sequence**:
-```
-1. check status === STOPPED → 409 otherwise
-2. set server.pendingDeleteAt = now + 24h in DB
-3. create final backup: tar.gz → {MC_DATA_PATH}/{serverId}/final-backup-{timestamp}.tar.gz
-   → if backup fails: log warning, continue (do not block deletion)
-4. docker.getContainer(containerId).remove({ force: false })
-   → if container not found: continue (idempotent)
-5. delete DB record (cascades: ScheduledTask, Backup metadata, ServerAccess, ServerPlugin, AuditLog)
-6. return 202 Accepted (volume cleanup is async)
-7. async job runs after 24h: rm -rf {MC_DATA_PATH}/{serverId}/
-```
+### 8.4 Guard pipeline `[IMPLEMENTED]`
 
-**Rationale for 24h delay**: gives admin time to recover data if the deletion was accidental. The 24h window is not configurable — it is a safety margin, not a feature. After the volume is removed, recovery is impossible.
+Global order in `app.module.ts`:
 
-**`Server.pendingDeleteAt`**: new nullable `DateTime` field on `Server` model. A scheduled job (`@Cron`) polls every hour for servers where `pendingDeleteAt < now` and performs the volume cleanup.
+1. `CsrfOriginGuard` — mutating requests carrying an `Origin` header must match the canonical `CORS_ORIGIN` (or the API's own origin, e.g. Swagger); mismatch/`null`/repeated → 403 `{ error: 'CsrfOriginForbidden' }`. No-Origin requests (curl/CI) pass. Socket.IO is intercepted by the adapter before Nest routing.
+2. `JwtAuthGuard` — reads `access_token` cookie; `@Public()` bypasses. Verifies via `AccessTokenService` (JWT verify + DB-fresh `status`/`role`/`mustChangePassword`; **fails closed** on DB error; PENDING → 403 `AccountPending`, BANNED → 403 `AccountBanned`). Forced-recovery sessions are allowed only on `PATCH /api/auth/password`, else 403 `PasswordChangeRequired`.
+3. `RolesGuard` — `@Roles('ADMIN', …)`; ADMIN always passes; route without roles passes.
+4. `PermissionsGuard` — `@RequiresPermission('SERVER_LIFECYCLE')`; ADMIN passes; MOD must have a `mod_permissions` row (global `serverId IS NULL` or scoped to `:id`); fails closed 503 `Permission check unavailable` on DB error.
+5. `ThrottlerGuard` — see §13.
 
-#### `GET /versions` — available versions per provider
+Known nuance (B-P3-4): a MOD with a global `SERVER_LIFECYCLE` grant can pass the guard but still get 404 on a PRIVATE server without an approved `server_access` row (visibility is separate from action permission).
 
-Returns the list of available MC versions for each provider. Used by the frontend to populate version dropdowns during server creation and version updates.
+### 8.5 Hosted-frontend cross-origin authentication `[DECISION REQUIRED: D-1]` — blocker for the hosted frontend
 
-```json
-{
-  "VANILLA":  ["1.21.1", "1.21", "1.20.4", "1.20.1", "1.19.4"],
-  "PAPER":    ["1.21.1", "1.20.6", "1.20.4", "1.19.4"],
-  "FORGE":    ["1.20.1-47.3.0", "1.19.2-43.3.0", "1.18.2-40.2.0"],
-  "FABRIC":   ["1.21.1", "1.20.4", "1.19.4"],
-  "PURPUR":   ["1.21.1", "1.20.4"]
-}
-```
+The current vision: `minepanel.xyz` connects to arbitrary self-hosted backends using cross-origin HttpOnly cookies with `SameSite=None; Secure` + strict CORS.
 
-Source per provider:
-- **VANILLA / PAPER / PURPUR**: Hangar API or Modrinth metadata
-- **FORGE**: Forge maven (`https://files.minecraftforge.net/maven/net/minecraftforge/forge/maven-metadata.xml`)
-- **FABRIC**: Fabric meta API (`https://meta.fabricmc.net/v2/versions/game`)
+**Primary-source reality (2026):** `SameSite=None; Secure` is *necessary but not sufficient*. Safari's ITP blocks third-party cookies by default; Chrome retains user-choice blocking (no blanket removal, but availability is not guaranteed); Firefox Strict ETP blocks them. The cross-browser migration path is **CHIPS** (`Partitioned`): Baseline since December 2025 — Chrome 114+, Firefox 131+, Safari 18.4+ — set as `SameSite=None; Secure; Partitioned`. Partitioned cookies are scoped per top-level site, which is acceptable in this model (the only embedder is `minepanel.xyz`), but pre-CHIPS browsers (e.g. Safari < 18.4) simply cannot store the cookie.
 
-Response is cached in memory with TTL: 1 hour. Cold cache is populated on first request.
+**Options:**
 
-#### `PATCH /servers/:id/version` — update MC version
+| Option | Trade-offs |
+|--------|------------|
+| (a) Serve the frontend from each backend's own origin | Same-origin cookies — simplest and most robust; kills the hosted multi-backend `minepanel.xyz` model |
+| (b) CHIPS `Partitioned` HttpOnly cookies | Works under third-party-cookie blocking on Baseline browsers; explicit support matrix; pre-CHIPS Safari broken |
+| (c) Backend-issued proof-of-possession flow | Top-level redirect to the backend makes it first-party for issuance (PKCE + one-time code, ≤60s) → short-lived token in JS memory (never localStorage). Works everywhere; moves a credential into JS reach (XSS) — mitigated with 15m access tokens, rotation-on-exchange, strict CSP |
+| (d) Same-origin auth bridge/proxy | Proxy hop per backend; no security gain over (c) |
 
-Server must be STOPPED — returns 409 if running.
+**Recommendation (D-1): (b) as primary with (c) as documented fallback.** The old SPEC's claim that `SameSite=None; Secure` "is the only option for HttpOnly cookies cross-origin" (Italian CSRF note included) MUST be removed. This decision is a **release blocker for the hosted frontend**; the same-origin deployment remains fully supported meanwhile. References: §20.
 
-```
-1. validate new version exists for server.provider (from cached /versions list)
-2. create backup snapshot: tar.gz → {MC_DATA_PATH}/{serverId}/pre-update-{timestamp}.tar.gz
-   → if backup fails: abort with 500 (do not allow version change without backup)
-3. update server.version in DB
-4. on next start: itzg image auto-downloads the new JAR based on VERSION env var
-   (no manual JAR management needed)
-```
+### 8.6 WebSocket authentication `[ACCEPTED]` — P1
 
-> **Phase 2 — Docker image update via panel:**
-> The `itzg/minecraft-server` Docker image itself must be updated manually by the self-hoster in v1.0 (`docker pull itzg/minecraft-server:latest` + container recreate). Phase 2 will expose `POST /admin/docker/pull-image` that triggers `docker.pull('itzg/minecraft-server:latest')` via Dockerode, with progress streamed via WebSocket. All server containers are recreated sequentially after the pull completes.
+Accepted design: `POST /api/realtime/ticket` (authenticated, throttled) → single-use ticket, 60s TTL, server-bound to `{userId, role, exp}`, consumed atomically on connect; the gateway keeps its per-tick user re-validation. The cookie handshake remains the fast path. This resolves the current contradiction (§7.7) for browsers (which cannot read the HttpOnly access token) and for mobile clients (which send no Origin). Whether cookie or ticket is *primary* follows D-1.
 
-**Provider change** (e.g. Vanilla → Paper): out of scope for 1.0. World format compatibility between providers is not guaranteed and requires user-managed migration.
+### 8.7 Admin safety `[IMPLEMENTED]`
 
-### Pagination
+`pg_advisory_xact_lock(7331)` serializes role/status transitions; deactivating or demoting the last active ADMIN → 409 `Cannot deactivate the last active admin`. Banning deletes all refresh sessions (the old SPEC claimed tokens are kept on ban — **false**; unban requires re-login). Role change clears all `mod_permissions` rows. Admin password reset: 16-char base64url temp password, 24h TTL, `mustChangePassword=true`, revokes all sessions, returned plaintext once.
 
-All list endpoints (`GET /servers`, `GET /users`, `GET /notifications`, `GET /servers/:id/backups`, `GET /servers/:id/plugins`) accept:
+### 8.8 Identity normalization `[IMPLEMENTED]` — known defect B-P1-7
 
-```
-?limit=20&offset=0
-```
+- Registration: email is trimmed+lowercased; **username is trimmed but case-preserved**; uniqueness is case-sensitive (Postgres default) — `Bob` and `bob` are two accounts.
+- Login: the identifier is trimmed+**lowercased** and matched exactly against email OR username.
+- Consequence: a username containing any uppercase letter **cannot be used to log in by username** (the lowercased identifier never matches the stored casing); email login still works. Documented defect; accepted fix = normalize at registration (lowercase) or case-insensitive lookup — owner decision folded into D-10.
 
-- Default: `limit=20`, `offset=0`
-- Max: `limit=100`
-- Response includes `{ data: [...], total: number }` so the frontend can render pagination controls.
+### 8.9 Two-factor authentication `[IMPLEMENTED]`
+
+TOTP (RFC 6238, `otplib`), ±30s window; secret AES-256-GCM encrypted with `ENCRYPTION_KEY`. Login with 2FA returns a 5-minute `pre-auth` Bearer token (`{ type: 'pre-auth', sub }`; temporary-recovery variants carry a SHA-256 fingerprint of the temp hash); `2fa/verify` consumes it. In-memory per-user lockout: 5 failures per 10 min → 15 min 429 (lost on restart — accepted, single-instance; B-P3-5). Backup codes: 8 × `8hex-8hex`, bcrypt-hashed, JSON-array stored, single-use via atomic CAS on the stored array. Admin emergency disable clears secret+enabled+backup codes in one update.
 
 ---
 
-## Error Response Format
+## 9. Authorization and server access
 
-All errors follow NestJS's default `HttpException` format:
+### 9.1 Roles `[IMPLEMENTED]`
 
-```json
-{
-  "statusCode": 404,
-  "error": "Not Found",
-  "message": "Server not found"
-}
-```
+`ADMIN` bypasses role and permission checks. `MOD` needs explicit `mod_permissions` grants for privileged actions. `USER` is a panel account without moderation powers. Roles are read from the DB on every request (never trusted from the token alone).
 
-`DbExceptionFilter` must use the same shape (already implemented). This allows the frontend to handle errors consistently regardless of source.
+### 9.2 Server visibility `[IMPLEMENTED]`
 
----
+A server row is visible to a caller when: caller is ADMIN (any non-`CREATING` row), or `accessType = 'OPEN'`, or an `APPROVED` `server_access` row exists for the caller. Non-visible servers are indistinguishable from missing (404 — no disclosure). `ownerId` records the creator but confers **no** special visibility; there is no owner concept in the access model.
 
-## Docker Service
+### 9.3 Access flows `[IMPLEMENTED]`
 
-The NestJS container connects to the host Docker daemon via the Docker socket. **Rootless Docker is the default** — no root privileges required. The socket is always mounted to `/var/run/docker.sock` **inside** the container; only the host-side path in `docker-compose.yml` changes.
+- `OPEN`: visible to all authenticated users; no row needed.
+- `REQUEST`: user POSTs `request-access` → `PENDING` row; ADMIN approves → `APPROVED`. Duplicate PENDING/APPROVED → 409; race-safe via unique constraint + on-conflict + bounded retry.
+- `PRIVATE`: no request flow; ADMIN assigns directly (approve endpoint inserts an `APPROVED` row). Users see 404.
+- Revocation deletes the row (no `DENIED` status).
 
-`DockerService` reads the socket path from `ConfigService` at startup (`DOCKER_SOCKET`, default `/var/run/docker.sock` inside container) — it is never hardcoded.
+### 9.4 MOD granular permissions (PBAC) `[IMPLEMENTED]`
 
-It uses Dockerode to:
-
-- **Create containers** using `itzg/minecraft-server` image
-- **Manage lifecycle** (start, stop, remove)
-- **Collect stats** (CPU, memory, network)
-- **Stream logs** from MC server containers
-- **Execute commands** inside containers (e.g., MC console commands)
-
-Each MC server gets:
-- Its own subdirectory under the shared host data directory `MC_DATA_PATH`
-- A unique host port mapped to container port 25565
-- Attached to `minepanel_network` for inter-container communication
-- A configurable memory limit (default 2048 MB, min 512 MB) — see below
-- `unless-stopped` restart policy
-
-**Per-server memory limit:**
-
-`Server.memoryLimitMb` is set at creation time via `POST /servers` DTO (`memoryLimitMb?: number`, default: `2048`) and can be updated via `PATCH /servers/:id` while the server is STOPPED.
-
-- **Minimum:** 512 MB — Minecraft JVM requires at least 512 MB to start; requests below this are rejected with 422
-- **Maximum:** bounded by `MAX_MEMORY_RATIO` — the resource check at create/start time ensures the sum of all server limits does not exceed the ratio
-- **Docker propagation:** `DockerService.createContainer()` sets `HostConfig.Memory = memoryLimitMb * 1024 * 1024` (bytes). The itzg image also receives `MEMORY=${memoryLimitMb}M` as an env var so the MC JVM heap is sized accordingly
-- **Live changes:** `memoryLimitMb` changes take effect on the next container start (restart required)
-
-### Socket path reference
-
-The `docker-compose.yml` uses `${XDG_RUNTIME_DIR}/docker.sock` as the host-side socket path — `XDG_RUNTIME_DIR` is automatically set by Linux to `/run/user/<UID>` for the current user. No manual UID configuration needed.
-
-| Setup           | Host-side volume mount in compose                          | `DOCKER_SOCKET` (in container) |
-|-----------------|------------------------------------------------------------|--------------------------------|
-| Rootless Docker | `${XDG_RUNTIME_DIR}/docker.sock:/var/run/docker.sock`      | `/var/run/docker.sock`         |
-| Root Docker     | `/var/run/docker.sock:/var/run/docker.sock`                | `/var/run/docker.sock`         |
-| Rootless Podman | `${XDG_RUNTIME_DIR}/podman/podman.sock:/var/run/docker.sock` | `/var/run/docker.sock`       |
-
-> **Default (zero-touch):** rootless Docker. The `docker-compose.yml` ships with `${XDG_RUNTIME_DIR}/docker.sock` — works for any user without knowing their UID. Root Docker users change only the host-side path in the compose volume.
-
-> **Podman compatibility:** Podman's Docker-compatible socket can be mounted to `/var/run/docker.sock` inside the container — no code changes needed.
-
-### Host resource inspection
-
-`DockerService` exposes two methods to read host-level resources. These are called by `ServersService` before any container create/start operation.
-
-```ts
-getHostInfo(): Promise<{ totalRamMb: number; cpuCount: number }>
-// Uses docker.info() → MemTotal, NCPU — host-level data from the Docker daemon
-
-getHostDiskInfo(): Promise<{ totalDiskMb: number; freeDiskMb: number }>
-// Uses fs.statfs(MC_DATA_PATH) — checks free space on the volume where MC data is stored
-```
-
-Both methods must be fast (< 100ms) — they are called in the hot path of server create/start.
-
-### Docker socket security guardrails
-
-The Docker socket gives the NestJS app the ability to create arbitrary containers on the host. To limit the blast radius if the app is compromised, `DockerService.createContainer()` must enforce these constraints in code — never allow them to be driven by user input:
-
-| Constraint       | Rule                                                              |
-|------------------|-------------------------------------------------------------------|
-| Port range       | Only ports in `MC_PORT_MIN`–`MC_PORT_MAX` (default: 25565–25665) |
-| Volume mounts    | Only `{MC_DATA_PATH}/{serverId}:/data` — no user-controlled paths |
-| Env vars         | Whitelist of known MC server vars (`EULA`, `TYPE`, `VERSION`, etc.) |
-| Network          | Always forced to `DOCKER_NETWORK` — never user-specified          |
-| Privileged mode  | Always `false`, hardcoded                                         |
-| Capabilities     | `CapAdd: []` — no extra capabilities, hardcoded                   |
-
-These are defense-in-depth measures. The outer layers (input validation, JWT auth) prevent most attacks; these guardrails limit damage if a vulnerability is exploited deeper in the stack.
-
-New env vars:
-
-| Variable         | Description                         | Default |
-|------------------|-------------------------------------|---------|
-| MC_PORT_MIN      | Minimum allowed MC server port      | 25565   |
-| MC_PORT_MAX      | Maximum allowed MC server port      | 25665   |
+Six permission values (`SERVER_LIFECYCLE`, `SERVER_CONFIG`, `PLUGIN_MANAGEMENT`, `WHITELIST_MANAGEMENT`, `USER_MANAGEMENT`, `FILE_MANAGER`). Grants are global (`serverId IS NULL`, partial-unique) or per-server. Enforcement: `PermissionsGuard` on `@RequiresPermission` routes — today `SERVER_LIFECYCLE` on start/stop/restart. `SERVER_CONFIG`/`PLUGIN_MANAGEMENT`/etc. become live as their Phase 3 endpoints land (§17).
 
 ---
 
-## Environment Variables
+## 10. Docker and filesystem architecture
 
-| Variable              | Description                        | Default                          |
-|-----------------------|------------------------------------|----------------------------------|
-| DATABASE_URL          | PostgreSQL connection string       | (required)                       |
-| JWT_SECRET            | Secret for JWT signing             | (required)                       |
-| JWT_EXPIRES_IN        | Access token TTL                   | 15m                              |
-| JWT_REFRESH_EXPIRES_IN| Refresh token TTL                  | 7d                               |
-| PORT                  | Backend listen port                | 3000                             |
-| DOMAIN                | Public domain (used by Caddy for HTTPS; set CORS_ORIGIN separately) | (required) |
-| CORS_ORIGIN           | Exact frontend origin (never `*`; not derived from DOMAIN) | (required) |
-| DOCKER_SOCKET         | Host socket path used as the Compose bind source (container path is fixed `/var/run/docker.sock`) | /var/run/docker.sock |
-| DOCKER_NETWORK        | Docker network name for managed MC containers (and the Compose mc bridge) | minepanel_network |
-| MC_DATA_PATH_HOST     | Host data root, required in Compose (wizards default `$HOME/.minepanel/mc-data`; mounted read-only at `/mc-data`) | (required) |
-| MC_DATA_BIND_SOURCE   | Host-side bind source for MC containers (Compose sets it from MC_DATA_PATH_HOST; defaults to MC_DATA_PATH) | (derived) |
-| MC_DATA_PATH          | Base path inside the backend (Compose fixes it to `/mc-data`) | /mc-data |
-| MC_PORT_MIN           | Minimum allowed MC server port     | 25565                            |
-| MC_PORT_MAX           | Maximum allowed MC server port     | 25665                            |
-| MIN_FREE_DISK_MB      | Min free disk (MB) on MC_DATA_PATH to allow create/start | 2048     |
-| MAX_MEMORY_RATIO      | Max fraction of host RAM to allocate to MC servers (0–1) | 0.90     |
-| POSTGRES_PASSWORD      | Postgres password (Compose requires it: `${POSTGRES_PASSWORD:?}`) | (required) |
-| MICROSOFT_CLIENT_ID    | Azure app client ID (MC linking)   | (optional)                      |
-| MICROSOFT_CLIENT_SECRET| Azure app client secret (MC link)  | (optional)                      |
-| PANEL_NAME             | Display name shown in frontend listing | MinePanel                   |
-| ENCRYPTION_KEY         | 32-byte hex key for secret encryption (Compose requires it; production preflight rejects non-64-hex values) | (required) |
-| STOP_WARN_SECONDS      | Seconds to warn players before graceful server shutdown | 30              |
-| PANEL_ASSETS_PATH        | Directory for panel-level static assets (planned — no mount in current compose) | /panel-assets   |
-| REQUIRE_ADMIN_APPROVAL   | If true, new registrations start as PENDING (admin must approve) | true       |
-| MINEPANEL_IMAGE          | Backend image used by docker-compose                             | `ghcr.io/minepanelproject/minepanel-backend:latest` |
-| SMTP_HOST                | SMTP server hostname (optional — enables email features)          | (optional) |
-| SMTP_PORT                | SMTP port                                                         | 587        |
-| SMTP_SECURE              | Use TLS (`true` for port 465, `false` for STARTTLS)               | false      |
-| SMTP_USER                | SMTP username                                                     | (optional) |
-| SMTP_PASS                | SMTP password                                                     | (optional) |
-| SMTP_FROM                | From address for outgoing emails (e.g. `noreply@yourdomain.com`) | (optional) |
+### 10.1 Docker module `[IMPLEMENTED]`
 
-> The `PANEL_ASSETS_PATH` bind mount is added with the `/panel/logo` slice; when it lands, the host directory must exist or be created by Compose. The current compose file does not mount it.
+`DockerModule` builds a Dockerode client over a **local Unix socket only**: `DOCKER_SOCKET` (default `/var/run/docker.sock` inside the container), with the ambient `DOCKER_HOST` env suppressed. If the daemon is unreachable at startup the module logs and continues in degraded mode (health reports 503, Docker operations throw 503) — startup never fails because Docker is down.
 
----
+### 10.2 Data-path contract `[ACCEPTED]` — "one physical data root, two views"
 
-## Rate Limiting & Security
+| Variable | View | Read by | Purpose |
+|----------|------|---------|---------|
+| `MC_DATA_PATH_HOST` | Host filesystem | compose | The real host directory (wizards default `$HOME/.minepanel/mc-data`). Compose passes it to `MC_DATA_BIND_SOURCE` and binds it into the backend at `/mc-data` **read-only** |
+| `MC_DATA_BIND_SOURCE` | Host filesystem | Docker daemon | Bind source for every MC container: `{MC_DATA_BIND_SOURCE}/{serverId}:/data` — passed **verbatim, never normalized** (a Windows path like `C:\…` must reach the daemon unchanged; the daemon resolves it) |
+| `MC_DATA_PATH` | Backend container | backend | Fixed `/mc-data` in compose; validated absolute, no `.`/`..` segments; used exclusively for `statfs` disk admission and reads |
 
-### Package
+Because a bind mount exposes the same filesystem, `statfs(/mc-data)` measures the physical data root the MC containers actually write to — this is the correct physical root for disk admission. On Docker Desktop it measures the VM's mount of the host drive (acceptable approximation, documented).
 
-`@nestjs/throttler` — NestJS official rate limiting module. Applied globally via `APP_GUARD`, with per-route overrides using `@Throttle()` and `@SkipThrottle()`.
+**Invariants (testable):** (1) after `POST /servers`, `$MC_DATA_PATH_HOST/{serverId}` exists on the host; (2) `MIN_FREE_DISK_MB` above actual free space ⇒ create/start fails 422; (3) writes via the container view always appear in the host view.
 
-### Throttle tiers
+**Socket default truth:** the shipped compose default is **rootful** Docker (`${DOCKER_SOCKET:-/var/run/docker.sock}`). Rootless Docker requires setting host `DOCKER_SOCKET=/run/user/$UID/docker.sock` (or Podman: `/run/user/$UID/podman/podman.sock`). The old SPEC's "rootless is the default, zero-touch, `${XDG_RUNTIME_DIR}`" claims are false against the compose file. Keeping the rootful default is owner decision D-4 (recommendation: keep — NAS/VPS compatibility); rootless remains a documented override. `tcp://` endpoints are rejected (local-socket-only contract).
 
-| Tier       | Limit              | Applied to                                          |
-|------------|--------------------|-----------------------------------------------------|
-| `strict`   | 5 req / 60s per IP | Login, register, OAuth token endpoints              |
-| `standard` | 60 req / 60s per IP| All other authenticated API endpoints               |
-| `relaxed`  | 300 req / 60s per IP| WebSocket upgrades, static-like reads              |
+### 10.3 Managed container specification `[IMPLEMENTED]` — normative guardrails
 
-> Limits are per IP by default. For authenticated routes, consider switching to per-user-id to avoid penalising users behind shared IPs (e.g. office NAT).
+`DockerService.createContainer()` builds exactly (never user-driven):
 
-### Per-endpoint config
+- Image `itzg/minecraft-server`; name `mc-{serverId}`; labels `minepanel.server-id`, `minepanel.managed=true`.
+- Env **whitelist** (nothing else): `EULA=TRUE`, `ENABLE_RCON=TRUE`, `TYPE=<provider>`, `VERSION`, `MEMORY={n}M`, `MAX_PLAYERS`, `DIFFICULTY`, `MODE` (itzg uses MODE, not GAMEMODE), `ONLINE_MODE`, `VIEW_DISTANCE`, `ALLOW_FLIGHT`, `PVP`, `MOTD` (CR/LF stripped), `SEED`.
+- Binds `{MC_DATA_BIND_SOURCE}/{serverId}:/data`; port mapping `25565/tcp` → `server.port` within `MC_PORT_MIN`–`MC_PORT_MAX`; `Memory` = `memoryLimitMb` bytes (min 512); `Privileged: false`; `CapAdd: []`; `NetworkMode` = `DOCKER_NETWORK` (must be a named network — `host`/`none`/`container:` rejected); `RestartPolicy: unless-stopped`.
+- Missing CPU/pids limits: backlog B-P1-10. Untagged image: backlog B-P2-7.
 
-```
-POST /auth/login          → strict   (brute-force protection)
-POST /auth/register       → strict   (spam protection)
-POST /auth/google/token   → strict
-POST /auth/github/token   → strict
-POST /auth/refresh        → strict
-GET  /setup/status        → @SkipThrottle (called on every frontend load)
-POST /setup/init          → strict   (one-time but still protect)
-GET  /servers             → standard
-WebSocket upgrade         → relaxed
-```
+**RCON today = `docker exec rcon-cli`** (validated argv: no NUL/CR/LF, ≤2 args, ≤total bytes, hard timeout), used by the graceful-stop sequence. There is no TCP RCON service and `rconPassword` is never written (B-P1-11: generate a per-server password at create, store it AES-GCM-encrypted, and pass it as `RCON_PASSWORD`).
 
-### Brute-force protection on login
+### 10.4 Read-only mount vs future write features `[DECISION REQUIRED: D-8]`
 
-Plain IP throttling is not enough for login — an attacker can rotate IPs. Add a **per-username attempt counter** in addition to the IP limit:
+The backend mount is `:ro` today; future features (backups, restore, plugins, file manager, icons, config generation) need writes. Options: (a) read-write mount (simplest; any traversal/logic bug rewrites world data); (b) docker exec/cp per op (needs running containers; daemon-side root writes; fragile as primary); (c) **recommended** — narrow filesystem-helper sidecar: data root mounted rw, fixed UID 1000:1000, no docker socket, no published ports, own bearer credential, and the §18.2 path-safety module implemented once inside it; (d) per-operation temporary containers — recommended for restore/extract only. Until D-8 lands, the backend MUST stay read-only for data paths.
 
-```
-POST /auth/login
-  1. check IP throttle (5 req/60s) → 429 if exceeded
-  2. check username attempt counter:
-     → if attempts >= 10 in last 15min → 429 + lockout message
-     → on successful login: reset counter
-     → on failed login: increment counter
-  3. proceed with password check
-```
+### 10.5 Degraded mode `[IMPLEMENTED]`
 
-Counter stored in memory (Map) or in DB (`loginAttempts` on `User`). Memory is fine for single-instance deployment (which is the self-hosted case).
-
-**Key decision:** counter is per-username, not per-email, because an attacker knows/guesses usernames more often than emails.
-
-### Security headers
-
-Use `helmet` (already a NestJS recommended package) in `main.ts`:
-
-```ts
-app.use(helmet());
-```
-
-Headers it sets automatically:
-- `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: DENY`
-- `Strict-Transport-Security` (HTTPS only)
-- `Content-Security-Policy` (tighten in prod)
-- Removes `X-Powered-By`
-
-### CORS
-
-Already configured via `CORS_ORIGIN` env var. In prod, this should be set to the exact frontend URL (`https://minepanel.xyz`). Never `*` in prod.
-
-**`credentials: true` is required** — it allows the browser to include HttpOnly cookies on cross-origin requests from `minepanel.xyz` to the self-hosted backend.
-
-```ts
-app.enableCors({
-  origin: configService.get('CORS_ORIGIN'),
-  credentials: true,  // ← required for cross-origin cookies
-});
-```
-
-### Cookie security
-
-| Flag       | Dev   | Prod  | Notes                                |
-|------------|-------|-------|--------------------------------------|
-| `httpOnly` | ✅    | ✅    | JS cannot read the cookie            |
-| `secure`   | ❌    | ✅    | HTTPS only (set when NODE_ENV=production) |
-| `sameSite` | `lax` | `none` | Richiesto per cross-origin (vedi nota) |
-| `path`     | `/`   | `/`   |                                      |
-
-> **Perché `SameSite=None` e non `Strict`?** Il frontend (`minepanel.xyz`) fa richieste `fetch()` cross-origin al backend self-hosted (`user.domain.com`). Con `SameSite=Strict` o `Lax` il browser non invia i cookie su richieste JavaScript cross-origin — l'autenticazione non funzionerebbe. `SameSite=None; Secure` è l'unica opzione per cookie HttpOnly su richieste cross-origin.
->
-> **Protezione CSRF.** `CORS_ORIGIN` è una allow-list CORS per il frontend e non è, da sola, una difesa CSRF: una form cross-site può inviare una richiesta con cookie senza poter leggere la risposta. Per ogni richiesta HTTP `POST`, `PUT`, `PATCH` o `DELETE` che include l'header `Origin`, il backend richiede che `Origin` corrisponda esattamente al singolo `CORS_ORIGIN` canonico (o all'origine stessa dell'API per le chiamate same-origin, es. la UI Swagger su `/docs`); un valore diverso, `null` o non valido restituisce `403 {"error":"CsrfOriginForbidden"}` prima dell'autenticazione. Le richieste mutanti senza `Origin` restano consentite per client non-browser/CI; browser moderni inviano `Origin` per le form POST cross-site. `OPTIONS` e le richieste di lettura sono escluse. Socket.IO applica separatamente la stessa allow-list al livello Engine.IO.
-
-### Input validation
-
-All DTOs use `class-validator` via NestJS `ValidationPipe` (global). This prevents malformed payloads reaching service layer.
-
-`ValidationPipe` config in `main.ts`:
-```ts
-app.useGlobalPipes(new ValidationPipe({
-  whitelist: true,      // strip unknown fields
-  forbidNonWhitelisted: true,  // throw if unknown fields present
-  transform: true,      // auto-transform payloads to DTO types
-}));
-```
-
-`whitelist: true` is important — it prevents unexpected fields from being passed down to the DB layer.
-
-### DTO field constraints
-
-Standard rules applied to all user-facing DTOs and mirrored in the DB schema:
-
-| Field        | DTO validators                                              | DB type        |
-|--------------|-------------------------------------------------------------|----------------|
-| `email`      | `@IsEmail()`, `@MaxLength(254)`                             | `varchar(254)` |
-| `username`   | `@IsString()`, `@MinLength(3)`, `@MaxLength(32)`, `@Matches(/^[a-zA-Z0-9_]+$/)` | `varchar(32)` |
-| `password`   | `@IsString()`, `@MinLength(8)`, `@MaxLength(128)`           | hash only — no DB constraint |
-| `newPassword`| `@IsString()`, `@MinLength(8)`, `@MaxLength(128)`           | hash only — no DB constraint |
-| `oldPassword`| `@IsString()`, `@IsNotEmpty()`                              | — |
-
-**Notes:**
-- `email` max 254 = RFC 5321 standard
-- `username` regex `^[a-zA-Z0-9_]+$` — alphanumeric + underscore only, no spaces or symbols
-- `password` max 128 — bcrypt silently truncates beyond 72 bytes; 128 is a safe upper bound
-- DB uses `varchar(N)` instead of `text` for constrained fields — enforces limits at DB level too
-
-### Path traversal (File Manager)
-
-The File Manager (Phase 3h) reads/writes files inside `{MC_DATA_PATH}/{serverId}/`. Every path must be sanitized:
-
-```ts
-// Reject any path that resolves outside the server directory
-const safePath = path.resolve(serverDir, userPath);
-if (!safePath.startsWith(serverDir)) {
-  throw new ForbiddenException('Path traversal detected');
-}
-```
-
-This is the single most important security check in the file manager. A missed check here would allow reading `/etc/passwd` or writing to arbitrary host paths.
-
-### Summary of packages
-
-| Package             | Purpose                                              |
-|---------------------|------------------------------------------------------|
-| `@nestjs/throttler` | Rate limiting                                        |
-| `helmet`            | Security headers                                     |
-| `class-validator`   | DTO input validation                                 |
-| `class-transformer` | DTO transformation                                   |
-| `nestjs-pino`       | Structured JSON logging (Pino)                       |
-| `nestjs-paginate`   | Cursor/offset pagination for list endpoints (post-v1.0) |
-| `nestjs-cls`        | Request-scoped context propagation — used for audit log interceptor (Phase 2) |
+Daemon-unreachable transport and 502/503/504 responses surface as `503 { message: 'Docker daemon unreachable' }` at the Docker boundary. Read paths (`GET /servers`, `GET /servers/:id`) keep working; WS `system.stats` stops emitting; startup reconciliation leaves lifecycle rows untouched when the daemon is unavailable. A lifecycle operation that already claimed a transition before the daemon becomes unreachable settles that row as `ERROR`, rather than asserting an unverified prior state (§11.1).
 
 ---
 
-## Development Workflow
+## 11. Server lifecycle state machine
 
-```bash
-# Start Postgres only
-docker-compose -f docker-compose.dev.yml up -d
-
-# Install dependencies
-bun install
-
-# Push DB schema (first time or after schema changes)
-bun db:push
-
-# Run NestJS locally with hot-reload
-bun start:dev
-```
-
-> **Runtime clarification:** `bun start:dev` runs `nest start --watch` which uses SWC transpiler under Node.js — **not** Bun's transpiler. Bun cannot transpile NestJS TypeScript decorators because of `emitDecoratorMetadata` support gaps. In production, TypeScript is compiled to `dist/` first, then `bun dist/src/main.js` executes the compiled JavaScript (no transpilation — Bun is just a fast JS runtime here).
-
-## Production Deployment
-
-```bash
-cp .env.example .env
-# Edit .env with secure passwords/secrets
-
-docker compose pull && docker compose up -d
-# NestJS + Postgres + Caddy (HTTPS) run in containers
-# Or run ./setup.sh (Linux), ./setup-mac.sh (macOS), ./setup.ps1 (Windows)
-# for the interactive setup wizard that auto-generates secrets
-```
-
-### Multi-architecture support
-
-The NestJS Docker image is built as a multi-platform manifest:
-- `linux/amd64` — standard x86 servers and VMs
-- `linux/arm64` — Raspberry Pi 4/5, Apple Silicon (via Docker Desktop), AWS Graviton
-
-Build with: `docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/minepanelproject/minepanel-backend .`
-
-The `itzg/minecraft-server` image also supports ARM64 natively — no extra config needed.
-
-### HTTPS — mandatory
-
-Production deployments must use HTTPS. `SameSite=None; Secure` cookies (required for multi-backend cross-origin auth) are **only sent by the browser over HTTPS**. Without TLS the browser silently drops every auth cookie → all authenticated requests return 401 with no visible error.
-
-A reverse proxy with TLS termination is not optional. NestJS itself runs plain HTTP on the internal port 3000; Caddy handles HTTPS and forwards to it.
-
-### Optional: Docker Socket Proxy
-
-Direct Docker socket access (`/var/run/docker.sock`) grants the NestJS container root-equivalent privileges on the host. The backend enforces a **local Unix socket** transport: `DOCKER_SOCKET` must be a socket path mounted into the container, and remote TCP endpoints (e.g. `tcp://socket-proxy:2375`) are unsupported and would leave Docker unreachable. A restricted socket proxy such as [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) (which exposes TCP) therefore cannot be used directly; it would need an additional TCP-to-Unix relay whose socket is mounted at the configured `DOCKER_SOCKET` path. This is a future hardening option — the default deployment mounts the host socket directly.
-
-### Default: Caddy (auto-HTTPS, included in docker-compose)
-
-Caddy is **included by default** in `docker-compose.yml` — no extra setup required. It obtains and renews Let's Encrypt certificates automatically, handles HTTP→HTTPS redirect, and proxies WebSocket connections without extra configuration.
-
-Set `DOMAIN` in `.env` and Caddy configures itself:
+### 11.1 States and transitions `[IMPLEMENTED]`
 
 ```
-# Caddyfile (shipped with the project) — TLS is mandatory: the site address
-# forces the https:// scheme so a malformed DOMAIN cannot fall back to HTTP
-https://{$DOMAIN} {
-    reverse_proxy nestjs:3000
-}
+         create+start (ADMIN)
+ STOPPED ───────────────► CREATING ──► RUNNING   (create failure → rollback/ERROR)
+ STOPPED ── start ──► STARTING ──► RUNNING
+ RUNNING ── stop ──► STOPPING ──► STOPPED
+ RUNNING ── restart ──► STOPPING ──► STARTING ──► RUNNING
+ any ── reconcile ──► STOPPED/RUNNING (truth from Docker inspect)
+ STOPPED ── delete ──► STOPPING ──► (container removed, DB row deleted)
 ```
 
-The `docker-compose.yml` passes `DOMAIN` as an env var to the Caddy container. `CORS_ORIGIN` is NOT derived from `DOMAIN`: operators must set it to the exact frontend URL (e.g. `https://minepanel.xyz`). The compose file requires both variables with `${DOMAIN:?}` and `${CORS_ORIGIN:?}`.
+Every transition is a CAS `UPDATE … WHERE status = <expected>` (plus containerId when set) — the losing request gets 0 rows → 409 `Server is not in X state`. `pg_advisory_xact_lock(7332)` serializes admission checks and create/start/restart claims. Error classification after a Docker failure is truthful: an in-flight lifecycle operation with a daemon-unreachable outcome → `ERROR`; container not found → `STOPPED`; known daemon rejection → prior state restored.
 
-**Host-based Caddy** (if you prefer Caddy on the host instead of in Docker):
-
-Remove the `caddy` service from `docker-compose.yml`, bind port 3000 to loopback only on `nestjs` (edit `docker-compose.yml`: add `ports: ["127.0.0.1:3000:3000"]`), then use a local Caddyfile (TLS mandatory, never serve HTTP):
-```
-https://your-domain.com {
-    reverse_proxy 127.0.0.1:3000
-}
-```
-The backend must never be reachable on a host-wide plaintext port: the reverse proxy terminates TLS; bind 3000 to `127.0.0.1` so it is not exposed on the network.
-
-### Alternative: nginx
-
-For users who already have nginx on the host. Requires a TLS certificate (e.g. via `certbot --nginx`).
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name panel.yourdomain.com;
-
-    ssl_certificate     /etc/letsencrypt/live/panel.yourdomain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/panel.yourdomain.com/privkey.pem;
-
-    # Required for backup downloads and file uploads (nginx default limit: 1 MB)
-    client_max_body_size 50M;
-
-    location / {
-        proxy_pass         http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-
-        # Required for WebSocket (socket.io)
-        proxy_set_header Upgrade    $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-
-server {
-    listen 80;
-    server_name panel.yourdomain.com;
-    return 301 https://$host$request_uri;
-}
-```
-
-> **`client_max_body_size 50M`** — without this, nginx rejects file uploads and backup downloads over 1 MB with a silent 413.
-
-> **`Upgrade` + `Connection` headers** — without these, socket.io falls back to long-polling. Real-time events (logs, stats) still work but with much higher latency.
-
-### Traefik (Docker label-based)
-
-For users already running Traefik. Add labels to the `nestjs` service in `docker-compose.yml`:
-
-```yaml
-labels:
-  - "traefik.enable=true"
-  - "traefik.http.routers.minepanel.rule=Host(`panel.yourdomain.com`)"
-  - "traefik.http.routers.minepanel.entrypoints=websecure"
-  - "traefik.http.routers.minepanel.tls.certresolver=letsencrypt"
-  - "traefik.http.services.minepanel.loadbalancer.server.port=3000"
-```
-
-Traefik handles WebSocket automatically on `websecure` entrypoint.
-
-### Pre-launch checklist
-
-- [ ] Domain DNS points to the host
-- [ ] Reverse proxy running with valid TLS certificate
-- [ ] `NODE_ENV=production` in `.env` (enables `Secure` cookie flag)
-- [ ] `CORS_ORIGIN` set to the **exact** frontend URL (e.g. `https://minepanel.xyz`) — never `*`
-- [ ] `JWT_SECRET` is a long random string (min 32 chars, not the placeholder)
-- [ ] `ENCRYPTION_KEY` is exactly 32 random bytes as 64 hex characters (required in production)
-- [ ] `POSTGRES_PASSWORD` is a strong random value (Compose requires it)
-- [ ] MC ports (25565–25665) open in firewall if players connect directly
-
----
-
-## Testing
-
-### Tools
-
-- **Jest** — included in NestJS, runs unit and e2e tests
-- **Supertest** — HTTP assertions for e2e tests (included with NestJS e2e setup)
-- Separate test database: set `DATABASE_URL` to a test DB in `.env.test`
-
-### Minimum scope — Phase 1
-
-These tests must pass before moving to Phase 1.5:
-
-```
-e2e:
-  - POST /auth/register → 201, POST /auth/login → 200 + cookies set
-  - POST /auth/refresh → new access token returned
-  - POST /auth/logout → cookies cleared, refresh token deleted from DB
-  - GET /auth/profile (no cookie) → 401
-  - GET /auth/profile (valid cookie) → 200 + user data
-  - GET /setup/status → 200 (public)
-  - POST /setup/init (twice) → second call returns 409 or 403
-  - GET /health → 200 { status: 'ok', db: 'ok', docker: 'ok' }
-  - POST /servers/:id/start (server already STARTING) → 409 Conflict
-  - POST /servers/:id/start (insufficient RAM) → 422 with details.resource = 'memory'
-  - DELETE /servers/:id (server RUNNING) → 409 Conflict
-  - DELETE /servers/:id (server STOPPED) → 202 Accepted
-
-unit:
-  - AuthService.loginUser: wrong password → throws UnauthorizedException
-  - AuthService.registerUser: duplicate username → throws ConflictException
-  - ServersService.stopServer: RCON unavailable → falls back to docker stop
-  - ServersService.createServer: Docker failure → DB record is cleaned up (no orphan)
-  - ServersService.onModuleInit: container not running → DB status set to STOPPED
-```
-
-### Minimum scope — Phase 1.5
-
-```
-e2e:
-  - Route with @Roles(ADMIN) accessed by USER → 403
-  - Route with @Roles(ADMIN) accessed by ADMIN → 200
-  - MOD with SERVER_LIFECYCLE permission → can start/stop server
-  - MOD without permission → 403
-```
-
----
-
-## Implementation Phases
-
-### Phase 1 - Foundation (v1.0)
-
-1. Auth module (register, login, JWT via HttpOnly cookies, refresh, logout, guards) ✅
-2. Setup module (first-run wizard, admin creation) ✅
-3. RolesGuard + `@Roles()` decorator ✅
-4. Sessions management (list, revoke single, logout-all) ✅
-5. `PATCH /auth/profile` (edit profile) ✅
-6. `PATCH /auth/password` (change password) ✅
-7. Rate limiting (`@nestjs/throttler` on public endpoints) ✅
-8. Security hardening (validation, DTO constraints, helmet config) ✅
-9. Health check (`GET /health` — db liveness) ✅
-10. Docker module (socket connection, container CRUD + host resource inspection)
-11. Server module:
-    - create/start/stop/delete/list MC servers + resource checks
-    - Graceful shutdown sequence (`stopServer()`)
-    - Startup reconciliation (`onModuleInit`)
-    - Concurrent operation protection (atomic compare-and-swap via Postgres)
-    - Transaction rollback on Docker failure
-12. Host metrics WebSocket (CPU, RAM, disk — real-time push to frontend)
-13. Unit + integration tests (AuthService, UsersService, guards, critical routes)
-14. CI/CD pipeline (GitHub Actions: lint → test → build → push Docker image to GHCR)
-15. Dockerize the backend (docker-compose, migrations on startup, env vars)
-
-#### Resource check flows (Phase 1, inside ServersService)
-
-Resource checks are hard guardrails — they return `422 Unprocessable Entity` if insufficient, **before** any DB write or container operation.
-
-**On `POST /servers` (create):**
-```
-1. check freeDiskMb >= MIN_FREE_DISK_MB
-   → 422 { error: 'InsufficientDisk', freeMb: X, requiredMb: MIN_FREE_DISK_MB }
-2. check (sum of ALL server memoryLimitMb, regardless of status) + newServer.memoryLimitMb
-      <= totalRamMb * MAX_MEMORY_RATIO
-   → 422 { error: 'InsufficientMemory', allocatedMb: X, totalMb: Y, maxRatio: 0.9 }
-```
-
-Sum of ALL servers (not just running ones) is used for disk/memory planning — even stopped
-servers consume disk and will consume RAM when started.
-
-**On `POST /servers/:id/start`:**
-```
-1. check freeDiskMb >= MIN_FREE_DISK_MB  (in case disk filled up since creation)
-2. check (sum of RUNNING server memoryLimitMb) + thisServer.memoryLimitMb
-      <= totalRamMb * MAX_MEMORY_RATIO
-   → 422 { error: 'InsufficientMemory', ... }
-```
-
-Start uses RUNNING servers only — stopped servers don't currently consume RAM.
-
-**Error response shape:**
-```json
-{
-  "statusCode": 422,
-  "error": "InsufficientResources",
-  "message": "Not enough memory to start this server",
-  "details": {
-    "resource": "memory",
-    "availableMb": 3000,
-    "requiredMb": 4096,
-    "totalMb": 16384
-  }
-}
-```
-
-The frontend uses `details.resource` to show a specific error ("Not enough RAM", "Low disk space").
-
-**New env vars for resource limits:**
-
-| Variable          | Description                                    | Default |
-|-------------------|------------------------------------------------|---------|
-| MIN_FREE_DISK_MB  | Min free disk on MC_DATA_PATH to allow ops     | 2048    |
-| MAX_MEMORY_RATIO  | Max fraction of host RAM to allocate (0–1)     | 0.90    |
-
-#### Startup reconciliation (Phase 1, inside ServersService)
-
-On NestJS boot, `ServersService.onModuleInit()` must reconcile DB state against actual Docker state. Without this, a NestJS restart leaves servers marked `RUNNING` in the DB even if their containers were stopped while NestJS was down.
-
-```
-ServersService.onModuleInit():
-  1. fetch all servers from DB where status IN ('RUNNING', 'STARTING', 'STOPPING', 'ERROR')
-  2. for each server with a containerId:
-     a. docker.getContainer(containerId).inspect()
-        → container.State.Running === true → leave status as RUNNING
-        → container not running OR container not found → set status = STOPPED in DB
-  3. for any status changes: emit server.status WebSocket event (if gateway is already initialized)
-```
-
-This runs synchronously in `onModuleInit` before the module is ready — NestJS won't accept requests until it completes. Expected duration: < 1s for < 20 servers (one `inspect` call per container in parallel via `Promise.all`).
-
-#### Concurrent operation protection (Phase 1, inside ServersService)
-
-Prevents race conditions when two admins send conflicting commands to the same server simultaneously (e.g., two simultaneous start calls creating duplicate containers).
-
-**Pattern (Postgres atomic compare-and-swap)**:
-
-```ts
-// Example for startServer:
-const result = await db
-  .update(servers)
-  .set({ status: 'STARTING' })
-  .where(and(eq(servers.id, id), eq(servers.status, 'STOPPED')))
-  .returning();
-
-if (result.length === 0) {
-  throw new ConflictException('Server is not in STOPPED state');
-}
-// proceed with docker.createContainer(...)
-```
-
-The `WHERE status = 'STOPPED'` condition is the atomic lock — Postgres row-level locking ensures only one UPDATE wins. The losing request gets 0 rows returned and throws 409.
-
-**Required pre-conditions per operation:**
+### 11.2 Operation preconditions
 
 | Operation | Required status | On mismatch |
-|-----------|----------------|-------------|
-| `start`   | STOPPED        | 409 Conflict |
-| `stop`    | RUNNING        | 409 Conflict |
-| `restart` | RUNNING        | 409 Conflict |
-| `delete`  | STOPPED        | 409 Conflict |
-| `version update` | STOPPED | 409 Conflict |
+|-----------|-----------------|-------------|
+| start | STOPPED (and container provisioned) | 409 |
+| stop | RUNNING | 409 |
+| restart | RUNNING | 409 |
+| delete | STOPPED | 409 |
 
-#### Transaction rollback for Docker failures (Phase 1, inside ServersService)
+### 11.3 Create flow `[IMPLEMENTED]`
 
-Docker operations are not transactional. If the DB write succeeds but the Docker call fails, the DB is left with an orphaned record.
+Disk check → transaction (advisory lock; memory admission summing **all** servers incl. stopped) → insert `CREATING` → `docker createContainer` → CAS-claim containerId → `docker start` → `CREATING → RUNNING`. Failures: create fails → compensation (delete row, or mark `ERROR` if a managed container was found); start fails → `ERROR`. No orphan DB rows; a crash mid-create is settled by startup reconciliation.
 
-**`createServer()` pattern**:
-```
-try:
-  1. resource checks (422 if fail — no DB write yet)
-  2. db.insert(servers, { status: 'CREATING', ...fields })  ← provisional record
-  3. container = await docker.createContainer(...)
-  4. await docker.startContainer(container.id)
-  5. db.update(servers, { status: 'RUNNING', containerId: container.id })
-catch (dockerError):
-  await db.delete(servers).where(eq(servers.id, serverId))  ← manual rollback
-  throw new InternalServerErrorException('Container creation failed')
-```
+### 11.4 Resource admission `[IMPLEMENTED]`
 
-The provisional `CREATING` status is never exposed to the frontend — it transitions to `RUNNING` or is deleted within the same request. If NestJS crashes mid-creation, the startup reconciliation step (above) will set any `CREATING` record to `STOPPED` (container inspect will fail).
+- Create: `freeDiskMb ≥ MIN_FREE_DISK_MB` (statfs on `/mc-data`) and `sum(all memoryLimitMb) + requested ≤ totalRamMb × MAX_MEMORY_RATIO` (docker.info). Sum of ALL servers (stopped servers consume disk and will consume RAM).
+- Start: same disk check; memory sums non-`STOPPED` servers, excluding the target.
+- Restart: graceful stop occurs first, then the same disk and memory admission runs. A 422 admission failure after that stop leaves the target STOPPED.
+- Failure envelope: `422 { statusCode, error: 'InsufficientResources', message, details: { resource: 'disk'|'memory', availableMb, requiredMb, totalMb } }`. Unavailable host info → 503.
 
-**`deleteServer()` pattern**: if `docker.remove()` fails, do **not** delete the DB record — return 500 with the server intact. The admin can retry or investigate. Only delete the DB record after the container is confirmed removed.
+### 11.5 Graceful stop `[IMPLEMENTED]`
 
-#### Auth implementation status
-- [x] `POST /auth/register`
-- [x] `POST /auth/login` — sets HttpOnly cookies (access + refresh tokens)
-- [x] JWT strategy — extracts token from cookie, validates payload
-- [x] JWT guard — global, `@Public()` decorator skips it
-- [x] HttpOnly cookie handling — access token (15min), refresh token (7 days)
-- [x] Refresh token is a JWT (signed, contains `sub`) stored hashed in DB
-- [x] `POST /auth/refresh` — issues new access token; new refresh token if within 24h of expiry
-- [x] `POST /auth/logout` — deletes DB record, clears cookies
-- [x] `GET /auth/profile` — returns decoded JWT payload from guard
-- [ ] `RolesGuard` — global, registered after `JwtAuthGuard` in `AppModule`
-- [ ] `@Roles()` decorator — marks routes with required roles, returns 403 if role doesn't match
+`RUNNING → STOPPING` → `rcon-cli say '§cServer closing in N seconds…'` → wait `STOP_WARN_SECONDS` (0–300) → `rcon-cli save-all` → 3s → `docker stop` (`t: 15`; `t: 10` if RCON failed). RCON failure degrades to direct stop. Restart runs the full stop then the start sequence — never `docker restart`.
 
-#### Key decisions
-- JWT payload: `{ sub, username, role }` — minimal, no sensitive data
-- Refresh token is a JWT with 7d expiry — allows extracting `userId` without `req.user`
-- Refresh tokens stored in DB (not stateless) — allows true logout/revocation
-- `NODE_ENV=production` enables `secure` flag on cookies (requires HTTPS)
-- Sliding expiry: if refresh token is within 24h of expiry and user calls `/auth/refresh`, a new refresh token is issued automatically
-- `RolesGuard` runs after `JwtAuthGuard` (order in `APP_GUARD` matters — JWT sets `req.user.role` first)
-- Routes without `@Roles()` pass through the guard freely (no role required)
+### 11.6 Deletion `[DECISION REQUIRED: D-3]` — P1 documentation
 
-#### User self-service
+**Current v1 behavior (`[IMPLEMENTED]`):** requires STOPPED → CAS to STOPPING → `docker remove(force:false)` → delete DB row (with truthful reconciliation on failure) → **HTTP 202 returned for a fully synchronous operation**. The host data directory `{MC_DATA_PATH_HOST}/{serverId}` is **never removed** — no backup, no `pendingDeleteAt`, no cleanup job, no recovery window. The old SPEC's 24h tombstone + final backup + hourly cron block is fiction and MUST NOT be described as implemented.
 
-**`PATCH /auth/password`** — change own password:
-```
-body: { currentPassword: string, newPassword: string }
-1. verify currentPassword against stored passwordHash → 401 if wrong
-2. hash newPassword → update passwordHash in DB
-3. optionally revoke all other sessions (security best practice — configurable)
-```
-OAuth-only users (`passwordHash = null`) cannot use this endpoint — returns 400 with message `"Account uses OAuth login only"`.
+**Accepted v1 contract:** "removes the container and the panel registration; world data remains on the host at `<MC_DATA_PATH_HOST>/<serverId>` and can be deleted manually." Deployment docs MUST give the manual cleanup command; GET/list never expose orphans (no discovery — accepted). Recommendation: change the status code to 204 (it is synchronous).
 
-**`GET /auth/sessions`** — list own active sessions:
+**Deferred (Phase 3, `[PROPOSED]`):** `servers.pendingDeleteAt` column → delete sets tombstone + optional final backup → `@nestjs/schedule` hourly sweeper removes expired data dirs (§18.2 path-safety applied) → `POST /servers/:id/restore` within the window → audit entries (Phase 2 dependency). D-3 decides whether/when to fund this.
+
+### 11.7 Startup reconciliation `[IMPLEMENTED]`
+
+`onModuleInit` inspects every non-`STOPPED` row: container inspect → `RUNNING` if running else `STOPPED`; container missing → managed-label lookup → `STOPPED` with containerId cleared; writes are CAS-guarded (status + containerId + `updatedAt` microsecond equality). Daemon unavailable → rows left untouched.
+
+---
+
+## 12. Error contract
+
+### 12.1 Reality today `[IMPLEMENTED]` — not uniform
+
+Four shapes coexist: NestJS default for `HttpException`; `{ message }` only for PG errors via `DbExceptionFilter` (23505 → 409 `Resource already exists`, 23503 → 400, 42P01/42703 → 500, other → 500); structured `{ error: '…' }` payloads on some 403s (`AccountPending`, `AccountBanned`, `PasswordChangeRequired`, `CsrfOriginForbidden`); `{ statusCode, error, message, details }` for 422 resource errors. Non-HTTP errors (e.g. JWT library errors in refresh) → **500 `Internal server error`**. No request-id anywhere.
+
+### 12.2 Accepted envelope `[ACCEPTED]` — P1 (B-P1-8)
+
 ```json
-[
-  { "id": "clx...", "userAgent": "Mozilla/5.0 (Macintosh...)", "lastUsedAt": "2025-01-15T...", "createdAt": "..." },
-  { "id": "clx...", "userAgent": "curl/7.88.0", "lastUsedAt": "...", "createdAt": "..." }
-]
-```
-Returns all non-expired `RefreshToken` rows for the calling user.
-
-**`DELETE /auth/sessions/:id`** — revoke a specific session. The caller can only revoke their own sessions — attempts to revoke another user's session return 403.
-
-**`PATCH /users/me`** — update own profile:
-```
-body: { username?: string, email?: string }
-```
-- `username` and `email` must remain unique — 409 if already taken
-- `role` and `status` are not self-editable (ADMIN-only via `/admin/users/:id`)
-
-**`GET /servers/:id/my-access-request`** — returns the caller's own `ServerAccess` row for a REQUEST/PRIVATE server:
-```json
-{ "status": "PENDING" | "APPROVED", "requestedAt": "...", "approvedAt": "..." | null }
-```
-Returns 404 if no request has been submitted, or if the server is OPEN.
-
-#### SMTP and email features (optional, Phase 1.5)
-
-SMTP is an **optional** dependency. If `SMTP_HOST` is not configured, the panel runs in closed mode — no emails are sent, invite tokens and admin-side password reset cover all recovery scenarios. If SMTP is configured, the following features are enabled:
-
-**Magic link login (passwordless):**
-```
-POST /auth/magic-link  { email }
-  1. if SMTP not configured → 501 Not Implemented
-  2. look up User by email — if not found: return 200 anyway (don't leak existence)
-  3. create MagicLinkToken { token: randomBytes(32), expiresAt: now+15min }
-  4. send email: "Click to login: {FRONTEND_URL}/auth/verify?token={plaintext}"
-  5. return 200
-
-GET /auth/magic-link/verify?token={value}
-  1. hash token, look up MagicLinkToken — 401 if not found or expired or usedAt set
-  2. mark usedAt = now
-  3. look up user by email → issue JWT cookies (same flow as /auth/login)
-  4. redirect to frontend dashboard
+{ "statusCode": 403, "error": "AccountPending", "message": "human text", "details": {}, "requestId": "uuid" }
 ```
 
-Magic links work alongside passwords — users with `passwordHash` can still login either way. OAuth-only users can also use magic links if their email is on record.
-
-**Default registration mode (v1.0 — no SMTP):**
-`REQUIRE_ADMIN_APPROVAL=true` is the default. All new registrations start as `PENDING`. Admin approves manually via `PATCH /admin/users/:id/status`. `JwtAuthGuard` blocks `PENDING` users with 403. This is the only supported mode in v1.0 since there is no email sender.
-
-**Open registration with email verification (Phase 1.5 — requires SMTP):**
-When SMTP is configured and `REQUIRE_ADMIN_APPROVAL=false`, new registrations send a verification email (magic link to the registered address). Account starts as `PENDING` until the link is clicked.
-
-**Password recovery (no SMTP):**
-Admin uses `POST /admin/users/:id/reset-password` → returns a one-time temporary password (plaintext, shown once). Stored as `tempPasswordHash` in users table. TTL: 24h (`tempPasswordExpiresAt`). On login with temp password: `mustChangePassword` is set to `true` on the user. `JwtAuthGuard` blocks all endpoints except `PATCH /auth/password` until the flag is cleared.
-
-#### 2FA — TOTP (v1.0)
-
-Time-based One-Time Password (RFC 6238). No external service required — works with any authenticator app (Google Authenticator, Authy, 1Password, etc.). Library: `otplib`.
-
-**Setup flow:**
-```
-POST /auth/2fa/setup        → generates secret, returns { secret, qrUri } — NOT yet active
-POST /auth/2fa/confirm      → verifies first TOTP code, sets totpEnabled=true, returns { backupCodes: string[] }
-```
-Backup codes: 8 single-use random codes (hex), hashed with bcrypt and stored as JSON array in `totpBackupCodes`. Shown plaintext **once** at confirm. Each used code is removed from the array.
-
-**Login flow with 2FA:**
-```
-POST /auth/login
-  → password correct + totpEnabled=true
-  → return 200 { requiresTwoFactor: true, preAuthToken: "<short-lived JWT>" }
-  (preAuthToken: signed, 5min TTL, custom claim { type: 'pre-auth', sub: userId })
-
-POST /auth/2fa/verify       { code: "123456" }
-  → validate preAuthToken (type must be 'pre-auth')
-  → verify TOTP code (accept ±1 window for clock drift) OR match a backup code
-  → on backup code: remove it from the array
-  → issue full JWT cookies (same as normal login)
-```
-Rate limiting on `/auth/2fa/verify`: 5 attempts per 10 minutes per IP + per user. Lockout 15 minutes after 5 failures.
-
-**Disable flow:**
-```
-DELETE /auth/2fa/disable    { code: "123456" }   → requires valid TOTP code or backup code
-DELETE /admin/users/:id/2fa                       → ADMIN only, emergency — no code required
-```
-
-**Security notes:**
-- `totpSecret` is stored encrypted (AES-256-GCM via `ENCRYPTION_KEY`) — same mechanism as `rconPassword`
-- TOTP window: ±1 (30s tolerance for clock drift)
-- Backup codes: hashed, single-use, removed on use
-
-#### Security hardening — auth layer (v1.0)
-
-**Account enumeration prevention:**
-`POST /auth/login` always returns the same 401 response body whether the user doesn't exist or the password is wrong. Timing attack prevention: always run `bcrypt.compare` even if user not found (compare against a dummy hash) to keep response time constant.
-
-**Refresh token rotation:**
-On every `POST /auth/refresh`: the old refresh token is revoked and a new one is issued. If a stolen refresh token is used after the legitimate client already rotated it, the attempt fails immediately (token no longer in DB).
-
-**Session invalidation on password change:**
-`PATCH /auth/password` (successful): all refresh tokens for the user are deleted except the current session. User stays logged in on the device that changed the password; all other sessions are terminated.
-
-**Last admin protection:**
-`PATCH /admin/users/:id/role` and `PATCH /admin/users/:id/status` must check: if the target user is the last ADMIN, reject with 409. This prevents accidental panel lockout.
-
-**`mustChangePassword` enforcement:**
-`JwtAuthGuard` checks `mustChangePassword` on the user record. If true, returns 403 with `{ error: 'PasswordChangeRequired' }` on every endpoint except `PATCH /auth/password`. Frontend must redirect to change-password screen.
-
-#### API key authentication (Phase 2)
-
-API keys allow programmatic access without cookies — useful for CLI tools, CI/CD, external dashboards.
-
-**Authentication:** `Authorization: Bearer mpk_<plaintext_key>` header. The `JwtAuthGuard` detects the `mpk_` prefix and validates against the hashed `ApiKey` table instead of JWT. API key requests are not subject to CSRF concerns (no cookies involved).
-
-**Key format:** `mpk_` prefix + 32 random bytes (hex-encoded) — clearly distinguishable from JWT tokens.
-
-**Security:** key is shown plaintext **once** at creation, then stored hashed. If lost, user must revoke and create a new key. `lastUsedAt` is updated on every authenticated request.
-
-**Scope:** API keys inherit the full permissions of the owning user. Scoped keys (read-only, per-server) are a future enhancement.
-
-#### Outbound webhooks (Phase 2)
-
-Generic HTTP callbacks that fire on panel events — enables external integrations (Discord bots, monitoring dashboards, CI/CD triggers, custom automation).
-
-**Subscribable events:**
-
-```
-server.created    server.deleted    server.started    server.stopped
-server.crashed    server.restarting
-player.joined     player.left       player.banned     player.unbanned
-backup.completed  backup.failed
-system.low_disk   system.memory_pressure
-```
-
-**Delivery:**
-```
-POST {webhook.url}
-Headers:
-  Content-Type: application/json
-  X-MinePanel-Event: server.crashed
-  X-MinePanel-Signature: sha256={HMAC-SHA256(secret, body)}
-  X-MinePanel-Delivery: {uuid}
-
-Body: { event, timestamp, data: { ...event-specific fields } }
-```
-
-**Reliability:** same retry policy as Discord webhooks — 1 retry after 5s, then log warning. Non-blocking: the triggering operation is not affected by webhook failures.
-
-**Signature verification:** consumers validate `X-MinePanel-Signature` against the shared secret to confirm the payload is genuine. This is the same pattern used by GitHub and Stripe webhooks.
-- Role mismatch returns `403 Forbidden`, not `401 Unauthorized`
-
-#### Known implementation deltas (to fix)
-
-- **`schema.ts` is missing Phase 1.5 fields** — `users.googleId`, `users.githubId`, `users.minecraftVerified`; `servers.discordWebhook`. These will be added as Drizzle migrations when the corresponding Phase 1.5 features start.
-- **`users.passwordHash` is `notNull()` in schema** but spec requires `nullable` (OAuth-only users have no password). Fix before Phase 1.5 OAuth work.
-
-### Phase 1.5 - Access Control + OAuth (post-core)
-
-Features deferred from Phase 1 to avoid scope creep. Implement after Docker + Servers are working.
-
-#### OAuth (Google + GitHub)
-
-Social login via Google and GitHub using a **frontend-initiated token flow**. This is the only approach compatible with self-hosting: since the backend can run at any URL, it cannot register redirect URIs with Google/GitHub. Instead, the centrally hosted frontend (minepanel.xyz) owns the OAuth app registration and handles the browser-side flow, then passes the resulting token to the user's backend for verification.
-
-**Why not server-side redirect flow:**
-Google/GitHub require pre-registering exact redirect URIs in their developer console. A self-hosted backend at an arbitrary URL cannot be registered. The frontend is hosted at a fixed URL (`minepanel.xyz`), so it can hold the OAuth credentials on behalf of all users.
-
-**Google flow:**
-```
-Frontend (minepanel.xyz):
-  1. opens Google popup / redirect using Google Identity SDK
-  2. Google returns an ID token (signed JWT) to the frontend
-
-Frontend → user's backend:
-  POST /auth/google/token  { idToken: "eyJ..." }
-
-Backend:
-  1. GET https://oauth2.googleapis.com/tokeninfo?id_token={idToken}
-     → Google validates the token and returns { sub, email, name, picture }
-  2. verify audience matches our Google client_id (stored in backend env — optional check)
-  3. find user by googleId (sub) in DB
-     → found: issue JWT
-     → not found by googleId, email exists: link googleId to existing account
-     → not found at all: create new user (passwordHash = null, username from name)
-  4. set HttpOnly cookies, return user
-```
-
-**GitHub flow:**
-```
-Frontend (minepanel.xyz):
-  1. initiates GitHub OAuth via PKCE (or device flow)
-  2. GitHub returns an access token to the frontend
-
-Frontend → user's backend:
-  POST /auth/github/token  { accessToken: "gho_..." }
-
-Backend:
-  1. GET https://api.github.com/user  (Authorization: Bearer {accessToken})
-     → returns { id, login, email, avatar_url }
-  2. find/create user by githubId
-  3. set HttpOnly cookies, return user
-```
-
-**Key decisions:**
-- No server-side redirect, no OAuth app config needed on the self-hosted backend
-- Frontend holds Google/GitHub client credentials (registered once by us for minepanel.xyz)
-- Backend only makes token verification calls (simple HTTPS GET/POST, no redirect)
-- `passwordHash` is `null` for OAuth-only users — they cannot use email/password login
-- `googleId` / `githubId` are nullable unique fields on `User`
-- Email collision → link provider to existing account silently (user gets both login methods)
-- Username generated from provider profile name if not already taken (append random suffix on collision)
-- No extra env vars needed on the backend for Google/GitHub
-
-**Auth implementation status:**
-- [ ] `POST /auth/google/token` — verify Google ID token, create/find user, issue JWT
-- [ ] `POST /auth/github/token` — verify GitHub access token, create/find user, issue JWT
-
-#### Minecraft account linking
-
-Optional step after panel registration. Supports both premium and non-premium (offline) players.
-
-**Endpoints:**
-| Method | Path                         | Auth | Description                                  |
-|--------|------------------------------|------|----------------------------------------------|
-| GET    | /auth/minecraft              | JWT  | Start Microsoft OAuth for Minecraft linking  |
-| GET    | /auth/minecraft/callback     | JWT  | Handle callback, store verified UUID         |
-| PATCH  | /auth/profile/minecraft      | JWT  | Manual link for offline/non-premium players  |
-
-**Premium flow (Microsoft OAuth → Mojang):**
-```
-GET /auth/minecraft  (user must already be logged in to the panel)
-  → redirect to Microsoft OAuth consent screen
-
-GET /auth/minecraft/callback?code=...
-  1. exchange code for Microsoft access token
-  2. POST to Xbox Live auth endpoint → XBL token
-  3. POST to XSTS endpoint → XSTS token
-  4. POST to Minecraft Services API → Minecraft access token
-  5. GET https://api.minecraftservices.com/minecraft/profile
-     → { id: uuid, name: username }
-  6. check uuid not already linked to another panel account
-  7. update User: minecraftUUID, minecraftName, minecraftVerified = true
-  8. redirect to frontend profile page
-```
-
-**Non-premium flow (offline):**
-```
-PATCH /auth/profile/minecraft  { username: "PlayerName", premium: false }
-  1. call GET https://api.mojang.com/users/profiles/minecraft/{username}
-     → if found: store real UUID + name, minecraftVerified = true (account exists, just not owned by this panel user)
-     → if not found: compute offline UUID from username, minecraftVerified = false
-  2. update User: minecraftUUID, minecraftName, minecraftVerified
-```
-
-**Key decisions:**
-- `minecraftVerified = true` only when UUID comes from Microsoft OAuth (confirmed ownership)
-- Mojang public API lookup (no auth) can confirm a username exists but does NOT prove ownership
-- `minecraftVerified` field used by whitelist automation in Phase 3:
-  - Online mode servers → only add players with `minecraftVerified = true`
-  - Offline mode servers → add all players regardless of `minecraftVerified`
-- Offline UUID formula: `UUID.v3("OfflinePlayer:" + username)` — deterministic, matches what Minecraft generates server-side
-- Microsoft OAuth env vars: `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` (optional, same pattern as Google/GitHub)
-
-**Key difference vs Google/GitHub OAuth:**
-Microsoft/Minecraft linking is inherently server-side (4-step token chain, no browser SDK available). The self-hoster must register their own Azure app and configure `MICROSOFT_CLIENT_ID` + `MICROSOFT_CLIENT_SECRET`. If not configured, `/auth/minecraft` returns `501 Not Implemented` and the frontend hides the "Link premium account" button.
-
-**Required env vars (self-hoster configures if they want Minecraft linking):**
-| Variable                | Description                          | Default    |
-|-------------------------|--------------------------------------|------------|
-| MICROSOFT_CLIENT_ID     | Azure app client ID (Minecraft link) | (optional) |
-| MICROSOFT_CLIENT_SECRET | Azure app client secret              | (optional) |
-
-#### Server access model
-Panel registration access is controlled by `REQUIRE_ADMIN_APPROVAL` (default `true` — admin must approve new users). Server access is controlled per-server independently.
-
-Each server has an `accessType`:
-- `OPEN` — all panel users can see and access it, no approval needed
-- `REQUEST` — user submits a request, admin approves before access is granted
-- `PRIVATE` — only users explicitly assigned by admin can see or access it
-
-A `ServerAccess` join table links users to servers:
-
-| Field     | Notes                            |
-|-----------|----------------------------------|
-| id        | cuid PK                          |
-| userId    | FK → User                        |
-| serverId  | FK → Server                      |
-| status    | PENDING \| APPROVED              |
-| createdAt |                                  |
-
-For `OPEN` servers no row is needed — the server is visible to all authenticated users.
-For `REQUEST`/`PRIVATE` servers, a row with `status: APPROVED` is required to see/access the server.
-
-#### MOD granular permissions (PBAC)
-Simple RBAC (role check) is not enough for MODs — an admin should be able to assign specific capabilities per MOD.
-
-Permission groups:
-```
-SERVER_LIFECYCLE      // start, stop, restart servers
-SERVER_CONFIG         // modify server settings (port, difficulty, gamemode, etc.)
-PLUGIN_MANAGEMENT     // install/remove plugins
-WHITELIST_MANAGEMENT  // add/remove players from whitelist
-USER_MANAGEMENT       // view/manage users assigned to a server
-FILE_MANAGER          // read and write files in the server volume
-```
-
-A `ModPermission` table links a MOD user to their allowed permissions:
-
-| Field      | Notes                                          |
-|------------|------------------------------------------------|
-| id         | cuid PK                                        |
-| userId     | FK → User (role must be MOD)                   |
-| permission | enum (see above)                               |
-| serverId   | FK → Server (optional — null = all servers)    |
-| createdAt  |                                                |
-
-Guard logic order:
-1. `JwtAuthGuard` — validates JWT, sets `req.user`
-2. `RolesGuard` — checks `@Roles()`: ADMIN bypasses everything, USER gets 403 on admin routes
-3. `PermissionsGuard` (Phase 1.5) — for MOD: checks `ModPermission` table against `@RequiresPermission()`
-
-#### User account status
-
-`status: ACTIVE | PENDING | BANNED` is already in the `User` schema. The `JwtAuthGuard` checks it on every authenticated request after token validation.
-
-| Status    | Meaning                                                              |
-|-----------|----------------------------------------------------------------------|
-| `ACTIVE`  | Default. Full access to the panel.                                   |
-| `PENDING` | Registered but not yet approved by admin (optional approval mode).   |
-| `BANNED`  | Blocked at the guard level — JWT is valid but access is rejected.    |
-
-**Guard behaviour:**
-- `JwtAuthGuard` rejects with `403 Forbidden` if `status !== ACTIVE`, even if the JWT is valid
-- This means banned users cannot use their existing tokens (instant effect, no need to wait for JWT expiry)
-
-**Key decisions:**
-- Default (v1.0): `REQUIRE_ADMIN_APPROVAL=true` — all new users start as `PENDING`, admin must approve
-- Open registration (`REQUIRE_ADMIN_APPROVAL=false`) is opt-in and requires SMTP configured for email verification (Phase 1.5)
-- Admin can ban/unban via `PATCH /admin/users/:id/status`
-- Banned user's refresh tokens are NOT deleted — they simply can't be used while banned. On unban, access is restored immediately without re-login.
-
-**Future registration modes (post-Phase 1.5):**
-- **Captcha** — hCaptcha or Cloudflare Turnstile on the register endpoint to prevent automated spam. Backend verifies the challenge token server-side. Configurable via `CAPTCHA_SECRET` env var; if absent, captcha is skipped.
-- **Nostr login** — user signs a NIP-98 HTTP auth event with their private key; backend verifies the signature and maps the pubkey to a panel account. No password required. Opt-in alongside password auth.
-- **Admin-managed registration modes** — the admin can configure via panel UI which registration method is active:
-  - `ADMIN_APPROVAL` (default) — every new registration requires manual approval
-  - `OPEN` — users are immediately active (requires SMTP for email verification)
-  - `BOT_VERIFIED` — user must pass verification via a configurable bot (Discord role check, Telegram bot, email OTP, or custom webhook). The admin configures which bot and what criteria.
-  The default deployment ships with `ADMIN_APPROVAL` so that a fresh install is never accidentally open to the public.
-
-### Phase 2 - Audit Log + Frontend
-
-#### 2a — Audit Log
-
-Records who did what and when — essential for multi-admin environments. Implemented as a NestJS interceptor that decorates sensitive routes.
-
-**`AuditLog` table:**
-
-| Field        | Type     | Notes                                                         |
-|--------------|----------|---------------------------------------------------------------|
-| id           | String   | cuid PK                                                       |
-| userId       | String   | FK → User (who performed the action)                          |
-| action       | Enum     | see `AuditAction` list below                                  |
-| resourceType | Enum     | SERVER \| USER \| PROXY \| BACKUP \| PLUGIN \| FILE          |
-| resourceId   | String?  | ID of the affected resource                                   |
-| metadata     | Json?    | extra context (e.g., `{ field: 'version', from: '1.20', to: '1.21' }`) |
-| ip           | String?  | client IP (from `X-Forwarded-For` or socket remoteAddress)   |
-| createdAt    | DateTime |                                                               |
-
-**`AuditAction` enum:**
-
-```
-SERVER_CREATE  SERVER_DELETE  SERVER_START  SERVER_STOP  SERVER_UPDATE  SERVER_VERSION_UPDATE
-USER_ROLE_CHANGE  USER_BAN  USER_UNBAN
-PERMISSION_GRANT  PERMISSION_REVOKE
-BACKUP_CREATE  BACKUP_RESTORE  BACKUP_DELETE
-PLUGIN_INSTALL  PLUGIN_REMOVE
-FILE_WRITE
-PROXY_CREATE  PROXY_DELETE
-```
-
-**Implementation via interceptor:**
-
-Routes are annotated with `@Audit(AuditAction.SERVER_START, 'SERVER')`. The `AuditInterceptor` writes to the `auditLog` table after the handler completes successfully (not on error — failed actions are not logged).
-
-```ts
-@Post(':id/start')
-@Audit(AuditAction.SERVER_START, 'SERVER')
-async startServer(@Param('id') id: string) { ... }
-```
-
-**API endpoint:**
-
-| Method | Path        | Auth  | Description                                           |
-|--------|-------------|-------|-------------------------------------------------------|
-| GET    | /audit-log  | ADMIN | List audit events (filter: `?action=&resourceId=&userId=&limit=&offset=`) |
-
-Audit log entries are never deleted — they are append-only. Pagination applies (`?limit=50&offset=0`).
-
-#### 2b — Frontend
-
-> Separate repo (`minepanel-frontend`). Spec details managed there. Summary only.
-
-- Backend URL input on first visit + localStorage persistence (connects to any self-hosted backend)
-- Setup wizard → login → dashboard
-- Pages: Home overview, Server list, Server detail (tabbed), User profile
-- Server detail tabs: Overview, Console, Plugins, File Manager, Players, Settings, Backups, Scheduled Tasks
-- Real-time updates via WebSocket (Phase 3a)
-- Google/GitHub login via frontend-initiated OAuth (holds credentials, passes token to backend)
-- Minecraft account linking UI (Microsoft OAuth + manual offline flow)
-
-### Phase 3 - Advanced Features
-
-1. WebSocket real-time events (stats, logs, status)
-2. Server console (execute commands via RCON / docker exec)
-3. File manager
-4. Plugin marketplace (Paper / Purpur)
-5. Player management (whitelist, bans, ops, kick)
-6. Backup system (manual + scheduled)
-7. Scheduled tasks (auto-restart, auto-backup)
-8. Notifications (in-panel + Discord webhook)
-9. Admin permissions dashboard
+- `error` = stable SCREAMING-case machine code; the frontend MUST switch on `error`, never `message`.
+- `details` optional structured context; `requestId` echoed as `X-Request-Id` and logged with every line.
+- Mapping: 400 validation (class-validator array normalized into `details`), 401/403 authN/Z, 404, 409 conflict, 413/422 domain, 503 docker/db unavailable, 500 generic (never leak internals).
+- Implementation: widen the filter into a global `AppExceptionFilter`; fix the JWT-error→500 fall-through (with B-P1-2).
 
 ---
 
-#### 3a — WebSocket Real-Time Events
+## 13. Configuration contract
 
-The frontend subscribes to a WebSocket gateway to receive live updates without polling.
+### 13.1 Production preflight `[IMPLEMENTED]`
 
-**Events emitted by server:**
+`NODE_ENV=production` boot fails fast unless: `DATABASE_URL` is a valid postgres URL; `JWT_SECRET` ≥ 32 chars and not the placeholder; `JWT_EXPIRES_IN` non-empty; `ENCRYPTION_KEY` is exactly 64 hex chars; `DOCKER_SOCKET` is an absolute socket path (no `tcp://`); `CORS_ORIGIN` is a single absolute origin (https, or loopback) with no path/query/credentials. Migrations run before the app listens (advisory-locked). There is **no** declarative config validation schema in `ConfigModule` — preflight is manual code (B-P2-10: consider a Joi/Zod schema).
 
-| Event                  | Payload                                      | Description                          |
-|------------------------|----------------------------------------------|--------------------------------------|
-| `server.status`        | `{ serverId, status }`                       | Server started, stopped, crashed     |
-| `server.stats`         | `{ serverId, cpu, memoryMb, memoryLimitMb }` | Per-container resource usage, every ~2s |
-| `server.log`           | `{ serverId, line }`                         | New log line from container          |
-| `server.playerJoined`  | `{ serverId, player }`                       | Player connected                     |
-| `server.playerLeft`    | `{ serverId, player }`                       | Player disconnected                  |
-| `system.stats`         | `{ totalRamMb, usedRamMb, freeDiskMb, cpuCount }` | Host resource snapshot, every ~10s |
-| `notification`         | `{ type, message, serverId? }`               | In-panel alert (crash, high RAM etc.)|
+### 13.2 Environment variables — consumed vs declared
 
-**Client→server messages:**
+Consumed `[IMPLEMENTED]`: `DATABASE_URL`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `ENCRYPTION_KEY`, `DOCKER_SOCKET`, `DOCKER_NETWORK`, `MC_DATA_PATH`, `MC_DATA_BIND_SOURCE`, `MC_PORT_MIN`, `MC_PORT_MAX`, `MIN_FREE_DISK_MB`, `MAX_MEMORY_RATIO`, `STOP_WARN_SECONDS`, `REQUIRE_ADMIN_APPROVAL`, `CORS_ORIGIN`, `PORT`, `PANEL_NAME`, `PANEL_DESCRIPTION`, `PANEL_VERSION`, `NODE_ENV` (cookie/preflight behavior).
 
-| Message              | Description                                |
-|----------------------|--------------------------------------------|
-| `subscribe.server`   | Start receiving events for a given server  |
-| `unsubscribe.server` | Stop receiving events for a given server   |
-| `console.command`    | Send a command to the server console       |
+Declared but **never read** `[CONTRADICTED]`: `JWT_REFRESH_EXPIRES_IN` (refresh hardcoded 7d — B-P1-5), `LOGIN_THROTTLE_LIMIT`, `LOGIN_THROTTLE_TTL_MS` (dead — B-P1-9: wire or delete), `SMTP_*` (Phase 1.5), `MICROSOFT_*` (Phase 1.5). `DOMAIN` is consumed by Caddy only. `PANEL_ASSETS_PATH` is planned but unmounted — no `/panel/logo` endpoints exist; the old SPEC's static-assets section (server icons, panel logo) is `[PROPOSED]` with the Phase 3 write architecture (D-8). `MC_DATA_PATH_HOST` is compose-only (required by `${MC_DATA_PATH_HOST:?}`).
 
-**Rate limiting — `console.command`:**
+### 13.3 Reverse-proxy contract `[IMPLEMENTED]`
 
-Without throttling, a faulty or malicious client could flood the server console. The gateway enforces a per-socket rate limit:
-
-- **Limit:** 5 commands per second per socket connection
-- **On exceed:** the message is silently dropped; the gateway emits `rateLimit.exceeded` back to the offending socket (no disconnect)
-- **Implementation:** in-memory token bucket per `socket.id` — no external store needed for single-instance deployment
-
-The `server.log` read-only stream is not rate-limited.
-
-**Authentication over WebSocket:**
-
-HttpOnly cookies are included in the socket.io HTTP upgrade handshake by the browser, but cross-origin cookie sending with `SameSite=None` is inconsistently supported in some environments. The auth strategy uses a two-step approach:
-
-```
-1. Client connects → socket.io handshake HTTP request (browser includes cookie)
-   → Gateway validates cookie JWT on connection event
-   → If valid: associate socket.id with userId and role
-
-2. Fallback (cookie not present): client emits 'auth' event within 5 seconds:
-   { accessToken: "eyJ..." }
-   → Gateway validates token and associates socket
-
-3. If neither succeeds within 5s → gateway disconnects the socket
-```
-
-This handles both browser (cookie) and potential non-browser clients.
-
-**Backend approach:**
-- NestJS `@WebSocketGateway` with `socket.io`
-- Stats polling loop per running container via `DockerService.getContainerStats()`
-- Log streaming via `DockerService.streamLogs()`, each line emitted as `server.log`
-- Player events parsed from log lines (e.g. `"UUID of player"`, `"left the game"`)
+The only inbound path is Caddy on the `app` network; `trust proxy = 1` is set (`main.ts`). Publishing the backend port directly breaks throttling and the CSRF same-origin check — **MUST NOT** happen (§4.2). Caddyfile forces `https://{$DOMAIN}`; `CORS_ORIGIN` is never derived from `DOMAIN` and must be set explicitly.
 
 ---
 
-#### 3b — RCON Service
+## 14. Testing and release gates
 
-RCON (Remote Console) is the Minecraft protocol for sending commands to a running server. Used by player management, console, and scheduled tasks.
+### 14.1 Unit tests `[IMPLEMENTED]`
 
-**Setup:**
-- Backend injects `enable-rcon=true`, `rcon.port=25575`, `rcon.password={generated}` into `server.properties` at container creation time
-- RCON password stored in DB on the `Server` model encrypted with **AES-256-GCM** using `ENCRYPTION_KEY` env var (32-byte hex-encoded key). This is symmetric encryption (not hashing) so the plaintext can be recovered to connect via RCON. Never stored in plaintext.
-- RCON port mapped internally within `minepanel_network` (not exposed to host)
+~250 Jest specs colocated as `*.spec.ts`; `DRIZZLE` and `DOCKERODE` tokens always mocked; no unit test touches a live Postgres or Docker daemon; no live secrets are read. Coverage spans auth (login timing, refresh, 2FA, temp password), guards (jwt/roles/permissions/pre-auth/csrf), setup, servers (CAS transitions, reconciliation, admission), docker (container config, RCON validation, degraded mode), gateway (adapter, reservation, system metrics), admin (last-admin, grants), DTO validation.
 
-**RconService methods:**
-```ts
-connect(serverId: string): Promise<void>
-sendCommand(serverId: string, command: string): Promise<string>
-disconnect(serverId: string): void
-```
+### 14.2 e2e `[IMPLEMENTED]` — real boundary
 
-- Maintains a connection pool (one connection per running server)
-- Falls back to `docker exec` if RCON is unavailable (server still starting)
+`test/` suites run against a **live loopback Postgres** (`TEST_DATABASE_URL`; CI spins a `postgres:16` service) with env (`JWT_SECRET`, `JWT_EXPIRES_IN`, `ENCRYPTION_KEY`, `CORS_ORIGIN`, `REQUIRE_ADMIN_APPROVAL=false`). **No e2e suite has Docker daemon access and none creates a real Minecraft container** — the Docker service is always mocked. CI `e2e` job: migrations → `test:e2e`. The only daemon-touching smoke is the **release-only** `publish` job (health-200 with the runner's socket; PR builds never see a daemon — explicitly a trust boundary).
 
----
+### 14.3 CI pipeline `[IMPLEMENTED]` (`.github/workflows/ci.yml`)
 
-#### 3c — Backup System
+| Job | Runs | Gate |
+|-----|------|------|
+| `test` | biome lint:ci, build, jest in-band | PR + master |
+| `migration` | full `db:migrate` chain on a fresh Postgres | PR + master |
+| `e2e` | migrations + e2e on live PG (no daemon) | PR + master |
+| `image` | build amd64, degraded-mode smoke (no socket), migration-before-listen check, image-content assertions, bcrypt load, Trivy CRITICAL + fixed-HIGH | PR + master |
+| `publish` | trusted daemon smoke, multi-arch (amd64/arm64) GHCR push with SBOM/provenance; `latest`+sha+semver tags | master push / `v*` tags |
 
-No external services needed — NestJS reads and writes directly to `{MC_DATA_PATH}/{serverId}/` (shared volume).
+Release gate status: all jobs green at HEAD `7b542f3`.
 
-**Features:**
-- Manual backup — triggered by admin/mod via API
-- Scheduled backup — cron per server via `@nestjs/schedule`
-- Restore — stop server → extract backup → start server
-- Download — secure endpoint to download a backup archive
-- Retention policy — keep last N backups, auto-delete older ones (configurable per server, default: 5)
+### 14.4 Missing coverage `[ACCEPTED]` — backlog
 
-**Cloud backup destinations (Phase 3c extension):**
-Configurable per server. Local storage is always the default. Remote destinations are optional and additive (local backup is always kept):
-- `LOCAL` — default, `{MC_DATA_PATH}/{serverId}/backups/`
-- `S3` — any S3-compatible endpoint (AWS, Cloudflare R2, MinIO). Requires `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_BUCKET`, `AWS_ENDPOINT` (optional for non-AWS).
-- `GCS` — Google Cloud Storage bucket. Requires `GCS_BUCKET`, `GCS_CREDENTIALS_JSON`.
-- `SFTP` — remote server via SSH. Requires `SFTP_HOST`, `SFTP_USER`, `SFTP_KEY` or `SFTP_PASSWORD`, `SFTP_PATH`.
-
-Cloud destination config is stored per-server in a `BackupDestination` table. Upload happens after local tar.gz is created. If upload fails, the local backup is still kept and a warning notification is emitted.
-
-**Backup flow:**
-```
-POST /servers/:id/backups
-  1. check server is STOPPED or RUNNING (backup allowed in both states)
-  2. create tar.gz of {MC_DATA_PATH}/{serverId}/ (excluding /backups subfolder)
-  3. save to {MC_DATA_PATH}/{serverId}/backups/{timestamp}.tar.gz
-  4. create Backup record in DB
-  5. apply retention: delete oldest records + files if count > retentionLimit
-  6. return backup metadata
-```
-
-**Restore flow:**
-```
-POST /servers/:id/backups/:backupId/restore
-  1. stop server if running
-  2. extract backup tar.gz into {MC_DATA_PATH}/{serverId}/ (overwrite)
-  3. start server
-```
-
-**`Backup` table:**
-
-| Field          | Type     | Notes                                       |
-|----------------|----------|---------------------------------------------|
-| id             | String   | cuid PK                                     |
-| serverId       | String   | FK → Server                                 |
-| filename       | String   | e.g. `2025-01-15T03:00:00.tar.gz`           |
-| sizeMb         | Float    |                                             |
-| createdAt      | DateTime |                                             |
-| createdBy      | String?  | FK → User (null = scheduled/automatic)      |
-
-**Backup download — streaming:**
-
-`GET /servers/:id/backups/:backupId/download` must **stream** the file to the client rather than buffering the entire archive in NestJS memory (backups can be several GB).
-
-Implementation:
-```ts
-// Use Node.js fs.createReadStream() piped to the Response
-const filePath = path.join(MC_DATA_PATH, serverId, 'backups', backup.filename);
-res.set({
-  'Content-Type': 'application/x-tar',
-  'Content-Disposition': `attachment; filename="${backup.filename}"`,
-  'Content-Length': fileSizeBytes,
-  'Cache-Control': 'no-store',
-});
-fs.createReadStream(filePath).pipe(res);
-```
-
-If the file does not exist on disk (DB record orphaned): return 404 and clean up the DB record.
-
-**MOD download access:** MOD with `SERVER_LIFECYCLE` permission can download backups for servers they have access to. `DELETE` (backup removal) and `restore` remain ADMIN-only.
-
-**Backup API endpoints:**
-
-| Method | Path                                    | Auth                        | Description                        |
-|--------|-----------------------------------------|-----------------------------|------------------------------------|
-| GET    | /servers/:id/backups                    | JWT                         | List backups                       |
-| POST   | /servers/:id/backups                    | ADMIN \| MOD (SERVER_LIFECYCLE) | Create manual backup           |
-| GET    | /servers/:id/backups/:backupId/download | ADMIN \| MOD (SERVER_LIFECYCLE) | Download backup (streamed)     |
-| POST   | /servers/:id/backups/:backupId/restore  | ADMIN                       | Restore from backup                |
-| DELETE | /servers/:id/backups/:backupId          | ADMIN                       | Delete backup                      |
+- No test covers the setup-init race, refresh rotation concurrency, ThrottlerGuard, or retained-data delete semantics. B-P1-15 adds focused regression coverage alongside B-P0-1, B-P1-1, B-P1-14 and the configured throttles.
+- No **real Docker lifecycle integration test** (container create → run → graceful stop → delete → data retention). `[PROPOSED]`: release-only job (mirrors the trusted `publish` smoke) that runs the full lifecycle against a real daemon before tagging. This is the behavior gap addressed by B-P1-13.
 
 ---
 
-#### 3d — Scheduled Tasks
+## 15. Implemented feature matrix
 
-Per-server cron jobs managed via `@nestjs/schedule`. Configured through the panel, stored in DB.
+Verified at `7b542f3`. `✓` = implemented and tested as noted; `(✓)` = implemented, partial/indirect test coverage.
 
-**Supported task types:**
-- `AUTO_BACKUP` — create a backup on schedule
-- `AUTO_RESTART` — restart server on schedule (useful for daily restarts)
+| Domain | Feature | Status | Evidence |
+|--------|---------|--------|----------|
+| Auth | register / login (timing-equalized, dummy hash) | ✓ | `auth.service.ts`, unit+e2e |
+| Auth | HttpOnly cookie sessions (access 15m / refresh 7d) | ✓ | `auth.controller.ts`, e2e |
+| Auth | refresh rotation (per-use; non-atomic — B-P1-1) | ✓ (defect) | `auth.service.ts:278-286` |
+| Auth | logout / logout-all / sessions list / revoke one | ✓ | unit+e2e |
+| Auth | password change (keep current session) | ✓ | `users.service.ts`, unit |
+| Auth | forced recovery (admin temp password, mustChangePassword) | ✓ | `auth.service.ts`, `jwt-auth.guard.ts`, unit |
+| Auth | TOTP 2FA: setup/confirm/verify/disable, backup codes, lockout | ✓ | unit+e2e |
+| Auth | account status enforcement (PENDING/BANNED, DB-fresh) | ✓ | `access-token.service.ts`, unit |
+| Setup | status + first-admin (sequential-safe only — P0) | ✓ (defect) | `setup.service.ts`, unit |
+| Admin | user list/filter, role/status changes, last-admin guard | ✓ | `admin.service.ts`, unit+e2e |
+| Admin | temp-password reset, emergency 2FA removal | ✓ | `admin.service.ts`, unit |
+| Admin | MOD permission grant/list/revoke (global + per-server) | ✓ | `admin.service.ts`, unit |
+| Servers | create+start, list, get (visibility-filtered) | ✓ | `servers.service.ts`, unit+e2e |
+| Servers | start/stop/restart with CAS + advisory lock | ✓ | unit+e2e |
+| Servers | graceful stop (RCON warn → save-all → docker stop) | ✓ | `docker.service.ts` RCON exec, e2e (mocked) |
+| Servers | resource admission (disk statfs, memory ratio) | ✓ | unit |
+| Servers | startup reconciliation | ✓ | unit |
+| Servers | delete: container+row, data retained (202 sync) | ✓ (semantics open) | `servers.service.ts:465-494` |
+| Access | request/approve/revoke, OPEN/REQUEST/PRIVATE, non-disclosure | ✓ | `server-access.service.ts`, unit |
+| Docker | socket-only client, degraded mode, guardrail container spec | ✓ | unit |
+| Docker | host info, statfs disk, free mem | ✓ | unit |
+| Gateway | WS auth (cookie/event), ADMIN metrics room, `system.stats` 10s | ✓ | `events.gateway.ts`, e2e |
+| Common | CSRF origin guard, exact-origin CORS, helmet, ValidationPipe | ✓ | unit |
+| Errors | PG-code filter (23505/23503/42P01/42703) | ✓ | unit |
+| Deploy | compose (nestjs/postgres/caddy/prefetch), preflight, boot migrations | ✓ | image+smoke jobs |
+| CI | lint/build/unit/migration/e2e/image/publish, Trivy, multi-arch | ✓ | green at HEAD |
 
-**`ScheduledTask` table:**
-
-| Field      | Type      | Notes                                       |
-|------------|-----------|---------------------------------------------|
-| id         | String    | cuid PK                                     |
-| serverId   | String    | FK → Server                                 |
-| type       | Enum      | AUTO_BACKUP \| AUTO_RESTART                 |
-| cronExpr   | String    | standard cron expression (e.g. `0 3 * * *`) |
-| enabled    | Boolean   | default: true                               |
-| lastRunAt  | DateTime? | timestamp of last successful execution      |
-| nextRunAt  | DateTime? | computed from cronExpr at registration      |
-| createdAt  | DateTime  |                                             |
-
-**Reliability — re-scheduling at boot:**
-
-`@nestjs/schedule` stores cron registrations in-memory only. When NestJS restarts, all jobs must be re-registered. `ScheduledTaskService` implements `OnModuleInit`:
-
-```
-onModuleInit():
-  1. fetch all ScheduledTask records where enabled = true
-  2. for each: register a CronJob via SchedulerRegistry using stored cronExpr
-  3. update nextRunAt = next occurrence of cronExpr from now
-```
-
-On create/update/delete via API: dynamically register / update / deregister the cron via `SchedulerRegistry` — no restart needed. This ensures tasks survive NestJS restarts without any external job queue (Redis, BullMQ, etc.).
-
-**Scheduled tasks API endpoints:**
-
-| Method | Path                           | Auth  | Description               |
-|--------|--------------------------------|-------|---------------------------|
-| GET    | /servers/:id/tasks             | JWT   | List scheduled tasks      |
-| POST   | /servers/:id/tasks             | ADMIN | Create scheduled task     |
-| PATCH  | /servers/:id/tasks/:taskId     | ADMIN | Update task (cron, enable)|
-| DELETE | /servers/:id/tasks/:taskId     | ADMIN | Delete task               |
+**Not implemented at all** (old SPEC claimed or implied them as current): `@nestjs/schedule` cron (any), `nestjs-pino` logging, `/users` controller, `/versions`, `PATCH /servers/:id` (config), `PATCH /servers/:id/version`, server/panel icons, `/panel/logo`, `/system/stats` REST, magic links, OAuth endpoints, Minecraft linking endpoints, API keys, webhooks, audit log, system events, backups, scheduled tasks, notifications, plugins, file manager, player management, proxies, Bedrock, Ban table, pagination beyond `GET /servers`.
 
 ---
 
-#### 3e — Notifications
+## 16. Prioritized implementation backlog
 
-**In-panel alerts** — stored in DB, shown in a notification feed in the dashboard.
+Generated from spec/implementation gaps (this pass; runtime code unchanged). Priorities: **P0** release blockers, **P1** important before stable v1, **P2** later improvements, **P3** hygiene/acceptance.
 
-**Triggers:**
-- Server crashed (status → ERROR)
-- Server went offline unexpectedly (not via stop command)
-- Per-container RAM usage > 90% of its limit for more than 1 minute
-- Host free disk < `MIN_FREE_DISK_MB` threshold (`LOW_DISK` notification)
-- Host total allocated RAM > `MAX_MEMORY_RATIO` of total RAM (`MEMORY_PRESSURE` notification — new servers/starts will be blocked)
-- Backup completed / failed
-- Player banned
+### P0 — release blockers (security invariants)
 
-**`Notification` table:**
+- **B-P0-1 Setup bootstrap invariant (§8.1):** atomic transaction + advisory lock 7330 + one-time setup token (`SETUP_TOKEN` or logged random) + throttle on `/setup/init`. Fixes multi-admin race and first-boot claim.
+- **B-P0-2 Hosted-frontend auth decision (D-1) must be resolved and implemented before any hosted `minepanel.xyz` work (§8.5).** Same-origin deployment is unaffected.
 
-| Field      | Type     | Notes                                           |
-|------------|----------|-------------------------------------------------|
-| id         | String   | cuid PK                                         |
-| userId     | String?  | FK → User (null = broadcast to all admins)      |
-| serverId   | String?  | FK → Server                                     |
-| type       | Enum     | SERVER_CRASH \| HIGH_RAM \| LOW_DISK \| MEMORY_PRESSURE \| BACKUP_DONE \| BACKUP_FAILED \| PLAYER_BANNED |
-| message    | String   |                                                 |
-| read       | Boolean  | default: false                                  |
-| createdAt  | DateTime |                                                 |
+### P1 — important before stable v1
 
-**Discord webhook (optional):**
-- Admin can configure a Discord webhook URL per server (or globally)
-- On trigger events, backend POSTs an embed to the webhook
-- Stored as `discordWebhook` field on `Server` model (optional)
+- **B-P1-1 Atomic refresh rotation (§8.3):** tx + `FOR UPDATE` + `jti` O(1) lookup + per-class 401 codes + replay semantics + frontend single-flight contract.
+- **B-P1-2 Refresh/logout error contract:** missing/malformed/expired refresh and missing-cookie logout MUST return 401, never 500 (`db-exception.filter.ts` fall-through).
+- **B-P1-3 Session hygiene:** `GET /sessions` filters `expiresAt > now()`; indexes on `refresh_tokens(user_id)` and `(expires_at)`; lazy + daily expired-row cleanup.
+- **B-P1-4 WebSocket ticket (§8.6):** single-use 60s ticket endpoint; keep cookie fast path; fixes the HttpOnly-token contradiction and Origin-less mobile handshakes.
+- **B-P1-5 Refresh TTL sync:** consume `JWT_REFRESH_EXPIRES_IN` (JWT exp, DB `expiresAt`, cookie `maxAge`); remove hardcoded `7d`.
+- **B-P1-6 Scheduler dependency decision:** add `@nestjs/schedule` (in-process, single-instance) for cleanup sweeps when the first cron feature lands; there is no scheduler today.
+- **B-P1-7 Identity normalization (§8.8):** fix username case mismatch (normalize at registration or case-insensitive lookup); decide canonical identity policy (D-10).
+- **B-P1-8 Stable error envelope + request-id (§12.2):** global `AppExceptionFilter`, machine codes, `X-Request-Id`.
+- **B-P1-9 Dead envs:** wire or delete `LOGIN_THROTTLE_LIMIT`/`LOGIN_THROTTLE_TTL_MS`; declare dead config a release blocker.
+- **B-P1-10 MC container CPU/pids limits:** `NanoCpus` + `PidsLimit` in `HostConfig`.
+- **B-P1-11 RCON credential management:** per-server random `RCON_PASSWORD` at create, AES-GCM-encrypted in the existing `rcon_password` column, passed as env; unpins the current itzg-generated-password behavior.
+- **B-P1-12 Per-account login brute-force counter:** per-username in-memory counter (≥5 fails → 15 min lock, distinct 429 code), admin unlock; complements IP throttling.
+- **B-P1-13 Real Docker lifecycle e2e (release-only, §14.4):** container create → run → graceful stop → delete → data-retention assertions against a real daemon before tagging.
+- **B-P1-14 Delete semantics documentation (D-3):** v1 = retain-data contract with manual cleanup command; consider 204 instead of 202 (§11.6).
+- **B-P1-15 Concurrency, throttling and delete-contract coverage (§14.4):** add deterministic regressions for setup initialization, refresh rotation, `ThrottlerGuard`, and retained-data deletion semantics.
 
-**Discord webhook failure handling:**
+### P2 — later improvements
 
-The webhook call is fire-and-forget and must never block the triggering operation (e.g. a crash notification must still be created in DB even if the webhook fails):
+- **B-P2-1** Version/icon/panel-logo endpoints and `/versions` (Phase 3/4, §17) once the write architecture (D-8) lands.
+- **B-P2-2** Session metadata columns (`userAgent`, `lastUsedAt`); touch on rotation.
+- **B-P2-3** WebSocket per-user socket cap + per-IP handshake rate (authenticated sockets are currently uncapped).
+- **B-P2-4** Restrict inter-container traffic on the `mc` network; per-server networks (proposed).
+- **B-P2-5** Non-root backend user (`group_add` docker group instead of `user: root`).
+- **B-P2-6** Backend `cap_drop: [ALL]` + `read_only: true` + `tmpfs: /tmp`; `__Host-` cookie prefix + explicit `path`; version-string consistency (1.0.0 vs 1.0 vs N/A).
+- **B-P2-7** Pin itzg image (digest/tag) in compose; record resolved digest per server (proposed column).
+- **B-P2-8** Fix `system.stats` free-RAM semantics (container cgroup vs host); or document.
+- **B-P2-9** Password hashing upgrade (D-9): HMAC-SHA384 pepper pre-hash (or Argon2id later) + UTF-8 byte measurement, no silent truncation (§18.1).
+- **B-P2-10** Declarative env validation (Joi/Zod) instead of manual preflight.
 
-```
-1. POST embed to discordWebhook URL
-2. if request fails (network error or non-2xx): wait 5s, retry once
-3. if retry also fails: log warning (level: warn), continue silently
-   → the in-panel Notification record is already created — no data loss
-```
+### P3 — hygiene / accept-and-document
 
-**Notification visibility scope:**
-
-`GET /notifications` filters by the caller's role:
-
-| Role | Sees |
-|------|------|
-| ADMIN | All notifications (including `LOW_DISK`, `MEMORY_PRESSURE`, and broadcasts with `userId = null`) |
-| MOD | Only notifications where `serverId` is a server they have access to, plus their own personal notifications (`userId = callerId`) |
-| USER | Only their own personal notifications |
-
-`userId = null` means "broadcast to all ADMINs" — created for system-level alerts not tied to a specific user. MODs do not receive these broadcast notifications.
-
-**Notification API endpoints:**
-
-| Method | Path                          | Auth  | Description                        |
-|--------|-------------------------------|-------|------------------------------------|
-| GET    | /notifications                | JWT   | Get own notifications              |
-| PATCH  | /notifications/:id/read       | JWT   | Mark notification as read          |
-| DELETE | /notifications/:id            | JWT   | Dismiss notification               |
+- **B-P3-1** JWT `algorithms: ['HS256']` explicit pin.
+- **B-P3-2** Register enumeration oracle (409 + fast-fail) — accept + document.
+- **B-P3-3** Gate Swagger behind `SWAGGER_ENABLED` (default off in prod).
+- **B-P3-4** Document MOD global-grant vs visibility 404 nuance.
+- **B-P3-5** Accept in-memory 2FA lockout loss on restart (single-instance).
+- **B-P3-6** Log only PG code + requestId (not raw constraint messages).
+- **B-P3-7** `decrypt()` input validation → distinct error code.
+- **B-P3-8** `/setup/status` write-on-read upsert — accept or lazy-init.
+- **B-P3-9** Dead double-throw in `grantModPermission`; stale `username` claim note.
+- **B-P3-10** License selection (D-11) and README "open-source" wording.
 
 ---
 
-#### 3f — Plugin Marketplace (Paper / Purpur / Spigot)
+## 17. Future architecture by phase
 
-A full in-panel plugin manager for servers running a plugin-compatible provider (Paper, Purpur, Spigot). Vanilla and Forge/Fabric servers do not have this section.
+All subsections are `[PROPOSED]` unless marked. Dependencies are explicit; nothing here exists in code today. Current endpoint tables are §7; these proposals stay separate.
 
-**Plugin sources (APIs):**
-- **Modrinth** (`https://api.modrinth.com/v2`) — open API, no key required, growing catalog, supports plugins + mods + datapacks
-- **Hangar** (`https://hangar.papermc.io/api/v1`) — official PaperMC plugin registry, Paper/Waterfall/Velocity focused
-- **SpigotMC** — no public API (scraping only, avoid for now)
+### 17.1 Phase 1.5 — OAuth, magic links, identity `[PROPOSED]`
 
-**Marketplace UI features:**
-- Search by name, category (admin tools, economy, chat, protection, etc.)
-- Filter by MC version compatibility
-- Plugin detail page: description, version history, download count, author
-- One-click install — backend downloads JAR into `plugins/` folder of the container
-- Installed plugins list — shows version, status (enabled/disabled), update available badge
-- One-click update — replaces JAR with latest compatible version
-- Enable/disable plugin (rename `.jar` → `.jar.disabled` and restart or reload via RCON/console)
+**Schema changes (accepted requirements):** `users.passwordHash` MUST become nullable; add `googleId` (unique), `githubId` (unique), `minecraftVerified`; password login MUST reject null-hash accounts with a distinct code.
 
-**Backend responsibilities:**
-- Download JAR from Modrinth/Hangar CDN into `{MC_DATA_PATH}/{serverId}/plugins/`
-- Track installed plugins in DB (`ServerPlugin` table)
-- Check for updates by comparing stored version with latest API version
-- Validate provider compatibility before allowing install (no Paper plugins on Vanilla)
+**Google OAuth — security requirements (MUST):**
+- Local JWKS validation only (`https://www.googleapis.com/oauth2/v3/certs`, RS256, cache by `kid` with rotation; `google-auth-library` `verifyIdToken` or `jose`). **`tokeninfo` is a debugging endpoint — forbidden in production** (latency, throttling, availability coupling).
+- Mandatory claims: `iss ∈ {accounts.google.com, https://accounts.google.com}`, `aud` ∈ configured allowlist, `exp`/`iat` freshness, `email_verified === true` before any email-based logic; store `sub` as `googleId` (stable; never key on email).
 
-**`ServerPlugin` table:**
+**GitHub OAuth — security requirements (MUST):**
+- `GET /user` for the numeric `id` → `githubId` (never key on `login`, which is renameable), plus `GET /user/emails` with the `user:email` scope selecting `primary && verified`; reject when no verified primary email exists.
 
-| Field       | Type     | Notes                                  |
-|-------------|----------|----------------------------------------|
-| id          | String   | cuid PK                                |
-| serverId    | String   | FK → Server                            |
-| pluginId    | String   | Modrinth/Hangar plugin ID              |
-| pluginName  | String   | display name                           |
-| version     | String   | installed version                      |
-| source      | Enum     | MODRINTH \| HANGAR                     |
-| downloadUrl | String   | CDN URL for the JAR                    |
-| enabled     | Boolean  | default: true                          |
-| createdAt   | DateTime |                                        |
-| updatedAt   | DateTime |                                        |
+**Token binding (DECISION D-5):** one OAuth client_id shared by all backends means `aud` cannot distinguish backends — any token obtained by the frontend is replayable to *any* MinePanel backend (confused deputy). Recommended: `POST /auth/oauth/challenge` issues a single-use 5-min random challenge stored hashed; the frontend carries it through the provider flow (Google `nonce`, GitHub `state`) and presents it with the token; the backend consumes it atomically. PKCE MUST be used on the frontend leg regardless.
 
-**Plugin API endpoints:**
+**Identity linking (MUST):** silent email-match linking is **forbidden** (account-takeover risk from recycled/attacker-controlled provider emails). Provider login matching an existing password account returns a `LinkConfirmationRequired` state; linking completes only after password re-authentication (or an existing session). Auto-link only when the account was created by the same provider id.
 
-| Method | Path                              | Auth         | Description                              |
-|--------|-----------------------------------|--------------|------------------------------------------|
-| GET    | /plugins/search                   | JWT          | Search plugins via Modrinth/Hangar       |
-| GET    | /plugins/:pluginId                | JWT          | Get plugin details + version list        |
-| GET    | /servers/:id/plugins              | JWT          | List installed plugins                   |
-| POST   | /servers/:id/plugins              | ADMIN \| MOD | Install a plugin (download + track in DB)|
-| PATCH  | /servers/:id/plugins/:pluginId    | ADMIN \| MOD | Update plugin to latest version          |
-| DELETE | /servers/:id/plugins/:pluginId    | ADMIN \| MOD | Remove plugin (delete JAR + DB record)   |
-| PATCH  | /servers/:id/plugins/:pluginId/toggle | ADMIN \| MOD | Enable/disable plugin                |
+**GitHub token exposure (accepted risk, mitigations MUST):** a raw `gho_…` token (read-only scopes) reaches an arbitrary self-hosted backend; the spec requires verify-then-discard (never persist), redaction in all logs, TLS end-to-end (already enforced), and documentation of residual scope.
 
-> MOD access to plugin endpoints requires `PLUGIN_MANAGEMENT` permission.
+**Username collisions:** sanitize provider display names to `^[a-zA-Z0-9_]{3,32}$`; on unique violation retry with a random 4-digit suffix (≤3 attempts) then 409 `UsernameUnavailable`.
+
+**Magic links (SMTP optional, Phase 1.5):** unchanged product shape from the original design (one-time 15-min tokens, no user-enumeration, 501 when SMTP unconfigured) — `[PROPOSED]`, requires the `MagicLinkToken` table.
+
+### 17.2 Phase 2 — developer platform `[PROPOSED]`
+
+Audit log (append-only, interceptor-based, `AuditLog` table), API keys (`mpk_` prefix, hashed at rest, full owner permissions), outbound webhooks (HMAC-SHA256 signatures, retry 1×/5s, non-blocking), system events (retention 10k rows), historical metrics (`MetricSnapshot` 60s cadence, 30d retention). All gated ADMIN where specified in the original design. Depends on: error envelope (B-P1-8), scheduler (B-P1-6).
+
+### 17.3 Phase 3 — operations `[PROPOSED]`
+
+**WebSocket real-time (3a):** server.status/log/stats events, subscribe/unsubscribe, console.command — all require the WS ticket (B-P1-4) and per-user/console rate limits. Currently only `system.stats` exists (§7.7).
+
+**Backups (3c) — accepted contract (§18.4):** consistency via `save-off` → `save-all flush` → copy → `save-on` (MUST re-enable in `finally`); staged+fsync+atomic-rename archives with SHA-256 manifest; verify-before-stop restore with rollback dir and atomic swap; disk preflight; archive safety (§18.3); exclusion rules; retention default 5; create/download = ADMIN or MOD `SERVER_LIFECYCLE`, restore/delete = ADMIN. Depends on write architecture (D-8), scheduler (B-P1-6), audit (Phase 2).
+
+**File manager (3h) — accepted path-safety algorithm (§18.2):** containment by `path.relative` (never string `startsWith`), realpath re-check, no-follow (`O_NOFOLLOW`), fd-based ops, archive pre-validation, staged uploads (50 MB), read cap 5 MB, protected-files list (ops/whitelist/bans/level.dat) enforced on resolved paths, DELETE admin-only.
+
+**Plugins (3f/3g):** Modrinth/Hangar sources, `ServerPlugin` table, install/update/toggle; `PLUGIN_MANAGEMENT` permission. **Player management (3i):** whitelist/bans/ops/kick via RCON or JSON files; UUID resolution (Mojang API cached 24h / offline UUIDv3); `Ban` table with auto-expiry cron. **Scheduled tasks (3d)** and **notifications (3e)**: `ScheduledTask`/`Notification` tables; Discord webhook per-server; fire-and-forget with 1×/5s retry. **Admin permissions dashboard (3j):** exists as API already (§7.4); UI only.
+
+### 17.4 Phase 4 — creation wizard & presets `[PROPOSED]`
+
+Preset-driven creation (Survival SMP, Creative, Vanilla Hardcore, Modded…), advanced mode, mod picker (Modrinth preferred, CurseForge optional), `ServerMod` table, template clone (`POST /servers/:id/clone`). Depends on: write architecture (D-8), `/versions` metadata (B-P2-1), plugin/backup subsystems.
+
+### 17.5 Phase 5 — networking `[PROPOSED]`
+
+Velocity proxy (`ServerProxy` table, `velocity.toml` auto-generation, modern-forwarding secret encrypted, paper-global.yml patch on add/remove), proxy WebSocket events; Bedrock via GeyserMC plugin (minimal) or standalone `itzg/minecraft-bedrock-server` (`BEDROCK` provider, UDP 19132, no RCON). Note: the old SPEC's container-name convention `minepanel-mc-{id}` differs from the implemented `mc-{id}` — the proxy design MUST use the implemented convention.
+
+### 17.6 Phase 6 — mobile app & player portal `[PROPOSED]`
+
+KMP/Compose app + web player portal: server status cards, access requests, player profile, push notifications, quick lifecycle (mod), admin resource overview. Depends on: WS ticket + real-time events (B-P1-4/§17.3), historical metrics (Phase 2), notifications (Phase 3).
 
 ---
 
-#### 3g — Plugin Config Editor
+## 18. Security requirements for future features
 
-Many plugins generate config files (usually YAML) inside `plugins/{PluginName}/config.yml`. Where possible, expose these for editing directly in the panel.
+### 18.1 Password hashing `[DECISION REQUIRED: D-9]` — P2
 
-**Approach:**
-- Read file via Docker exec (`cat plugins/PluginName/config.yml`) or file manager
-- Display in a code editor (Monaco / CodeMirror on frontend)
-- Write back via Docker exec or file write
-- No structured form UI for now (too plugin-specific) — plain file editor is sufficient
+- Reality: `bcrypt` cost 10; DTO caps at 128 **JS characters**; bcrypt silently truncates input beyond **72 UTF-8 bytes** (two passwords sharing a 72-byte prefix collide).
+- MUST: measure passwords in UTF-8 bytes (`Buffer.byteLength`), never JS `.length`; never feed >72-byte passwords to bcrypt; no silent truncation, ever.
+- Recommended (pre-1.0, zero migration): `storedHash = bcrypt(base64url(HMAC-SHA384(pepper, utf8(password))), rounds)` with `PASSWORD_PEPPER` (32 B hex, preflight-required, distinct from `JWT_SECRET`/`ENCRYPTION_KEY`) and centralized `BCRYPT_ROUNDS` (default 12, min 10). OWASP-endorsed construction; defeats hash-shucking; removes the length problem entirely. Fallback if pepper rejected: reject >64-byte passwords with 400 `PasswordTooLong`. Argon2id is the `[PROPOSED]` long-term alternative. References: §20.
+- D-9 decides: pepper pre-hash vs byte-limit vs Argon2id migration.
 
-> This shares infrastructure with the file manager (Phase 3c).
+### 18.2 File-manager path safety — normative algorithm (accepted, applies to any data-tree file op incl. deletion)
 
----
+1. `root = await fs.realpath(serverDir)` once per request.
+2. Reject NUL; `candidate = path.resolve(root, userPath)` (never string-concat).
+3. Containment: `rel = path.relative(root, candidate)`; reject iff `rel === '..'`, starts with `..` + sep, or `path.isAbsolute(rel)`. (String `startsWith(root)` is wrong: `/data/srv1-evil` passes `startsWith('/data/srv1')`.)
+4. Symlinks: for existing targets re-realpath and re-check containment; for creation, realpath the parent + `O_NOFOLLOW` on the final component; default no-follow; internal symlinks read-only allowed.
+5. TOCTOU: operate on opened fds; residual race bounded by privilege separation (§10.4).
+6. Archives: enumerate before writing; reject absolute paths, `..`, device/fifo entries; resolve-or-reject link entries; per-file + total decompressed + count caps (zip-bomb); stream, never buffer.
+7. Uploads: staged under `.minepanel-tmp/<uuid>` on the same fs with a counting stream (never trust `Content-Length`), atomic `rename`; disk preflight before extraction.
+8. Authorization re-checked per op (ADMIN or MOD `FILE_MANAGER` scoped/global; DELETE admin-only); protected-files enforced on resolved paths.
 
-#### 3h — File Manager
+### 18.3 Archive/restore safety (MUST, for backups + plugin/mod installs)
 
-Browse and edit any file inside the MC server container volume.
+SHA-256 integrity verification against the manifest before restore; pre-validation per §18.2.6; max compressed and expanded sizes (SHOULD defaults 10 GB / 30 GB with env overrides); insufficient-disk → 422 `InsufficientResources` before starting; rollback directory retained until the server reaches RUNNING; audit entries (Phase 2) on every create/restore/delete.
 
-**Features:**
-- Directory tree navigation
-- File viewer (plain text, YAML, JSON, properties)
-- Inline file editor (Monaco editor on frontend)
-- Upload files (drag & drop)
-- Download files
-- Create / rename / delete files and folders
+### 18.4 Backup consistency (MUST)
 
-**Backend approach:**
-- All operations via Docker exec (`ls`, `cat`, `mkdir`, `rm`, etc.) or by reading the bind-mounted volume directly from the NestJS container (simpler, since `{MC_DATA_PATH}/{serverId}` is a shared volume)
-- Prefer direct volume read/write over Docker exec where possible (faster, no shell injection risk)
-- Sanitize all paths (prevent directory traversal: `../../etc/passwd`)
-
-**Auth granularity:**
-- Read operations (`GET /files`, `GET /files/content`) — ADMIN or MOD with `FILE_MANAGER` permission
-- Write operations (`PUT`, `POST upload`, `mkdir`) — ADMIN or MOD with `FILE_MANAGER` permission
-- Delete — ADMIN only (destructive; not delegated to MOD)
-
-**Protected files (view-only, no write via file manager):**
-
-The following paths are managed by dedicated API endpoints and cannot be written via `PUT /servers/:id/files/content`:
-
-| Path | Managed by |
-|------|------------|
-| `ops.json` | `POST/DELETE /servers/:id/ops` |
-| `whitelist.json` | `POST/DELETE /servers/:id/whitelist` |
-| `banned-players.json`, `banned-ips.json` | `POST/DELETE /servers/:id/bans` |
-| `world/level.dat`, `world_nether/level.dat`, `world_the_end/level.dat` | Read-only (binary NBT — not safely editable as text) |
-
-The endpoint returns `403 Forbidden` when the target path matches any of these entries.
-
-**File size limits:**
-
-| Operation         | Limit | Behavior on exceed              |
-|-------------------|-------|--------------------------------|
-| Read file content | 5 MB  | 422 `{ error: 'FileTooLarge' }` |
-| Upload file       | 50 MB | 413 Payload Too Large           |
-
-These limits prevent large files (world saves, multi-GB logs) from being buffered in NestJS memory.
-
-**Concurrency — last-write-wins:**
-
-No file locking is implemented. If two sessions `PUT` the same file simultaneously, the last write wins silently. This is acceptable for typical single-admin deployments. A future enhancement could use optimistic locking via `If-Match` / ETag headers.
-
-**File Manager API endpoints:**
-
-| Method | Path                              | Auth                        | Description                      |
-|--------|-----------------------------------|-----------------------------|----------------------------------|
-| GET    | /servers/:id/files                | ADMIN \| MOD (FILE_MANAGER) | List directory contents          |
-| GET    | /servers/:id/files/content        | ADMIN \| MOD (FILE_MANAGER) | Read file content                |
-| PUT    | /servers/:id/files/content        | ADMIN \| MOD (FILE_MANAGER) | Write file content               |
-| POST   | /servers/:id/files/upload         | ADMIN \| MOD (FILE_MANAGER) | Upload file                      |
-| DELETE | /servers/:id/files                | ADMIN                       | Delete file or folder            |
-| POST   | /servers/:id/files/mkdir          | ADMIN \| MOD (FILE_MANAGER) | Create directory                 |
+Running server: `save-off` → `save-all flush` → snapshot copy → `save-on` (MUST re-enable in `finally`; failure to re-enable = ERROR state). Stopped server: trivially consistent. Staging + fsync + atomic rename; manifest (`serverId`, `version`, `createdAt`, sha256, uncompressed bytes). Exclusions (normative): `backups/`, `.minepanel-tmp/`, `session.lock`, `cache/`.
 
 ---
 
-#### 3i — Player Management
+## 19. Decision-required register
 
-Manage players on a running server without needing console access.
-
-**Features:**
-- Whitelist: add/remove players by username or UUID
-- Banlist: ban/unban players (with optional reason + expiry)
-- Ops: grant/revoke operator status
-- Online players list (via server query or RCON)
-- Kick player (via RCON or console command)
-
-**Backend approach:**
-- RCON protocol for commands on running servers (requires `enable-rcon=true` in `server.properties`)
-- Or: execute commands via `docker exec` into the container's stdin
-- Read whitelist/banlist JSON files directly from the volume for listing
-
-**UUID resolution:**
-
-Minecraft identifies players by UUID, not username. The resolution strategy depends on `server.onlineMode`:
-
-| Mode | Strategy | Detail |
-|------|----------|--------|
-| Online (`onlineMode: true`) | Mojang API lookup | `GET https://api.mojang.com/users/profiles/minecraft/{username}` → returns `{ id, name }`. Rate limit: 600 req/10min. Cache result per username (TTL: 24h). |
-| Offline (`onlineMode: false`) | Deterministic UUID.v3 | `UUID.v3('OfflinePlayer:' + username, UUID.DNS)` — same algorithm the vanilla server uses. No external request. |
-
-All endpoints that accept `player` as a path param accept both a username (resolved to UUID) and a raw UUID (used directly). The response always includes both the UUID and the last-known username.
-
-**Op levels:**
-
-Minecraft operators have 4 permission levels:
-
-| Level | Name | Capabilities |
-|-------|------|--------------|
-| 1 | Moderator | Bypass spawn protection |
-| 2 | Gamemaster | Use most cheat commands (gamemode, tp, etc.) |
-| 3 | Admin | Kick, ban, whitelist management |
-| 4 | Owner | All permissions, including stop/op others |
-
-`POST /servers/:id/ops` accepts an optional `level` param (1–4). Default level when not specified: **2** (Gamemaster). The panel sends `op {player} {level}` via RCON or writes directly to `ops.json`.
-
-**`Ban` entity and expiry:**
-
-Minecraft's `banned-players.json` is the authoritative store. The panel also tracks bans in the DB for querying, filtering, and automated expiry.
-
-**`Ban` table:**
-
-| Field     | Type      | Notes                                   |
-|-----------|-----------|-----------------------------------------|
-| id        | String    | cuid PK                                 |
-| serverId  | String    | FK → Server                             |
-| uuid      | String    | banned player UUID                      |
-| username  | String    | last-known username (display only)      |
-| reason    | String?   |                                         |
-| bannedBy  | String    | FK → User (who issued the ban)          |
-| expiresAt | DateTime? | null = permanent ban                    |
-| createdAt | DateTime  |                                         |
-
-**Auto-expiry:** A `@Cron` job runs every 5 minutes. For each ban where `expiresAt < now` and the server is RUNNING: send `pardon {uuid}` via RCON, remove the entry from `banned-players.json`, delete the `Ban` DB record. If the server is STOPPED, the pardon is applied at next start (`onModuleInit` runs expiry check before reconciling status).
-
-**Player API endpoints:**
-
-| Method | Path                              | Auth         | Description                     |
-|--------|-----------------------------------|--------------|---------------------------------|
-| GET    | /servers/:id/players              | JWT          | List online players             |
-| GET    | /servers/:id/whitelist            | JWT          | Get whitelist                   |
-| POST   | /servers/:id/whitelist            | ADMIN \| MOD | Add player to whitelist         |
-| DELETE | /servers/:id/whitelist/:player    | ADMIN \| MOD | Remove player from whitelist    |
-| GET    | /servers/:id/bans                 | JWT          | Get banlist (active + expired)  |
-| POST   | /servers/:id/bans                 | ADMIN \| MOD | Ban player (body: `{ reason?, expiresAt? }`) |
-| DELETE | /servers/:id/bans/:player         | ADMIN \| MOD | Unban player (pardon)           |
-| GET    | /servers/:id/ops                  | JWT          | Get ops list                    |
-| POST   | /servers/:id/ops                  | ADMIN        | Op player (body: `{ level?: 1-4 }`, default: 2) |
-| DELETE | /servers/:id/ops/:player          | ADMIN        | De-op player                    |
-| POST   | /servers/:id/players/:player/kick | ADMIN \| MOD | Kick player                     |
-
-> MOD access to whitelist/ban endpoints requires `WHITELIST_MANAGEMENT` permission.
+| # | Decision | Options (recommendation) | Blocking |
+|---|----------|--------------------------|----------|
+| D-1 | Hosted-frontend cross-origin auth (§8.5) | (a) same-origin frontend per backend · (b) CHIPS `Partitioned` cookies · (c) proof-of-possession exchange · (d) bridge — **(b) primary + (c) fallback** | Hosted `minepanel.xyz` frontend |
+| D-2 | Setup token mandatory? (§8.1) — **(mandatory)** | mandatory vs optional | Stable v1 |
+| D-3 | Deletion semantics (§11.6) — **v1 retain-data; tombstone deferred** | v1 retain-data vs tombstone+24h now | Stable v1 documentation |
+| D-4 | Shipped socket default (§10.2) — **keep rootful default** | rootful vs rootless default | Compose config |
+| D-5 | OAuth token binding (§17.1) — **backend-issued challenge** | challenge binding vs per-backend client vs assertion broker | Phase 1.5 |
+| D-6 | WS auth primary path (§8.6) — **cookie under D-1(b); ticket under D-1(c) or when cookies are unavailable** | cookie vs ticket primary | Phase 3 real-time |
+| D-7 | Identity linking policy (§17.1) — **confirmation required** | explicit confirmation vs silent email-match | Phase 1.5 |
+| D-8 | Write architecture (§10.4) — **filesystem-helper sidecar** | sidecar vs rw mount w/ path module vs per-op exec | Phase 3 write features |
+| D-9 | Password hashing (§18.1) — **pepper pre-hash** | pepper pre-hash vs byte-limit vs Argon2id | Stable v1 hardening |
+| D-10 | Identity normalization (§8.8) — **normalize username at registration** | normalize vs case-insensitive lookup | Stable v1 |
+| D-11 | License (B-P3-10) — **pick one before public release** | e.g. MIT / Apache-2.0 / AGPL-3.0 | Any public release |
 
 ---
 
-#### 3j — Admin Permissions Dashboard
+## 20. References — external primary sources (verified 2026-08-15)
 
-UI and API for the admin to manage MOD granular permissions (the PBAC system from Phase 1.5).
+Browser/cookie behavior:
 
-**Features:**
-- List all MOD users
-- View/edit permissions per MOD user (checkboxes per permission, optionally scoped to a specific server)
-- Grant/revoke permissions without role changes
-- Panel user management: list all users, change role (USER ↔ MOD), ban/unban from panel
+- MDN — Third-party cookies / `Partitioned` (CHIPS): https://developer.mozilla.org/en-US/docs/Web/Privacy/Guides/Third-party_cookies/Partitioned_cookies
+- Privacy Sandbox — next steps (Chrome user-choice): https://privacysandbox.google.com/blog/privacy-sandbox-next-steps
+- Privacy Sandbox — CHIPS: https://privacysandbox.google.com/cookies/chips
+- WebKit — Full Third-Party Cookie Blocking (ITP): https://webkit.org/blog/10218/full-third-party-cookie-blocking-and-more/
+- WebKit — Features in Safari 18.4 (CHIPS): https://webkit.org/blog/16574/webkit-features-in-safari-18-4/
+- MDN — Firefox 131 release notes (CHIPS enabled): https://developer.mozilla.org/en-US/docs/Mozilla/Firefox/Releases/131
 
-**Admin API endpoints:**
+OAuth / identity:
 
-| Method | Path                                          | Auth  | Description                            |
-|--------|-----------------------------------------------|-------|----------------------------------------|
-| GET    | /admin/users                                  | ADMIN | List all panel users                   |
-| PATCH  | /admin/users/:id/role                         | ADMIN | Change user role                       |
-| PATCH  | /admin/users/:id/status                       | ADMIN | Ban/unban user from panel              |
-| GET    | /admin/users/:id/permissions                  | ADMIN | List MOD permissions for a user        |
-| POST   | /admin/users/:id/permissions                  | ADMIN | Grant permission (optionally per server)|
-| DELETE | /admin/users/:id/permissions/:permissionId    | ADMIN | Revoke permission                      |
+- Google — Authenticate with a backend server (tokeninfo is debugging; local validation for production): https://developers.google.com/identity/sign-in/web/backend-auth
+- Google — OpenID Connect API reference (`iss`/`aud`/`sub` requirements): https://developers.google.com/identity/openid-connect/reference
+- Google — Verify the ID token on the server side: https://developers.google.com/identity/gsi/web/guides/verify-google-id-token
+- GitHub — REST API emails (`user:email` scope, primary/verified): https://docs.github.com/en/rest/users/emails
+- GitHub — Authorizing OAuth apps (scopes): https://docs.github.com/en/apps/oauth-apps/using-oauth-apps/authorizing-oauth-apps
 
-### Phase 4 - Server Creation Wizard & Presets
+Password storage:
 
-The goal is to make MinePanel feel like a **polished product**, not just a tool. The server creation flow should be fast and friendly for beginners but not limiting for power users. Think of it like the **race/class selection screen in an RPG** — you pick a preset and everything is configured for you, or you go "advanced" and tune every setting manually.
-
-#### Product vision
-
-MinePanel aims to be the **modern open-source alternative** to:
-- **Pterodactyl** — powerful but notoriously complex to self-host (Wings daemon, 2 separate apps, Nginx config)
-- **Crafty Controller** — simpler but limited feature set
-- **Multicraft / McMyAdmin** — commercial, dated UI
-
-Our differentiator: dead-simple self-hosting (single `docker compose up`) + great UX + modern stack.
-
-#### Server creation modes
-
-**Quick Start** — preset-driven, minimal inputs required:
-
-| Preset              | Provider | Gamemode   | PvP   | Difficulty | Notes                              |
-|---------------------|----------|------------|-------|------------|------------------------------------|
-| Survival SMP        | Paper    | survival   | on    | hard       | Optimized for multiplayer survival |
-| Creative Build      | Paper    | creative   | off   | peaceful   | Building-focused server            |
-| Minigame Server     | Paper    | adventure  | on    | normal     | Good base for mini-game plugins    |
-| Vanilla Hardcore    | Vanilla  | survival   | on    | hard       | Pure vanilla, hardcore rules       |
-| Modded Survival     | Forge    | survival   | on    | normal     | Opens mod picker (see below)       |
-| Tech/Magic Modpack  | Forge    | survival   | on    | normal     | Preset modpack suggestion          |
-
-User only picks: server name, version, port. Everything else is filled in by the preset.
-
-**Advanced** — full manual config:
-- All fields exposed: provider, version, port, gamemode, difficulty, pvp, maxPlayers, memory limit, JVM flags, etc.
-
-#### Provider-specific presets
-
-Each `ServerProvider` unlocks specific options:
-
-- **VANILLA / PAPER / PURPUR** — standard settings only
-- **FORGE** — mod picker UI (see below)
-- **FABRIC** — mod picker UI (Fabric-compatible mods only)
-- **PURPUR** — exposes extra Purpur-specific settings (mob AI, etc.)
-
-#### Mod picker (Phase 4 / Forge + Fabric)
-
-When creating a Forge or Fabric server, the user can search and select mods to pre-install.
-
-Integration options:
-- **Modrinth API** (preferred — open, free, modern): `https://api.modrinth.com/v2/search`
-- **CurseForge API** (wider catalog but requires API key): `https://api.curseforge.com`
-
-Flow:
-```
-user picks Forge preset
-→ mod picker opens (search box + category filters)
-→ user searches "Create" → sees Create mod + dependencies
-→ user adds mods to list
-→ on server create: backend downloads mod JARs into container volume before first start
-```
-
-Backend responsibilities:
-- Download mod JARs from Modrinth/CurseForge CDN into `{MC_DATA_PATH}/{serverId}/mods/`
-- Validate mod-loader compatibility (Forge vs Fabric, MC version)
-- Store selected mods in DB (new `ServerMod` table)
-
-#### ServerMod table (Phase 4)
-
-| Field       | Type     | Notes                                  |
-|-------------|----------|----------------------------------------|
-| id          | String   | cuid PK                                |
-| serverId    | String   | FK → Server                            |
-| modId       | String   | Modrinth/CurseForge mod ID             |
-| modName     | String   | display name                           |
-| version     | String   | installed version                      |
-| source      | Enum     | MODRINTH \| CURSEFORGE                 |
-| downloadUrl | String   | CDN URL for the JAR                    |
-| createdAt   | DateTime |                                        |
-
-#### New API endpoints (Phase 4)
-
-| Method | Path                          | Auth  | Description                         |
-|--------|-------------------------------|-------|-------------------------------------|
-| GET    | /mods/search                  | JWT   | Search mods via Modrinth/CurseForge |
-| GET    | /servers/:id/mods             | JWT   | List installed mods                 |
-| POST   | /servers/:id/mods             | ADMIN | Install a mod                       |
-| DELETE | /servers/:id/mods/:modId      | ADMIN | Remove a mod                        |
+- OWASP Password Storage Cheat Sheet (72-byte bcrypt limit; HMAC-SHA384 pepper pre-hash; Argon2id): https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
 
 ---
 
-## Phase 5 — Proxy Servers & Bedrock
+## Appendix A — Corrections to the previous specification
 
-### 5a — Velocity Proxy
+The previous SPEC.md (pre-rewrite) was an ambitious design document that conflated three things. This revision separates them (§1 legend). Notable corrections:
 
-Velocity is the modern Minecraft proxy (BungeeCord is deprecated). It connects multiple Java backend servers in a network, handling routing and session forwarding.
+1. **Never existed** (claimed as current): `nestjs-pino` logging (actual: `ConsoleLogger`), `@nestjs/schedule` cron (absent), `pendingDeleteAt` + deletion cleanup, `discordWebhook`, `googleId`/`githubId`/`minecraftVerified`, `Ban`/`MagicLinkToken`/`ApiKey`/`Webhook`/`SystemEvent`/`AuditLog`/`Backup`/`ScheduledTask`/`Notification`/`ServerPlugin`/`ServerMod`/`ServerProxy` tables, `/users` endpoints, `/versions`, version-update and icon endpoints, `/panel/logo`, `/system/stats` REST, magic links, OAuth and Minecraft-linking endpoints, strict/standard/relaxed rate-limit tiers, per-username brute-force counter, `refresh_tokens.userAgent`/`lastUsedAt`, 24h sliding refresh renewal, rootless-Docker default, `${XDG_RUNTIME_DIR}` compose default, SvelteKit frontend.
+2. **Implemented differently than described**: refresh rotates on every use (not within 24h of expiry); production `sameSite` is `none` (docs claimed `lax`); PKs are `randomUUID` (not cuid); ban deletes sessions (spec claimed it does not); 422 error code is `InsufficientResources` (not per-resource codes); `DbExceptionFilter` emits `{message}` only (spec claimed NestJS default shape); delete returns 202 for a synchronous op; RCON is `docker exec rcon-cli`, not TCP RCON; the `mc-{id}` container name (not `minepanel-mc-{id}`).
+3. **Unsafe examples removed**: `startsWith(serverDir)` path check (§18.2), "128 chars is safe with bcrypt" (§18.1), `SameSite=None; Secure` described as sufficient (§8.5), `tokeninfo` + "optional audience check" OAuth flow (§17.1), silent email-match linking (§17.1), "production-ready"/"100% complete" claims (§2).
+4. **Product truth**: "open-source" claim removed (UNLICENSED, private, no LICENSE); frontend stack corrected to React 19 + Vite 7 + Tailwind 4; version strings reconciled as inconsistent (B-P2-6).
 
-`itzg/minecraft-server` already supports `TYPE=VELOCITY` natively — no custom image needed. The Velocity container exposes the public port; backend servers only listen on the internal Docker network.
+## Appendix B — Validation note
 
-#### Architecture
-
-```text
-Internet → Port 25565 → [mc-proxy-1 (Velocity)]
-                              ↓ minepanel_network (internal)
-                    [mc-backend-1] [mc-backend-2] [mc-backend-N]
-                    (no public port exposed)
-```
-
-When a server is added to a proxy, its public port binding is removed — it becomes reachable only through the proxy.
-
-#### New DB entity: `ServerProxy`
-
-| Field            | Type     | Notes                                                                  |
-|------------------|----------|------------------------------------------------------------------------|
-| id               | String   | cuid PK                                                                |
-| name             | String   | friendly name                                                          |
-| port             | Int      | public port                                                            |
-| containerId      | String?  | Docker container ID                                                    |
-| status           | Enum     | STOPPED \| STARTING \| RUNNING \| ERROR                               |
-| forwardingMode   | Enum     | MODERN \| LEGACY \| NONE — default: MODERN                            |
-| forwardingSecret | String   | Velocity modern forwarding secret (AES-256-GCM encrypted)             |
-| defaultServerId  | String?  | FK → Server — lobby / first join destination                          |
-| createdAt        | DateTime |                                                                        |
-
-**Relation**: `Server` gets an optional `proxyId FK → ServerProxy`. One proxy → N backend servers.
-
-#### `velocity.toml` config generation
-
-Velocity requires a `velocity.toml` config file listing backend servers by name. MinePanel auto-generates this from the DB whenever the proxy's backend list changes — this is the key differentiator vs Pterodactyl (which leaves config management entirely to the admin).
-
-Generated config template:
-```toml
-[servers]
-# {server.name} = "{containerName}:25565" for each backend in DB
-lobby    = "minepanel-mc-{serverId1}:25565"
-survival = "minepanel-mc-{serverId2}:25565"
-
-[routing]
-default-server = "{defaultServer.name}"
-fallback-servers = ["{defaultServer.name}"]
-
-[advanced]
-player-info-forwarding-mode = "{forwardingMode}"   # MODERN | LEGACY | NONE
-forwarding-secret = "{decrypted forwardingSecret}"
-```
-
-The container name on `minepanel_network` is always `minepanel-mc-{serverId}` — deterministic, no lookup needed.
-
-After any backend list change: write config to `{MC_DATA_PATH}/{proxyId}/velocity.toml` → if proxy is RUNNING, exec `velocity reload` via `docker exec`.
-
-#### Modern forwarding auto-patch
-
-When `forwardingMode = MODERN` and a Paper/Purpur server is added to the proxy, the backend must patch the server's `paper-global.yml` automatically:
-
-```yaml
-proxies:
-  velocity:
-    enabled: true
-    secret: <decrypted forwardingSecret>
-```
-
-Path: `{MC_DATA_PATH}/{serverId}/config/paper-global.yml`
-
-This patch is applied on `POST /proxies/:id/servers/:serverId` and reverted on `DELETE /proxies/:id/servers/:serverId`. Without this, players cannot connect through the proxy even if Velocity is configured correctly.
-
-**Applies only to**: Paper, Purpur, Spigot providers. Vanilla/Forge/Fabric do not use this file.
-
-#### New API endpoints (Phase 5a)
-
-| Method | Path                                  | Auth  | Description                                    |
-|--------|---------------------------------------|-------|------------------------------------------------|
-| GET    | /proxies                              | JWT   | List proxies                                   |
-| POST   | /proxies                              | ADMIN | Create Velocity proxy (generates forwardingSecret) |
-| GET    | /proxies/:id                          | JWT   | Proxy details + backend server list            |
-| PATCH  | /proxies/:id                          | ADMIN | Update name, port, forwardingMode, defaultServerId |
-| DELETE | /proxies/:id                          | ADMIN | Delete proxy (must be stopped, no backends)    |
-| POST   | /proxies/:id/start                    | ADMIN | Start proxy container                          |
-| POST   | /proxies/:id/stop                     | ADMIN | Stop proxy container                           |
-| POST   | /proxies/:id/servers/:serverId        | ADMIN | Add backend server: removes public port, regenerates velocity.toml, patches paper-global.yml |
-| DELETE | /proxies/:id/servers/:serverId        | ADMIN | Remove backend server: restores public port, regenerates velocity.toml, reverts paper-global.yml |
-
-#### WebSocket events for proxies
-
-The proxy container is a first-class entity — it gets the same live monitoring as regular servers:
-
-| Event               | Payload                          | Description                        |
-|---------------------|----------------------------------|------------------------------------|
-| `proxy.status`      | `{ proxyId, status }`            | Proxy started, stopped, crashed    |
-| `proxy.log`         | `{ proxyId, line }`              | Log line from Velocity container   |
-| `proxy.playerCount` | `{ proxyId, count }`             | Total players across all backends  |
-
-**Client→server messages:**
-
-| Message             | Description                                |
-|---------------------|--------------------------------------------|
-| `subscribe.proxy`   | Start receiving events for a given proxy   |
-| `unsubscribe.proxy` | Stop receiving events for a given proxy    |
-| `proxy.command`     | Send command to Velocity console via `docker exec` |
-
-**Notes**:
-- `POST /proxies` generates the `forwardingSecret` automatically, stored encrypted
-- Adding a server to a proxy removes its public port binding; removing restores it
-- Deleting a proxy requires all backends to be removed first
-- Changing `defaultServerId` triggers a `velocity.toml` regeneration + reload
-- `forwardingMode` changes require proxy restart (reload is not sufficient for this setting)
-
----
-
-### 5b — Bedrock Support
-
-Two supported approaches, in order of implementation complexity:
-
-#### Approach 1 — GeyserMC plugin (Phase 1.5+, minimal backend changes)
-
-GeyserMC translates the Bedrock protocol to Java in-process. Installed as a plugin on Paper/Purpur servers — the existing plugin marketplace handles the JAR download.
-
-Backend change: `POST /servers` DTO gets an optional `bedrockPort?: number` field. If present, the Docker container also exposes `{bedrockPort}:19132/udp`.
-
-No new DB entities. No new server types.
-
-#### Approach 2 — Bedrock standalone server (Phase 5b)
-
-A fully independent Bedrock Edition server using `itzg/minecraft-bedrock-server`.
-
-`ServerProvider` enum gets `BEDROCK`. `DockerService` branches on `provider === 'BEDROCK'` to select the correct image and port protocol.
-
-| Aspect           | Java (itzg/minecraft-server)       | Bedrock (itzg/minecraft-bedrock-server) |
-|------------------|------------------------------------|-----------------------------------------|
-| Image            | itzg/minecraft-server              | itzg/minecraft-bedrock-server           |
-| Default port     | 25565 TCP                          | 19132 UDP                               |
-| Protocol         | Java Edition                       | Bedrock Edition                         |
-| Mod support      | Forge / Fabric                     | Add-ons only (no plugin marketplace)    |
-| Online mode      | Mojang auth or offline UUID        | Xbox Live auth                          |
-| RCON             | Yes                                | No — `rconPassword` is NULL             |
-| Proxy support    | Velocity (Phase 5a)                | Not applicable                          |
-
-No new DB tables — `ServerProvider.BEDROCK` reuses the existing `Server` schema. The `rconPassword` field remains NULL for Bedrock servers.
-
----
-
-## Phase 6 — Mobile App & Player Portal
-
-### Key differentiator
-
-Unlike existing MC panels (admin-only tools), MinePanel targets both **operators** (admins/mods who run servers) and **players** (users who play on those servers). The mobile app and player portal make this explicit.
-
-### Mobile app (KMP (Kotlin Multiplatform + Compose Multiplatform))
-
-A single cross-platform app (iOS + Android) that connects to any MinePanel backend instance — same multi-backend model as the web frontend.
-
-**Player features:**
-- Browse servers they have access to — live status, player count, TPS
-- Push notifications: server online/offline, crash alerts, whitelist approved
-- Request access to `REQUEST`-visibility servers
-- View own player profile: playtime, linked Minecraft account, ban history
-
-**Mod features:**
-- Quick server start/stop/restart
-- Live console with RCON command input
-- Player list with kick/ban actions
-- Notification when server RAM > threshold
-
-**Admin features:**
-- Full server lifecycle management
-- Resource overview (host CPU, RAM, disk)
-- User management (approve pending registrations)
-
-### Player Portal (web, Phase 6)
-
-A user-facing section of the frontend distinct from the admin dashboard:
-
-- **My Servers** — servers the user has access to, with status cards
-- **Player Profile** — Minecraft skin (via Crafatar API), linked UUID, playtime stats (requires event tracking from Phase 3a WebSocket), sessions history
-- **Access Requests** — track pending/approved/denied requests to `REQUEST` servers
-- **Notifications** — in-panel notification feed
-
-### Historical metrics (Phase 2 extension, feeds Phase 6)
-
-Currently metrics are real-time only (WebSocket push). Historical tracking adds:
-- `MetricSnapshot` table: `serverId`, `timestamp`, `cpuPct`, `ramMb`, `playerCount`, `tps`
-- Snapshots written every 60s by a background task while server is `RUNNING`
-- Retention: keep last 30 days by default
-- API: `GET /servers/:id/metrics?from=&to=&resolution=5m` for frontend charts
-- Mobile app shows sparklines per server
-
-### Template clone (Phase 4 extension)
-
-Admin can clone an existing server config (all settings, installed plugins, world seed) into a new server. The world data is NOT cloned by default (optional). Useful for staging → production promotions or quick SMP → creative variants.
-
-`POST /servers/:id/clone` — creates a new `STOPPED` server with identical config. Returns the new server object.
-
----
-
-## Static Assets
-
-Panel and server assets served directly by NestJS with appropriate cache headers. No CDN required — assets are small and infrequently updated.
-
-### Server icon
-
-Each Minecraft server automatically generates a `server-icon.png` (64×64 PNG) in the root of its data directory. This icon is shown to players in the Minecraft multiplayer server list. The panel exposes it for display in the frontend dashboard.
-
-**`GET /servers/:id/icon`**
-- Serves `{MC_DATA_PATH}/{serverId}/server-icon.png` directly from the volume
-- Response headers: `Content-Type: image/png`, `Cache-Control: public, max-age=3600`, `ETag: {hash of file}`
-- If the file does not exist: returns the default MinePanel server icon (embedded in the NestJS binary or from `PANEL_ASSETS_PATH/default-server-icon.png`)
-- Auth: JWT (any authenticated user with server access — server icons are not sensitive)
-
-**`PUT /servers/:id/icon`**
-- Uploads a custom server icon (replaces `server-icon.png` in the server volume)
-- Validation: must be exactly 64×64 pixels, PNG format — returns 422 if dimensions or format are wrong
-- Auth: ADMIN or MOD with `FILE_MANAGER` permission
-- Takes effect on the running server immediately (itzg image re-reads `server-icon.png` without restart)
-
-### Panel instance logo
-
-A custom logo displayed in the frontend when the user views the list of backend instances. Stored in `PANEL_ASSETS_PATH`.
-
-**`GET /panel/logo`**
-- Serves `{PANEL_ASSETS_PATH}/logo.png`
-- Response headers: `Content-Type: image/png`, `Cache-Control: public, max-age=86400`, `ETag: {hash}`
-- If no custom logo is set: returns default MinePanel logo (embedded fallback)
-- Auth: Public (no auth required — logo is shown before login in the multi-backend selection screen)
-
-**`PUT /panel/logo`**
-- Uploads a new panel logo (replaces `{PANEL_ASSETS_PATH}/logo.png`)
-- Validation: PNG or JPEG, max 2 MB
-- Auth: ADMIN only
-- ETag is invalidated on upload so clients re-fetch immediately
-
-**`DELETE /panel/logo`**
-- Removes `{PANEL_ASSETS_PATH}/logo.png`, reverting to the default embedded logo
-- Auth: ADMIN only
-
-**Static assets API endpoints:**
-
-| Method | Path                 | Auth                        | Description                              |
-|--------|----------------------|-----------------------------|------------------------------------------|
-| GET    | /servers/:id/icon    | JWT                         | Get server icon (PNG, with ETag cache)   |
-| PUT    | /servers/:id/icon    | ADMIN \| MOD (FILE_MANAGER) | Upload custom server icon (64×64 PNG)    |
-| GET    | /panel/logo          | Public                      | Get panel logo (PNG, with ETag cache)    |
-| PUT    | /panel/logo          | ADMIN                       | Upload custom panel logo                 |
-| DELETE | /panel/logo          | ADMIN                       | Reset panel logo to default              |
-
----
-
-## Technical Debt / Future Improvements
-
-### Database indexes
-- Add index on `refresh_tokens.user_id` — queried in every auth operation (logout, getSessions, refreshTokens). Low priority for self-hosted with few users, but correct practice for FK columns used in WHERE clauses.
-- Add index on `servers.user_id` when the servers module is implemented — same rationale.
+This specification was validated against HEAD `7b542f3` by: full SPEC read, git state inspection (CI green), three independent read-only code scouts (implementation truth; schema/migrations/config; docs/claims/tests), first-hand verification of `schema.ts`, `main.ts`, `app.module.ts`, `auth.service.ts`, `setup.service.ts`, `docker.service.ts`, `servers.service.ts`, gateway files, controllers, guards, DTOs, compose, Dockerfile, CI workflow, and a Kimi K3 architecture/security decision record (15 items, 16 findings). Endpoint/schema/env inventories were re-run against the finalized text (§7–§13 and §15) during the review pass. A post-rewrite adversarial audit found ten documentation defects; each was reconciled before final validation. No runtime code, schema, migration, test, compose or dependency was changed in this pass.

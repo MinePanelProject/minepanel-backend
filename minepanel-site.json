@@ -8,11 +8,11 @@
   },
   "features": [
     { "icon": "⚡", "title": "One-Command Deploy", "description": "The full stack - backend, database and MC servers - runs on your hardware with a single command. Zero external dependencies." },
-    { "icon": "🐳", "title": "Docker-Native", "description": "Each Minecraft server runs in its own isolated container. Rootless Docker supported by default - no root privileges required." },
-    { "icon": "🔗", "title": "Multi-Backend", "description": "The hosted frontend at minepanel.xyz connects to any number of independent self-hosted backends. Point it at your own instance URL." },
+    { "icon": "🐳", "title": "Docker-Native", "description": "Each Minecraft server runs in its own isolated container, controlled through a local Docker socket (rootful by default; rootless via DOCKER_SOCKET)." },
+    { "icon": "🔗", "title": "Multi-Backend", "description": "Point the frontend at any number of independent self-hosted backend instances. Cross-origin auth design is under review (see SPEC.md §8.5).", "coming": true, "color": "yellow" },
     { "icon": "🛡️", "title": "Role System", "description": "Three roles: ADMIN, MOD, USER. MODs get granular per-server permissions without full admin access - built-in PBAC." },
     { "icon": "📡", "title": "Real-Time Events", "description": "Host metrics (CPU, RAM, disk) pushed to admins via WebSocket. Live per-server stats, console logs, and player events land in later phases." },
-    { "icon": "🔒", "title": "Security First", "description": "JWT via HttpOnly cookies, rate limiting, Helmet security headers, input validation, Docker socket guardrails, and path-traversal protection." },
+    { "icon": "🔒", "title": "Security First", "description": "JWT via HttpOnly cookies, rate limiting, Helmet security headers, input validation, and Docker socket guardrails." },
     { "icon": "📱", "title": "Mobile App", "description": "KMP app for iOS and Android. Not just for admins - players get their own portal: server status, access requests, push notifications, and profile.", "coming": true, "color": "aqua" },
     { "icon": "👤", "title": "Player Portal", "description": "Unlike other MC panels, MinePanel is built for players too. Browse your servers, request access, view your Minecraft profile and playtime - all in one place.", "coming": true, "color": "yellow" }
   ],
@@ -28,7 +28,7 @@
     { "label": "2FA · TOTP", "type": "auth" },
     { "label": "Socket.IO (WebSocket)", "type": "lang" },
     { "label": "Helmet · Throttler", "type": "auth" },
-    { "label": "RCON Protocol", "type": "infra" },
+    { "label": "RCON via docker exec (rcon-cli)", "type": "infra" },
     { "label": "GitHub Actions CI/CD", "type": "infra" }
   ],
   "team": [
@@ -51,7 +51,7 @@
         { "text": "Token refresh & logout", "done": true },
         { "text": "Session management (list & revoke)", "done": true },
         { "text": "Password change", "done": true },
-        { "text": "Rate limiting (strict / standard / relaxed)", "done": true },
+        { "text": "Rate limiting (global 10/min + login/2FA route throttles)", "done": true },
         { "text": "Security hardening (Helmet, validation, DTO constraints)", "done": true },
         { "text": "Health check endpoint", "done": true },
         { "text": "First-run setup wizard (admin creation)", "done": true },
@@ -79,7 +79,7 @@
       "id": "1.5",
       "label": "Phase 1.5",
       "name": "Access Control & OAuth",
-      "status": "planned",
+      "status": "wip",
       "description": "Fine-grained access control, social login, Minecraft account linking, and per-server visibility modes.",
       "progress": 40,
       "progressLabel": "40% — authorization spine complete",

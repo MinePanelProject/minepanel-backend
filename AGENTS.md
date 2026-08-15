@@ -2,88 +2,83 @@
 
 ## 1. Overview
 
-MinePanel backend is a self-hosted Minecraft server management panel API. It is a NestJS 11 application written entirely in TypeScript 5 (ES2022, `nodenext`), running on Node 20 in development and Bun in production. It exposes a REST API (global prefix `api`, plus a public `/health` route and Swagger at `/docs`) that manages user authentication — JWT access tokens and hashed refresh tokens delivered via HttpOnly cookies, with TOTP two-factor authentication — and spawns/controls Minecraft server containers through the Docker socket via Dockerode (server lifecycle endpoints are planned). Persistence is PostgreSQL 16 accessed through Drizzle ORM with a single hand-written schema file. The application is organized as small feature modules (`auth`, `users`, `setup`, `servers`, `docker`, `db`) coordinated by a root `AppModule`, with shared utilities in `src/common`.
+MinePanel Backend is a self-hosted Minecraft server-management API. It is a NestJS 11 application written primarily in TypeScript 5 with PostgreSQL 16 through Drizzle ORM. The API authenticates users with JWT cookie sessions and TOTP, manages Docker-backed Minecraft server lifecycle and access control, publishes minimal host metrics through Socket.IO, and runs behind Caddy in the Compose deployment. Development uses the Nest CLI; production runs the compiled application with Bun. `SPEC.md` is the authoritative distinction between implemented behavior, accepted backlog, proposals, and owner decisions.
 
 ## 2. Repository Structure
 
-```
+```text
 src/
-  main.ts                    # bootstrap: helmet, cookie-parser, ValidationPipe,
-                             # DbExceptionFilter, CORS, global prefix, Swagger — no business logic
-  app.module.ts              # root module: imports all feature modules, registers
-                             # global guards (JwtAuthGuard, RolesGuard, ThrottlerGuard)
-  app.controller.ts          # GET /api/info, GET /health (public)
-  auth/                      # authentication: controller, service, guards/, dto/
-    guards/                  # jwt-auth.guard, pre-auth.guard, roles.guard
-    dto/                     # request/response DTOs, each with a colocated spec
-  users/                     # user lookup/update service; public-user.ts (sanitized shape)
-  setup/                     # first-run bootstrap: status + first-admin registration
-  servers/                   # WIP stub — module wired, controller/service skeletal
-    dto/create-server.dto.ts # fully validated server creation DTO
-  docker/                    # Dockerode provider factory + DockerService (create/start/stop/remove/inspect, host resources, ping)
-  db/                        # DRIZZLE provider factory (postgres-js) + schema.ts
-    schema.ts                # ALL Drizzle tables, enums, inferred types live here
-  common/                    # shared, cross-module code only
-    decorators/              # @Public(), @Roles()
-    filters/db-exception.filter.ts
-    crypto.util.ts           # AES-256-GCM encrypt/decrypt
-    custom-logger.ts
-test/                        # e2e specs (require live Postgres + Docker; run isolated in CI, never blocking the PR test gate)
-drizzle/                     # generated SQL migrations + meta (drizzle-kit output)
-docs/                        # deployment, servers, auth-architecture, access-control
-.github/workflows/ci.yml     # CI: Bun 1.3.14, frozen install, Biome check, build, Jest
+  main.ts                    # bootstrap, production preflight, migrations, global Nest setup
+  app.module.ts              # module composition and global guard ordering
+  app.controller.ts          # public GET /health and GET /api/info only
+  admin/                     # ADMIN user management and MOD permission grants
+  auth/                      # sessions, JWT, TOTP, guards, auth DTOs
+    guards/                  # JWT, roles, permissions, and pre-auth guards
+    dto/                     # request DTOs and colocated specs
+  common/                    # cross-feature decorators, guards, filters, utilities, logger
+  db/                        # sole Drizzle provider, schema, and production migrations
+  docker/                    # Dockerode boundary, constants, and managed-container guardrails
+  gateway/                   # Socket.IO adapter, reservation, metrics, and events gateway
+  servers/                   # lifecycle, resource admission, visibility, access workflows, DTOs
+  setup/                     # first-admin status and setup flow
+  users/                     # user lookup/update and public-user projection
+scripts/
+  postbuild.mjs              # rewrites compiled src/ aliases for the dist-only runtime
+test/                        # e2e tests: live PostgreSQL, mocked Docker boundary
+drizzle/                     # generated Drizzle migrations and metadata
+docs/                        # deployment, auth, access-control, realtime, and server docs
+.github/workflows/ci.yml     # test, migration, e2e, image, and publish jobs
 ```
 
-Rules:
+> **Repo-wide:** create an HTTP feature in `src/<feature>/` with module, controller, service, DTOs, and colocated specs; register it in `AppModule`. Keep controllers as request/response adapters and put business rules in services.
 
-- A new feature gets its own `src/<feature>/` directory containing `*.module.ts`, `*.controller.ts`, `*.service.ts` and a `dto/` subdirectory. Register the module in `app.module.ts` imports.
-- All database tables, enums, and their inferred types are defined in `src/db/schema.ts` — never split the schema across files.
-- `src/common/` is the only place shared code may live; feature modules must not duplicate each other's utilities.
-- Test files are colocated next to their subject as `*.spec.ts` — never in a separate test tree (except e2e, which lives in `test/`).
-- Root level holds only configuration, deployment files (`docker-compose*.yml`, `Dockerfile`, `Caddyfile`), setup wizards (`setup.sh`, `setup-mac.sh`, `setup.ps1`), and docs — no source code.
-- Generated artifacts (`dist/`, `coverage/`) are gitignored and never placed under `src/`.
+- Keep all Drizzle tables, enums, inferred row types, and schema relations in `src/db/schema.ts`; never split the schema.
+- Put shared code only in `src/common/`; cross-feature imports use `src/<feature>/<file>`, never `../../` traversal.
+- Colocate unit specs as `<subject>.spec.ts`. Keep e2e specs in `test/`.
+- Keep root source code out of the repository root. Root files are configuration, deployment, setup wizards, scripts, and project documentation.
+- Do not add generated artifacts under `src/`; `dist/` and `coverage/` stay ignored.
 
 ## 5. Commands and Workflows
 
 ```bash
-# Install
-bun install                      # install dependencies (canonical)
-bun install --frozen-lockfile    # CI: fail if bun.lock would change
+# Dependencies
+bun install
+bun install --frozen-lockfile
 
-# Environment
-cp .env.example .env             # required before running
-docker compose -f docker-compose.dev.yml up -d   # local PostgreSQL
+# Local development
+cp .env.example .env
+docker compose -f docker-compose.dev.yml up -d
+bun db:push
+bun run start:dev
 
-# Development
-bun run start:dev                # nest start --watch
+# Build and production
+bun run build                 # nest build, then scripts/postbuild.mjs
+bun run start:prod
 
-# Build / production
-bun run build                    # nest build → dist/
-bun run start:prod               # bun dist/src/main.js
-
-# Lint and format
-bun run lint                     # biome check --write . (dev — auto-fixes)
-bun run lint:ci                  # biome check . (CI — read-only, canonical for CI)
-bun run format                   # biome format --write .
+# Formatting and linting
+bun run format                # mutates files
+bun run lint                  # mutates files
+bun run lint:ci               # read-only CI check
 
 # Tests
-bun run test                     # jest (dev)
-bun run test:ci                  # jest --runInBand (CI — deterministic, canonical for CI)
-bun run test:cov                 # jest --coverage (optional, writes coverage/)
-bun run test:e2e                 # requires live Postgres + Docker — isolated CI job, not part of the PR test gate
+bun run test
+bun run test:ci
+bun run test:e2e
 
-# Database (Drizzle Kit)
-bun db:push                      # sync schema to DB (dev)
-bun db:generate                  # generate migration SQL
-bun db:migrate                   # apply migrations (prod)
-bun db:studio                    # Drizzle Studio GUI
+# Database
+bun db:generate
+bun db:migrate
+bun db:push
+bun db:studio
 ```
 
-Never use `bun run lint` in CI — it mutates the tree; CI uses `bun run lint:ci`.
+Use `bun install --frozen-lockfile`, `bun run lint:ci`, `bun run build`, and `bun run test:ci` for the unit-test CI gate. Never run `bun run lint` in CI: it writes changes.
+
+`bun run test:e2e` uses a live PostgreSQL instance and applies migrations, but mocks Docker. It does not create real Minecraft containers. The trusted `publish` job is the only current CI job with daemon-backed smoke coverage; a full real Docker lifecycle integration test remains backlog work in `SPEC.md`.
 
 ## 6. Code Formatting
 
-Formatter: Biome 2.4 (`biome.json`), lint + format + `organizeImports` (on). Editor: format-on-save with the Biome extension (`.vscode/settings.json`). Produce formatter-compliant code directly — never rely on a post-pass.
+Formatter and import organizer: Biome 2.4 in `biome.json`. Generate formatter-compliant code directly; do not rely on a cleanup pass.
 
 ### TypeScript
 
@@ -105,179 +100,227 @@ export class SetupController {
 }
 ```
 
-- **Indentation:** 2 spaces. Never tabs.
-- **Line length:** Biome `lineWidth` is 100; the measured p95 is ~83 characters. Keep lines comfortably under 100.
-- **Blank lines — methods:** exactly one blank line between methods (and between the last method and a trailing private helper).
-- **Blank lines — class open:** class members start immediately after the class declaration; when fields precede the constructor, one blank line separates them [tentative].
-- **Blank lines — top-level:** one blank line between top-level declarations. Exception: adjacent `export const` / `export type` pairs share the same block (see `src/db/db.module.ts`).
-- **Blank lines — after imports:** exactly one blank line after the last import before the first declaration.
-- **End of file:** always a single trailing newline; no trailing whitespace anywhere.
-- **Braces:** K&R — opening brace on the same line as the statement. Single-line `if (cond) return x;` without braces is allowed. `catch {` without a binding is used for swallow-with-fallback.
-- **Quote style:** single quotes for all string literals. Template literals (backticks) only for interpolation or multi-line strings.
-- **Spacing — operators:** spaces around binary operators (`a === b`, `now + 60000`).
-- **Spacing — brackets:** no spaces inside parentheses, brackets, or braces (`f(x)`, `{ a: 1 }`).
-- **Spacing — commas:** one space after commas, never before (`and(eq(a, b), ne(c, d))`).
-- **Spacing — colons:** no space before, one space after, in both type annotations and object literals (`private db: DrizzleDB`, `{ error: 'AccountPending' }`).
-- **Decorators:** stacked directly on the line above the decorated target with no blank line between; one blank line separates the whole decorated method from the previous method.
-- **Import block:** one import per line, contiguous (no blank lines between imports), sorted alphabetically by module path (Biome `organizeImports`), followed by exactly one blank line.
-- **Trailing commas:** always present in multi-line object literals, array literals, and argument lists.
-- **Line continuation:** implicit via open parentheses — never backslash (bash scripts excepted).
-- **Semicolons:** always present at the end of statements.
+- Indent with two spaces; never tabs.
+- Keep lines within Biome's configured width of 100 characters.
+- Leave one blank line after imports and between top-level declarations. Leave one blank line between class methods; class members begin immediately after the opening brace.
+- Use K&R braces, semicolons, single-quoted strings, and trailing commas in multiline imports, arguments, objects, and arrays.
+- Use spaces around binary operators and after commas. Do not put spaces inside parentheses, brackets, or braces.
+- Place decorators directly above their target without blank lines between decorators. Separate decorated members from the preceding member with one blank line.
+- Use implicit continuation inside delimiters; never use a TypeScript line-continuation backslash.
+- Keep imports contiguous; Biome orders and organizes them.
 
-### Bash (setup scripts)
+```typescript
+if (parsedUrl.protocol !== 'postgres:' && parsedUrl.protocol !== 'postgresql:') {
+  throw new Error('Missing required environment configuration');
+}
+```
 
-- `#!/usr/bin/env bash` shebang and `set -euo pipefail` first.
-- 2-space indentation; single-quoted strings; `$(...)` command substitution.
-- Helper functions defined as lowercase names with parens: `step()`, `ok()`, `fail()`.
-- Section banners as box comments: `# ── Step 1: Prerequisites ──...`.
-- Variables in UPPER_SNAKE (`CURRENT`, `LATEST`, `SKIP_ENV`).
+### JavaScript (`scripts/`) [tentative]
+
+`scripts/postbuild.mjs` is the only maintained JavaScript source. Follow its single-quote, semicolon, `const`, arrow-function, and `node:` import style when editing it. Do not generalize additional JavaScript conventions without more evidence.
+
+```javascript
+const relativeTo = (fromFile, target) => {
+  const rel = toPosix(path.relative(path.dirname(fromFile), target));
+  return rel.startsWith('.') ? rel : `./${rel}`;
+};
+```
+
+### Bash setup wizards [tentative]
+
+The Linux and macOS wizards use Bash with a portable shebang, strict mode, uppercase state variables, and boxed section banners.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ── Step 1: Prerequisites ─────────────────────────────────────────────────────
+step "1/3" "Checking prerequisites"
+```
+
+Use `docker compose`, never `docker-compose`. Do not source `.env`; parse only required values because it is untrusted input. `setup.ps1` is the only PowerShell source, so do not invent repository-wide PowerShell style rules.
 
 ## 7. Naming Conventions
 
 ### TypeScript
 
-- **Variables and methods:** camelCase (`getSetupState`, `passwordMatches`, `backupCodes`).
-- **Classes and injectables:** PascalCase (`AppController`, `AuthService`, `DbExceptionFilter`, `TwoFactorTokenDto`).
-- **Module-level constants:** UPPER_SNAKE with a clear unit suffix where relevant (`REFRESH_TOKEN_MAX_AGE_MS`, `TWO_FACTOR_FAILURE_LIMIT`, `TOTP_WINDOW_SECONDS`, `IS_PUBLIC_KEY`).
-- **Private members:** no underscore prefix (`private readonly encryptionKey`). The `_` prefix appears only for discarded destructured properties: `const { token: _token, ...tableWithoutToken }` and `({ passwordHash: _passwordHash, ...user }: User)`.
-- **Injection tokens:** UPPER_SNAKE symbols (`DRIZZLE`, `DOCKERODE`) exported from their module file (`src/db/db.module.ts`, `src/docker/docker.constants.ts`).
-- **Types:** PascalCase; object shapes are `type` aliases, not `interface` declarations [tentative — no `interface` keyword observed]. No `I` prefix. Union types get descriptive names (`TwoFactorChallenge`, `LoginResponse`).
-- **DTO classes:** PascalCase with a `Dto`/`DTO` suffix. Casing of the suffix is inconsistent across the repo (`CreateUserDto`, `TwoFactorTokenDto` vs `UpdatePasswordDTO`) — match the file you are editing.
-- **Files:** kebab-case (`db-exception.filter.ts`, `custom-logger.ts`, `create-server.dto.ts`). Exception: DTOs under `src/auth/dto/` use camelCase names (`register.dto.ts`, `editUser.dto.ts`, `updatePw.dto.ts`) — an existing inconsistency; follow the directory you are in.
-- **Test files:** `<subject>.spec.ts`, colocated (`setup.service.ts` → `setup.service.spec.ts`).
-- **DB schema:** table constants camelCase (`users`, `refreshTokens`, `setupState`, `servers`); enum constants PascalCase with `Enum` suffix (`roleEnum`, `DifficultyEnum`, `userStatusEnum`); inferred types PascalCase (`User`, `NewUser`, `Server`).
-- **Environment variables:** UPPER_SNAKE, grouped by section in `.env.example` (`DATABASE_URL`, `REQUIRE_ADMIN_APPROVAL`, `MC_PORT_MIN`).
+- Use `camelCase` for values and methods: `getSetupState`, `checkMemoryAdmission`, `completeTwoFactorLogin`.
+- Use `PascalCase` for classes, DTOs, services, types, and errors: `ServersService`, `CreateServerDto`, `RconUnavailableError`.
+- Use `UPPER_SNAKE_CASE` for module constants and injection tokens: `LIFECYCLE_LOCK_KEY`, `DRIZZLE`, `DOCKERODE`.
+- Use no leading underscore for private members. Reserve `_name` for intentionally discarded destructuring values only.
+- Name injection tokens as exported uppercase symbols from their module/constants file.
+- Prefer descriptive type aliases for object shapes and unions. `AuthTokens` is an existing exported `interface`; do not add an `I` prefix to any type.
+- Use kebab-case filenames. Auth DTO filenames are an established exception (`editUser.dto.ts`, `updatePw.dto.ts`); match the directory being edited.
+- Name tests `<subject>.spec.ts` and fixtures `make<Subject>` where a full fixture is needed.
+
+```typescript
+const makeServer = (overrides: Partial<Server> = {}): Server => ({
+  id: 'server-1',
+  name: 'Survival',
+  ...overrides,
+});
+```
+
+- Keep schema table constants camelCase (`refreshTokens`, `serverAccess`), inferred row types PascalCase (`Server`, `RefreshToken`), and enum constants with the existing `Enum` suffix where used.
+- Use UPPER_SNAKE_CASE environment variables in `.env.example` and setup wizard output.
 
 ## 8. Type Annotations
 
-- Explicit return types on all public/exported async methods: `async getSetupState(): Promise<SetupStatus>`, `async findById(id: string): Promise<User | null>`.
-- Constructor injection uses the `private readonly` shorthand with explicit types, including token injection: `@Inject(DRIZZLE) private readonly db: DrizzleDB`.
-- Nullable values use `| null` / `| undefined` unions — never `Optional<T>`: `Promise<User | null>`, `string | undefined`.
-- Literal narrowing with `as const`: `.then(() => 'ok' as const)`.
-- Pragmatic `as` casts at boundary points, always from a wider to a narrower shape: `req.user as JwtPayload`, `req.cookies.refresh_token as AuthTokens['refreshToken']`.
-- `unknown` preferred over `any` for untyped external values, followed by explicit narrowing (`catch (exception: unknown)` + property checks; `const parsed: unknown = JSON.parse(...)` + `Array.isArray` checks).
-- Type-only imports use `import type { ... }` or the inline `type` modifier in mixed imports: `import { DRIZZLE, type DrizzleDB } from 'src/db/db.module'`.
-- Specs narrow dependencies with `Pick<Type, 'methodName'>` (e.g. `Pick<JwtService, 'verifyAsync'>`) and cast with `as unknown as Type` when a mock is structurally different.
-- Type checker: `tsc` with `strictNullChecks: true` only — full strict mode is off (`noImplicitAny: false`). `isolatedModules: true` means type-only imports must be marked `type`.
+### TypeScript
+
+Use explicit return types for public or exported asynchronous methods and boundary helpers. Use `private readonly` constructor injection with explicit dependency types.
+
+```typescript
+async createServer(dto: CreateServerDto, principal: ServerPrincipal): Promise<PublicServer> {
+  // ...
+}
+```
+
+- Use `T | null` and `T | undefined`, not `Optional<T>`.
+- Prefer `unknown` for untrusted values, then narrow it. Use `as` only at typed boundaries.
+- Mark type-only imports with `import type` or inline `type`; `isolatedModules` is enabled.
+- Type test mocks with `Pick<Dependency, 'method'>` and narrow structurally different mocks through `unknown`.
+- `tsconfig.json` enables `strictNullChecks` but not full strict mode. Do not introduce implicit uncertainty merely because `noImplicitAny` is disabled.
+
+```typescript
+type ReconciliationOutcome =
+  | { kind: 'state'; status: ServerStatus; containerId: string | null }
+  | { kind: 'unavailable' }
+  | { kind: 'unchanged' };
+```
 
 ## 9. Imports
 
-Order: `node:` builtins → third-party packages → `src/` internal paths → relative `./` paths. All contiguous, sorted alphabetically within that order, exactly one blank line after the block. This is enforced by Biome `organizeImports`.
+### TypeScript
 
-Canonical example (`src/auth/auth.service.ts`):
+Order imports as: `node:` builtins, third-party packages, `src/` module imports, then local relative imports. Keep the block contiguous with one blank line before declarations. Use namespace imports only for CommonJS interop.
 
 ```typescript
 import crypto from 'node:crypto';
-import { BadRequestException, ConflictException, ForbiddenException, HttpException, HttpStatus, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { and, eq, getTableColumns } from 'drizzle-orm';
-import { generateSecret, generateURI, verifySync } from 'otplib';
-import { decrypt, encrypt } from 'src/common/crypto.util';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
-import { RefreshToken, refreshTokens, type User, users } from 'src/db/schema';
 import { type PublicUser, toPublicUser } from 'src/users/public-user';
-import { UsersService } from 'src/users/users.service';
-import { EditUserDto } from './dto/editUser.dto';
+import { LoginUserDto } from './dto/login.dto';
 ```
 
-- Cross-module imports always use the `src/<module>/<file>` path style (resolved via `baseUrl`); never `../../` relative traversal.
-- CJS modules are imported as namespaces: `import * as bcrypt from 'bcrypt'`.
-- Node builtins use the `node:` scheme: `import crypto from 'node:crypto'`.
-- Wildcard imports (`import * as ...`) are reserved for CJS interop — never use them to re-export a module's API surface.
+Never cross feature boundaries through relative traversal. Do not use wildcard imports as a re-export mechanism.
 
 ## 10. Error Handling
 
-- Use NestJS built-in exceptions with a human-readable message: `UnauthorizedException('Wrong credentials')`, `ConflictException('User already exists')`, `ForbiddenException('First admin already created')`, `BadRequestException('No changes')`.
-- Structured error payloads for client-discriminable cases: `throw new ForbiddenException({ error: 'AccountPending' })` / `{ error: 'AccountBanned' }` / `{ error: 'PasswordChangeRequired' }`.
-- Rate-limit or retryable failures use `HttpException` with an explicit status: `new HttpException('Two-factor authentication is temporarily locked', HttpStatus.TOO_MANY_REQUESTS)`.
-- A global `DbExceptionFilter` (`@Catch()`) in `src/common/filters/` maps Postgres error codes from the `cause` chain: `23505` → 409 "Resource already exists", `23503` → 400 "Related resource not found", `42P01`/`42703` → 500 "Database schema error", anything else → 500. Non-Postgres `HttpException`s pass through with their own status. Do not handle raw Postgres codes in services.
-- Guards use catch-and-convert: rethrow typed exceptions, convert everything else to `UnauthorizedException`:
+### TypeScript
+
+Use Nest built-in exceptions with human-readable messages. Reserve structured `{ error: 'MachineCode' }` payloads for client-discriminable auth and authorization states. Let `DbExceptionFilter` map PostgreSQL codes; do not duplicate SQLSTATE handling in services.
+
+```typescript
+if (userExists) {
+  throw new ConflictException('User already exists');
+}
+```
+
+Guard and boundary code converts unexpected verification failures to unauthorized responses while preserving deliberate typed failures:
 
 ```typescript
 try {
-  const payload = await this.jwtService.verifyAsync<{ sub: string }>(token);
-  ...
+  const payload = await this.jwtService.verifyAsync<PreAuthPayload>(bearerToken);
+  // ...
 } catch (error) {
   if (error instanceof ForbiddenException) throw error;
   throw new UnauthorizedException();
 }
 ```
 
-- Bare `catch { return false; }` (no binding) is acceptable only when the failure has a defined fallback value (Docker ping, backup-code JSON parsing). Never swallow an exception and continue without an alternate return path.
-- Startup invariants: missing critical secrets or an unrecoverable database connection fail fast — `main.ts` preflights production config and runs Drizzle migrations before `NestFactory.create`, with a single sanitized `process.exit(1)` boundary in `main.ts` (DbModule throws and lets the boundary handle it). Docker unavailability at startup is NOT fatal: `DockerModule` logs the unreachable daemon and continues in degraded mode (health reports 503, Docker operations throw 503). Do not add new `process.exit` call sites elsewhere.
-- Password verification always runs `bcrypt.compare(input, user?.passwordHash ?? DUMMY_PASSWORD_HASH)` — never reveal whether a user exists.
+- Use bare `catch` only when the fallback is defined, such as Docker ping returning `false` or best-effort stream cleanup.
+- Production configuration and migrations fail before Nest starts. Keep the single sanitized `process.exit(1)` boundary in `main.ts`; do not add one elsewhere.
+- Docker daemon absence is nonfatal at startup. Health becomes degraded and Docker operations return 503; a lifecycle operation already in progress may settle its row as `ERROR` when the daemon outcome is unknown.
+- Preserve the timing-equalized password flow: compare against `DUMMY_PASSWORD_HASH` when no user exists.
 
 ## 11. Comments and Docstrings
 
-- No JSDoc and no docstrings on classes or methods. API documentation is expressed with Swagger decorators: `@ApiOperation({ summary: '...' })`, `@ApiProperty({ description: '...', maxLength: 17 })`, `@ApiTags('auth')`.
-- Short `//` comments explain flow intent in controllers — placement before the operation, one blank line above the comment:
+### TypeScript
+
+Do not add JSDoc or method/class docstrings. Express public API intent with Swagger decorators. Use short `//` comments for non-obvious flow, security rationale, or magic values; do not narrate obvious statements.
 
 ```typescript
-// find token in cookies
-const refreshToken = req.cookies.refresh_token as AuthTokens['refreshToken'];
+// the only inbound path is the Caddy reverse proxy on the app network:
+// honor X-Forwarded-* from it so protocol/host detection (CSRF same-origin
+// check) and per-client throttling see the real client
+httpAdapter.set('trust proxy', 1);
 ```
 
-- Magic values and error codes carry a trailing inline comment: `maxAge: 15 * 60 * 1000, // 15 minutes in ms`, `case '23505': // unique_violation`.
-- No module-level docstrings, no commented-out code, no `TODO`/`FIXME` markers.
-- `.env.example` groups variables with box section comments (`# ─── Database ──...`) and explains non-obvious values on the same line or above.
+- Keep comments adjacent to the code they justify.
+- Do not leave commented-out code, `TODO`, or `FIXME` markers.
+- Use trailing comments for error-code or unit explanations when needed.
+- Group `.env.example` variables with section banners and document non-obvious values near their declaration.
 
 ## 12. Testing
 
-- Framework: Jest 30 + ts-jest 29, configured inline in `package.json` (rootDir `src`, `testRegex: '.*\\.spec\\.ts$'`, `moduleNameMapper` maps `^src/(.*)$`). Run with `bun run test:ci` (in-band, deterministic) — the CI command — or `bun run test`.
-- Specs are colocated as `<subject>.spec.ts`; suites are `describe('<ClassName>', ...)`, tests are `it('does something ...', ...)` sentences, table tests use `it.each([...])('... %s', ...)`.
-- DI-based units are compiled with `Test.createTestingModule` and mocked providers via `useValue`:
+### TypeScript
+
+Jest 30 with ts-jest is configured in `package.json`. Unit specs live next to source under `src/`; e2e specs live under `test/`.
 
 ```typescript
-const module: TestingModule = await Test.createTestingModule({
-  controllers: [SetupController],
-  providers: [{ provide: SetupService, useValue: setupService }],
-}).compile();
+describe('ServersService', () => {
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        ServersService,
+        { provide: DRIZZLE, useValue: db },
+      ],
+    }).compile();
+
+    service = module.get(ServersService);
+  });
+});
 ```
 
-- Plain units (guards, controllers) are instantiated directly with typed mocks: `guard = new PreAuthGuard(jwtService as JwtService)`.
-- Mocks are hand-rolled `jest.fn()` objects — no mocking library. Module-level mocks use `jest.mock('module', () => ({ ... }))` for third-party/utility modules (`otplib`, `src/common/crypto.util`).
-- Fixtures use factory helpers: a `makeUser(overrides)` function returning a full `User` object with sensible defaults, overridden per test.
-- Assertions favor `await expect(...).resolves.toEqual(...)` / `.rejects.toBeInstanceOf(UnauthorizedException)`; use `.toHaveBeenCalledWith(...)` for delegation checks.
-- Unit tests must never touch a real PostgreSQL database or Docker daemon — the `DRIZZLE` and `DOCKERODE` tokens are always mocked with chained `jest.fn()` builders.
-- e2e specs live in `test/` and require live Postgres + Docker; they run in an isolated CI job with a fresh stack and are not part of the PR test gate.
+- Use `describe('<ClassName>', ...)` and behavior sentences in `it(...)`.
+- Hand-roll mocks with `jest.fn()`. Mock `DRIZZLE`, `DOCKERODE`, and Docker services in unit tests; no mock library.
+- Use fixtures such as `makeServer(overrides)` and assert observable behavior, transitions, errors, and delegated calls.
+- Unit tests must never connect to PostgreSQL or Docker and must not read live secrets.
+- E2e tests use live loopback PostgreSQL with `TEST_DATABASE_URL`, but override the Docker boundary. Do not claim or write e2e tests that assume a daemon unless they are explicitly release-only integration coverage.
+- Never add “should be defined” scaffolding assertions.
 
 ## 13. Git
 
-- Conventional Commits prefixes (the dominant convention in recent history): `feat:` new features, `fix:` bug fixes, `docs:` docs/spec/roadmap updates, `chore:` config/tooling, `refactor:` behavior-preserving rewrites. Many older commits are unprefixed — do not add new ones.
-- Scopes are rare but valid: `fix(auth):`, `docs(spec):` — use them only when the change is confined to one module.
-- Subjects are short, imperative, lowercase-initial: `feat: implement 2FA (TOTP) - setup, confirm, verify, disable + pre-auth token on login`. Keep the subject under ~90 characters; bodies are optional and uncommon.
-- Commits are not GPG-signed. History is linear — no merge commits; integrate with rebase.
-- All work happens on `master` (single branch; no feature-branch convention observed).
+> **Repo-wide:** use Conventional Commit prefixes for all new commits.
+
+- `feat:` — new user-visible capability.
+- `fix:` — defect correction.
+- `docs:` — documentation or specification change.
+- `chore:` — tooling, dependency, or maintenance change.
+- `refactor:` — behavior-preserving code restructuring.
+- `ci:` — CI-specific change when that scope is unambiguous.
+
+Use an optional scope only when the change is clearly feature-local, for example `fix(auth):`. Keep subjects imperative and lowercase-initial. Keep history linear; rebase rather than create merge commits. Do not commit, push, publish, or alter the user's existing uncommitted changes without explicit approval.
 
 ## 14. Dependencies and Tooling
 
-- Package manager: Bun, pinned exactly via `"packageManager": "bun@1.3.14"` (also `"engines": { "bun": ">=1.3.14" }`). `bun.lock` is committed. Add a dependency with `bun add <pkg>` or `bun add -d <pkg>` (dev); the lockfile must stay consistent — CI fails on drift.
-- Linter/formatter: Biome 2.4, config at `biome.json` (single quotes, trailing commas, 100-width, `organizeImports` on, `noExplicitAny` off). `.vscode/settings.json` wires format-on-save.
-- TypeScript: `tsconfig.json` (`nodenext`, ES2022, strictNullChecks, emitDecoratorMetadata). `tsconfig.build.json` excludes `**/*spec.ts` and `test/`; the production build is `nest build`.
-- ORM: Drizzle + postgres-js; `drizzle.config.ts` points at `src/db/schema.ts` with output to `drizzle/`. Schema changes go through `bun db:generate` + `bun db:migrate` (or `db:push` in dev).
-- Validation: `class-validator` + `class-transformer` decorators on DTOs; `ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true })` is global (in `main.ts`).
-- API docs: `@nestjs/swagger` decorators on every controller, method, and DTO; served at `/docs`.
-- CI: `.github/workflows/ci.yml` — triggers on PRs and pushes to `master`; checks out, installs Bun 1.3.14, runs `bun install --frozen-lockfile`, `bun run lint:ci`, `bun run build`, `bun run test:ci`. Keep these four commands green before pushing.
+### TypeScript and JavaScript
+
+- Bun is the package manager, pinned by `packageManager` and `bun.lock`. Add dependencies with `bun add <package>` or `bun add -d <package>` and keep the lockfile synchronized.
+- Biome is the formatter, linter, and import organizer. Its scope currently includes `src/**` and `test/**`; root Markdown and JSON files are ignored by Biome unless the configuration changes.
+- TypeScript uses `nodenext`, ES2022, decorator metadata, and `src/` base-url aliases. The production build runs `scripts/postbuild.mjs` because compiled artifacts must not retain `src/...` imports.
+- Drizzle schema changes require a generated migration (`bun db:generate`) and the appropriate migration validation; development may use `bun db:push`.
+- Controllers and DTOs use `class-validator`, `class-transformer`, and Swagger decorators. Global validation whitelists, transforms, and rejects extra properties.
+- CI contains separate unit/build, migration, e2e, image, and trusted publish jobs. Preserve the daemon boundary: ordinary PR image tests run degraded without a mounted Docker socket.
 
 ## 15. Red Lines
 
-> **Repo-wide:** the following are absolute prohibitions, grounded in what this codebase consistently avoids.
+> **Repo-wide:** these prohibitions are grounded in the current codebase and release design.
 
-- Never use double quotes for string literals in TypeScript files — single quotes only (formatting).
-- Never indent with tabs — 2 spaces in every `.ts` file (formatting).
-- Never omit the trailing semicolon on a TypeScript statement (formatting).
-- Never reach across modules with relative `../../` imports — use the `src/<module>/<file>` path style (architecture).
-- Never define a Drizzle table or enum outside `src/db/schema.ts` (architecture).
-- Never put business logic in a controller — controllers parse requests and delegate to services (architecture).
-- Never use `any` or `Optional<T>` — use `unknown` with narrowing or `T | null` / `T | undefined` (style).
-- Never prefix a type or interface name with `I` (style).
-- Never let a unit spec connect to a real PostgreSQL database or Docker daemon — mock `DRIZZLE` and `DOCKERODE` (testing).
-- Never write "should be defined" scaffolding tests — every test asserts observable behavior (testing).
-- Never let a unit test read live environment secrets (`DATABASE_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`) (testing).
-- Never commit a `.env` file — only `.env.example` is tracked (git).
-- Never commit build or test artifacts: `dist/`, `coverage/`, `node_modules` (git).
-- Never open a commit with an unprefixed subject — use `feat:` / `fix:` / `docs:` / `chore:` / `refactor:` (git).
-- Never send raw tokens in a JSON response body — auth tokens travel only in HttpOnly cookies (security).
-- Never store or log a plaintext password — always `bcrypt.hash(password, 10)` (security).
+- Never use double-quoted TypeScript string literals when a single-quoted literal is sufficient.
+- Never indent TypeScript with tabs or omit statement semicolons.
+- Never cross modules with `../../` imports; use `src/<feature>/<file>` paths.
+- Never define a Drizzle table, enum, or inferred schema type outside `src/db/schema.ts`.
+- Never put lifecycle, authorization, Docker, or data-access rules in a controller.
+- Never use `Optional<T>` or an `I` prefix for TypeScript types; use nullable unions and descriptive names.
+- Never add `any` without a localized justification; narrow external values from `unknown`.
+- Never let a unit test connect to PostgreSQL or Docker, or read live production secrets.
+- Never represent mocked Docker coverage as a real container-lifecycle test.
+- Never commit `.env`, `dist/`, `coverage/`, `node_modules`, or other generated runtime artifacts.
+- Never create an unprefixed commit subject or a merge commit in the linear `master` history.
+- Never return access or refresh session tokens in JSON. The five-minute 2FA `preAuthToken` is the deliberately scoped exception and may authorize only the 2FA verification flow.
+- Never log or store plaintext passwords. Preserve bcrypt hashing and the dummy-hash comparison path.
+- Never expose the backend port directly in Compose deployments; Caddy is the trusted inbound proxy for throttling and CSRF origin semantics.
+- Never mount Minecraft data read-write into the backend before the write-architecture decision in `SPEC.md` is implemented.

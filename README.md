@@ -14,7 +14,7 @@
 
 ---
 
-> **Phase 1 — v1.0 is complete and production-ready.** Auth (JWT cookies, 2FA, admin approval), server lifecycle, host metrics over WebSocket, and the one-command Docker deployment (Caddy auto-HTTPS, Drizzle migrations on boot, multi-arch images on GHCR) are all shipped.
+> **Phase 1 — v1.0 release candidate.** Auth (JWT cookies, 2FA, admin approval), server lifecycle, host metrics over WebSocket, and the one-command Docker deployment (Caddy auto-HTTPS, Drizzle migrations on boot, multi-arch images on GHCR) are shipped and CI-green. Open decisions and the hardening backlog are tracked in [SPEC.md](./SPEC.md) §16/§19.
 >
 > **Phase 1.5 Round 1 — authorization spine shipped.** Per-server visibility (`OPEN`/`REQUEST`/`PRIVATE`), request/approval workflows, and MOD granular permissions (`PermissionsGuard` + `mod_permissions`) are live. OAuth, Minecraft linking, magic links, and invites are planned for later Phase 1.5 rounds — see the [roadmap](https://minepanel.xyz/#roadmap).
 
@@ -22,9 +22,9 @@
 
 ## What is MinePanel?
 
-MinePanel is an open-source, self-hosted Minecraft server management panel. It runs entirely on your own hardware via Docker — no cloud lock-in, no external services.
+MinePanel is a self-hosted Minecraft server management panel. It runs entirely on your own hardware via Docker — no cloud lock-in, no external services.
 
-The backend is a **NestJS REST + WebSocket API** that manages user authentication, spawns Minecraft server containers through the Docker socket, and exposes all panel operations to the frontend hosted at [minepanel.xyz](https://minepanel.xyz).
+The backend is a **NestJS REST + WebSocket API** that manages user authentication, spawns Minecraft server containers through the Docker socket, and exposes all panel operations to the web frontend (separate `minepanel-frontend` repo).
 
 ---
 
@@ -57,7 +57,7 @@ docker compose pull && docker compose up -d
 |-------------|-------------------------------------------------------------------|
 | Framework   | [NestJS](https://nestjs.com/) v11                                 |
 | Language    | TypeScript 5                                                      |
-| Runtime     | [Bun](https://bun.sh/) 1.3.14 (production) / Node.js 20 (dev)     |
+| Runtime     | [Bun](https://bun.sh/) 1.3.14 (production) / Node.js 20 (dev, unpinned)  |
 | Database    | PostgreSQL 16 + [Drizzle ORM](https://orm.drizzle.team/)          |
 | Auth        | JWT via HttpOnly cookies (no Passport)                            |
 | Docker      | [Dockerode](https://github.com/apocas/dockerode) — local socket   |
@@ -168,8 +168,8 @@ Full docs at `/docs` (Swagger UI) when the server is running.
 | Group      | Endpoints                                                                                     |
 |------------|-----------------------------------------------------------------------------------------------|
 | Setup      | `GET /setup/status` · `POST /setup/init`                                                      |
-| Auth       | `POST /auth/register` · `POST /auth/login` · `POST /auth/refresh` · `POST /auth/logout` · `GET /auth/profile` · `GET /auth/sessions` · `PATCH /auth/profile` · `PATCH /auth/password` |
-| Admin      | `GET /admin/users` · `PATCH /admin/users/:id/status` · `PATCH /admin/users/:id/role` · `POST /admin/users/:id/reset-password` · `DELETE /admin/users/:id/2fa` |
+| Auth       | `POST /auth/register` · `POST /auth/login` · `POST /auth/refresh` · `POST /auth/logout` · `POST /auth/logout-all` · `GET /auth/profile` · `GET /auth/sessions` · `PATCH /auth/profile` · `PATCH /auth/password` · `POST /auth/2fa/setup` · `POST /auth/2fa/confirm` · `POST /auth/2fa/verify` · `DELETE /auth/2fa/disable` |
+| Admin      | `GET /admin/users` · `PATCH /admin/users/:id/status` · `PATCH /admin/users/:id/role` · `POST /admin/users/:id/reset-password` · `DELETE /admin/users/:id/2fa` · `GET/POST /admin/users/:id/permissions` · `DELETE /admin/users/:id/permissions/:permId` |
 | Health     | `GET /health`                                                                                 |
 | Servers    | `POST /servers` · `GET /servers` · `GET /servers/:id` · `POST /servers/:id/start` · `POST /servers/:id/stop` · `POST /servers/:id/restart` · `DELETE /servers/:id` · `POST /servers/:id/request-access` · `GET /servers/:id/my-access-request` · `GET /servers/:id/access-requests` · `POST /servers/:id/access-requests/:userId/approve` · `DELETE /servers/:id/access-requests/:userId` |
 | WebSocket  | `system.stats` — host metrics for ADMIN sockets only ([docs/realtime.md](./docs/realtime.md)) |
