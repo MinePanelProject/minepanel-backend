@@ -8,7 +8,7 @@ Every feature statement below carries one of these status markers:
 
 | Marker | Meaning |
 |--------|---------|
-| `[IMPLEMENTED]` | Verified in the current code, schema, migrations and tests at the commit named in §2. |
+| `[IMPLEMENTED]` | Verified in the current code, schema, migrations and tests in the current working tree/implementation state (or at a future explicitly named verified revision). |
 | `[ACCEPTED]` | Approved target behavior or architecture that is not yet implemented; tracked in the backlog (§16). |
 | `[PROPOSED]` | Future design that still requires validation or a product/architecture decision; phase-marked (§17). |
 | `[CONTRADICTED]` | A previous specification or configuration claim disproved by current code; the observed current behavior is documented with its correction/backlog item. |
@@ -20,10 +20,8 @@ Normative language, defined once and used consistently:
 - **SHOULD** — a strong recommendation; a valid exception must be justified in the code or docs.
 - **MAY** — optional behavior; no default obligation either way.
 
-## 2. Current release status and last verified implementation commit
-
-- **Status: release candidate, not "production-ready".** The Phase 1 scope is implemented and CI-green, but the open decisions in §19 and the P0/P1 backlog in §16 must be resolved before the project can honestly be called production-ready.
-- **Last verified implementation commit:** `7b542f3` — `feat: add per-server authorization spine` (master, 2026-08-13). All behavior claims in this document were verified against this HEAD by code inspection and the CI runs listed in §14.
+- **Status: release candidate, not "production-ready".** Phase 1 and the per-server authorization spine are implemented; this slice also ships the transactional setup bootstrap and protocol-1 capability discovery. Hosted-auth compatibility still requires the reserved PKCE fallback, and open decisions in §19 plus the remaining P0/P1 backlog must be resolved before production-ready status.
+- **Last verified implementation state:** the current working tree on the implementation branch. This document deliberately records no commit hash; no commit is authorized by the implementation task.
 - **Version truth:** `package.json` says `1.0.0`; `PANEL_VERSION` defaults to `"1.0"`; the Swagger fallback is `"N/A"`; CI pins `1.0.0`. This inconsistency is tracked as backlog item B-P2-6.
 - **License:** `package.json` declares `"license": "UNLICENSED"` and `"private": true`; there is **no** LICENSE file and the project must not be described as open-source. Picking a license is owner decision D-11.
 
@@ -35,13 +33,13 @@ MinePanel is a self-hosted Minecraft server management panel. A single `docker c
 
 | Client | Repo | Tech | Status |
 |--------|------|------|--------|
-| Web dashboard (hosted PWA) | `minepanel-pwa` | React 19 + Vite 7 + TypeScript + Tailwind 4 | `[ACCEPTED]` — separate repository planned; repository not created yet; hosted at `app.minepanel.xyz`; not part of this backend's compose file |
+| Web dashboard (hosted PWA) | `minepanel-pwa` | React 19 + Vite 7 + TypeScript + Tailwind 4 | `[ACCEPTED]` — separate repository exists as a discovery shell; hosted at `app.minepanel.xyz`; not part of this backend's compose file |
 | Mobile app | `minepanel-mobile` | KMP + Compose Multiplatform (iOS + Android) | `[PROPOSED]` — Phase 6 |
 | Backend API | `minepanel-backend` (this repo) | NestJS 11 + PostgreSQL | `[IMPLEMENTED]` |
 
 The backend is client-agnostic. Role-based guards (`ADMIN` / `MOD` / `USER`) plus per-server access rules and MOD granular permissions enforce access at the API level.
 
-**Hosted multi-backend dashboard (`app.minepanel.xyz`)** — `[PROPOSED]` and `[DECISION REQUIRED]`: the current product vision is a centrally hosted web dashboard (`minepanel-pwa` — a static React SPA / installable PWA, distinct from the `minepanel-site` marketing website at `minepanel.xyz`) that connects to arbitrary self-hosted backends using cross-origin HttpOnly cookies. Section 8.5 analyses why `SameSite=None; Secure` alone cannot deliver this across the modern browser matrix and requires owner decision D-1. Until then the supported deployment model is same-origin (frontend served from the same domain as the backend, or a dev frontend on `localhost:5173` with `CORS_ORIGIN` set).
+**Hosted multi-backend dashboard (`app.minepanel.xyz`)** — `[ACCEPTED]` discovery shell with a protocol-1 backend contract. The hosted PWA connects to self-hosted backends using cross-origin HttpOnly CHIPS cookies where supported; PKCE authorization-code fallback remains reserved and is not implemented. Until that fallback ships, complete hosted-browser compatibility is not claimed. The supported deployment model remains same-origin (frontend served from the same domain as the backend, or a dev frontend on `localhost:5173` with `CORS_ORIGIN` set).
 
 Direct browser access from `https://app.minepanel.xyz` to LAN/private-network instances (RFC1918 addresses, `.local` hostnames, or other browser-untrusted origins) is **not automatically guaranteed** by the generic HTTPS multi-backend architecture: browsers apply stricter mixed-content and certificate rules to such origins. The intended hosted path is browser-trusted public HTTPS backend origins; private-network endpoints are a separate compatibility concern requiring validation.
 
@@ -238,17 +236,17 @@ Global prefix `api` (except `/health`); Swagger UI at `/docs` (public — backlo
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Liveness: `{ status: 'ok'\|'degraded', db, docker, version }`; 503 when degraded. Uses `SELECT 1` + `docker.ping()`. |
-| GET | `/api/info` | `{ name, version }` from `PANEL_NAME` / `PANEL_VERSION` (frontend instance listing) |
+| GET | `/api/info` | Protocol-1 capability discovery: `{ name, version, api: { protocolVersion: 1 }, capabilities: { auth: { partitionedCookies: true, pkceAuthorizationCode: false }, realtime: { websocketTicket: false } } }`; sends `Cache-Control: no-store`. |
 | GET | `/docs` | Swagger UI (public in current builds) |
 
-**Capability discovery `[ACCEPTED]` — backlog B-P2-11:** the hosted `minepanel-pwa` must determine backend capabilities without relying on arbitrary version comparisons. `GET /api/info` (or its future replacement) SHOULD eventually expose explicit protocol/capability information — API compatibility, partitioned-cookie (CHIPS) auth support, PKCE authorization-code fallback support, and WebSocket-ticket support. The response shape is not defined yet and nothing is implemented today.
+**Capability discovery `[IMPLEMENTED]`** — `GET /api/info` is the version-independent protocol contract for hosted clients. `partitionedCookies: true` means the production auth cookie paths emit CHIPS `Partitioned`; PKCE authorization-code fallback and WebSocket tickets remain `false` until their future implementations ship. Clients MUST use these flags rather than infer compatibility from `version`.
 
 ### 7.2 Setup
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/setup/status` | Public | `{ initialAdminCreated, nextStep: 'register_admin'\|'complete' }` |
-| POST | `/api/setup/init` | Public | Create first admin; 403 `First admin already created` once complete. **Race-unsafe today — see §8.1 (P0)**. No route throttle today (backlog with §8.1). |
+| POST | `/api/setup/init` | Public, `X-Setup-Token`, throttle 5/10 min per IP | Create first admin atomically; missing or wrong token returns 401 `SetupTokenInvalid`; a valid token after completion returns 409 `SetupAlreadyComplete`. `SETUP_TOKEN` is used verbatim when configured; otherwise a base64url token is generated once per incomplete process and logged once. |
 
 ### 7.3 Auth
 
@@ -316,31 +314,21 @@ Global prefix `api` (except `/health`); Swagger UI at `/docs` (public — backlo
 
 ## 8. Authentication and session security
 
-### 8.1 First-run setup invariant `[DECISION REQUIRED: D-2]` — P0
+### 8.1 First-run setup invariant `[IMPLEMENTED]`
 
-Current `POST /api/setup/init` (`setup.service.ts`) is read-then-write: check `initialAdminCreated` → hash → insert admin → mark created. There is **no transaction, no advisory lock, no compare-and-swap, no setup secret, no route throttle**. Two provable failure modes:
+`POST /api/setup/init` now requires the one-time `X-Setup-Token` header before hashing or touching the database. Missing and wrong headers are indistinguishable 401 `SetupTokenInvalid` responses; after setup completes, a valid token receives 409 `SetupAlreadyComplete`.
 
-1. Concurrent requests both pass the check → **two administrators created**.
-2. User insert succeeds but the mark step fails → setup reports incomplete while an admin exists; anyone can create another.
+The write path is one transaction under `pg_advisory_xact_lock(7330)`: it re-reads `setup_state`, inserts the ADMIN row, and sets `initialAdminCreated`; any failure rolls back both writes. The route is throttled to 5 attempts per 10 minutes per IP. A configured non-empty `SETUP_TOKEN` is used verbatim and never logged; when it is absent, a 24-byte base64url token is generated once per incomplete process and emitted once in the service log for operator retrieval. Generated tokens are process-local and change on restart.
 
-Between Caddy certificate issuance and the operator's first visit, the endpoint is Internet-reachable — a scanner can claim a fresh instance.
-
-**Accepted design (pending owner confirmation of the token UX):**
-
-- `[ACCEPTED]` One transaction under `pg_advisory_xact_lock(7330)`: re-read `setup_state` → if `initialAdminCreated` → 409 `SetupAlreadyComplete` → insert admin → set flag → commit.
-- `[ACCEPTED]` A one-time setup secret: `SETUP_TOKEN` env if set; otherwise 24 random bytes (base64url) generated per boot **until setup completes** and printed once to the container log (`docker compose logs nestjs`). Compared timing-safe (SHA-256).
-- `[ACCEPTED]` Throttle `/api/setup/init` 5/10 min per IP.
-- **D-2:** token mandatory vs optional — recommendation: **mandatory**. Without it, first-boot claim remains possible; with it, only someone who can read the operator's logs can bootstrap.
-
-The old SPEC text ("only works once") MUST be read as "once, sequentially, today" — not a secure invariant.
+This closes the former concurrent-admin and insert/flag failure races. D-2 is adopted: setup authorization is mandatory.
 
 ### 8.2 Cookies and tokens `[IMPLEMENTED]`
 
-- Cookie names: `access_token` (15 min TTL), `refresh_token` (7 days). Both `HttpOnly`; `secure` only when `NODE_ENV=production`; `sameSite: 'none'` in production, `'lax'` in development. The controller omits `path`, but Express emits `Path=/` by default; B-P2-6 makes that intent explicit and evaluates the `__Host-` prefix in production.
+- Cookie names: `access_token` (15 min TTL), `refresh_token` (7 days). Both are `HttpOnly`, explicitly `Path=/`, and use `Secure; SameSite=None; Partitioned` in production. Development uses `HttpOnly; Path=/; SameSite=Lax` and omits `Secure`/`Partitioned`.
 - Access JWT: `{ sub, type: 'access', username, role, temporaryAuth? }` — TTL from `JWT_EXPIRES_IN` via `JwtModule` `signOptions`.
 - Refresh JWT: `{ sub, type: 'refresh', temporaryAuth? }` — **hardcoded `7d`**; `JWT_REFRESH_EXPIRES_IN` is declared but never read (B-P1-5: consume it or delete it). Stored **bcrypt-hashed** in `refresh_tokens`.
 - `type` claims pin token purpose: only `type: 'refresh'` may rotate; only `type: 'access'` passes the JWT guard; `pre-auth` is a five-minute response-body Bearer token restricted to `POST /api/auth/2fa/verify`.
-- Login and refresh return `PublicUser` plus session cookies. A 2FA-required login instead returns `{ requiresTwoFactor: true, preAuthToken }` without setting session cookies; the browser-visible pre-auth exception is scoped in §5.2. This is why the WS `auth`-event fallback remains dead for browsers (§7.7).
+- Login and refresh return `PublicUser` plus session cookies. A 2FA-required login instead returns `{ requiresTwoFactor: true, preAuthToken }` without setting session cookies; the browser-visible pre-auth exception is scoped in §5.2.
 
 ### 8.3 Refresh rotation contract `[ACCEPTED]` — P1
 
@@ -370,22 +358,11 @@ Global order in `app.module.ts`:
 
 Known nuance (B-P3-4): a MOD with a global `SERVER_LIFECYCLE` grant can pass the guard but still get 404 on a PRIVATE server without an approved `server_access` row (visibility is separate from action permission).
 
-### 8.5 Hosted-frontend cross-origin authentication `[DECISION REQUIRED: D-1]` — blocker for the hosted frontend
+### 8.5 Hosted-frontend cross-origin authentication `[ACCEPTED: D-1]`
 
-The current vision: the hosted dashboard (`minepanel-pwa`) at `app.minepanel.xyz` connects to arbitrary self-hosted backends using cross-origin HttpOnly cookies with `SameSite=None; Secure` + strict CORS.
+The hosted dashboard (`minepanel-pwa`) uses protocol-1 capability discovery. CHIPS `Partitioned` HttpOnly cookies are the primary cross-origin session mechanism where the browser supports them; the backend emits `SameSite=None; Secure; Partitioned` in production. The PKCE authorization-code flow with a memory-only bearer access token is the documented fallback design, but it is reserved and not implemented. Therefore complete hosted-browser compatibility remains a release blocker; same-origin deployment is fully supported.
 
-**Primary-source reality (2026):** `SameSite=None; Secure` is *necessary but not sufficient*. Safari's ITP blocks third-party cookies by default; Chrome retains user-choice blocking (no blanket removal, but availability is not guaranteed); Firefox Strict ETP blocks them. The cross-browser migration path is **CHIPS** (`Partitioned`): Baseline since December 2025 — Chrome 114+, Firefox 131+, Safari 18.4+ — set as `SameSite=None; Secure; Partitioned`. Partitioned cookies are scoped per top-level site, which is acceptable in this model (the only embedder is `app.minepanel.xyz`), but pre-CHIPS browsers (e.g. Safari < 18.4) simply cannot store the cookie.
-
-**Options:**
-
-| Option | Trade-offs |
-|--------|------------|
-| (a) Serve the frontend from each backend's own origin | Same-origin cookies — simplest and most robust; kills the hosted multi-backend `app.minepanel.xyz` model |
-| (b) CHIPS `Partitioned` HttpOnly cookies | Works under third-party-cookie blocking on Baseline browsers; explicit support matrix; pre-CHIPS Safari broken |
-| (c) PKCE authorization-code fallback with memory-only bearer access token | Top-level redirect to the backend makes it first-party for issuance (PKCE + one-time code, ≤60s) → short-lived bearer token in JS memory (never localStorage). Works everywhere; moves a credential into JS reach (XSS) — mitigated with 15m access tokens, rotation-on-exchange, strict CSP |
-| (d) Same-origin auth bridge/proxy | Proxy hop per backend; no security gain over (c) |
-
-**Recommendation (D-1): (b) as primary with (c) as documented fallback.** The old SPEC's claim that `SameSite=None; Secure` "is the only option for HttpOnly cookies cross-origin" (Italian CSRF note included) MUST be removed. This decision is a **release blocker for the hosted frontend**; the same-origin deployment remains fully supported meanwhile. References: §20.
+`GET /api/info` truthfully advertises `partitionedCookies: true`, `pkceAuthorizationCode: false`, and `websocketTicket: false`. Clients MUST NOT infer support from panel version strings. The previous claim that `SameSite=None; Secure` alone is sufficient is obsolete.
 
 ### 8.6 WebSocket authentication `[ACCEPTED]` — P1
 
@@ -511,13 +488,29 @@ Disk check → transaction (advisory lock; memory admission summing **all** serv
 
 `RUNNING → STOPPING` → `rcon-cli say '§cServer closing in N seconds…'` → wait `STOP_WARN_SECONDS` (0–300) → `rcon-cli save-all` → 3s → `docker stop` (`t: 15`; `t: 10` if RCON failed). RCON failure degrades to direct stop. Restart runs the full stop then the start sequence — never `docker restart`.
 
-### 11.6 Deletion `[DECISION REQUIRED: D-3]` — P1 documentation
+### 11.6 Deletion `[ACCEPTED: D-3]`
 
-**Current v1 behavior (`[IMPLEMENTED]`):** requires STOPPED → CAS to STOPPING → `docker remove(force:false)` → delete DB row (with truthful reconciliation on failure) → **HTTP 202 returned for a fully synchronous operation**. The host data directory `{MC_DATA_PATH_HOST}/{serverId}` is **never removed** — no backup, no `pendingDeleteAt`, no cleanup job, no recovery window. The old SPEC's 24h tombstone + final backup + hourly cron block is fiction and MUST NOT be described as implemented.
+**Current v1 behavior (`[IMPLEMENTED]`):** requires STOPPED → CAS to STOPPING → `docker remove(force:false)` → delete DB row (with truthful reconciliation on failure) → **HTTP 202 returned for a fully synchronous operation**. The host data directory `{MC_DATA_PATH_HOST}/{serverId}` is **never removed** — no backup, no `pendingDeleteAt`, no cleanup job, no recovery window.
 
-**Accepted v1 contract:** "removes the container and the panel registration; world data remains on the host at `<MC_DATA_PATH_HOST>/<serverId>` and can be deleted manually." Deployment docs MUST give the manual cleanup command; GET/list never expose orphans (no discovery — accepted). Recommendation: change the status code to 204 (it is synchronous).
+**Retained-data contract:** removing a server removes its container and panel registration; world data remains at `<MC_DATA_PATH_HOST>/<serverId>` and can be deleted manually. To remove it, an operator MUST provide the exact host root and server UUID; the guarded command below displays the target and refuses empty, non-absolute, malformed, or wildcard-like inputs. Deletion is irreversible and the command contains no wildcard:
 
-**Deferred (Phase 3, `[PROPOSED]`):** `servers.pendingDeleteAt` column → delete sets tombstone + optional final backup → `@nestjs/schedule` hourly sweeper removes expired data dirs (§18.2 path-safety applied) → `POST /servers/:id/restore` within the window → audit entries (Phase 2 dependency). D-3 decides whether/when to fund this.
+```bash
+: "${MC_DATA_PATH_HOST:?Set MC_DATA_PATH_HOST to the absolute host data root}"
+: "${SERVER_UUID:?Set SERVER_UUID to the exact server UUID}"
+case "$MC_DATA_PATH_HOST" in /*) ;; *) printf '%s\n' 'MC_DATA_PATH_HOST must be absolute' >&2; exit 1 ;; esac
+if [[ ! "$SERVER_UUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$ ]]; then
+  printf '%s\n' 'SERVER_UUID must be a UUID' >&2
+  exit 1
+fi
+target="$MC_DATA_PATH_HOST/$SERVER_UUID"
+printf 'Deletion target: %s\n' "$target"
+printf '%s\n' 'WARNING: this permanently deletes retained Minecraft data and cannot be undone.'
+read -r -p 'Type DELETE to continue: ' confirmation
+[ "$confirmation" = DELETE ] || { printf '%s\n' 'Aborted.'; exit 1; }
+rm -rf -- "$target"
+```
+
+No runtime deletion behavior or HTTP status changes are implied by this manual procedure. Tombstone/backup/sweeper/restore behavior remains deferred.
 
 ### 11.7 Startup reconciliation `[IMPLEMENTED]`
 
@@ -582,30 +575,30 @@ The only inbound path is Caddy on the `app` network; `trust proxy = 1` is set (`
 | `image` | build amd64, degraded-mode smoke (no socket), migration-before-listen check, image-content assertions, bcrypt load, Trivy CRITICAL + fixed-HIGH | PR + master |
 | `publish` | trusted daemon smoke, multi-arch (amd64/arm64) GHCR push with SBOM/provenance; `latest`+sha+semver tags | master push / `v*` tags |
 
-Release gate status: all jobs green at HEAD `7b542f3`.
+Release gate status: the repository's configured CI gates were green at the last recorded verification; this working tree adds the setup/capability slice and must pass the mandatory gates before release.
 
 ### 14.4 Missing coverage `[ACCEPTED]` — backlog
 
-- No test covers the setup-init race, refresh rotation concurrency, ThrottlerGuard, or retained-data delete semantics. B-P1-15 adds focused regression coverage alongside B-P0-1, B-P1-1, B-P1-14 and the configured throttles.
+- Setup race and throttling now have live-Postgres coverage in `test/setup-bootstrap.e2e-spec.ts`; refresh rotation concurrency and retained-data delete semantics remain backlog coverage.
 - No **real Docker lifecycle integration test** (container create → run → graceful stop → delete → data retention). `[PROPOSED]`: release-only job (mirrors the trusted `publish` smoke) that runs the full lifecycle against a real daemon before tagging. This is the behavior gap addressed by B-P1-13.
 
 ---
 
 ## 15. Implemented feature matrix
 
-Verified at `7b542f3`. `✓` = implemented and tested as noted; `(✓)` = implemented, partial/indirect test coverage.
+Verified in the current working tree. `✓` = implemented and tested as noted; `(✓)` = implemented, partial/indirect test coverage.
 
 | Domain | Feature | Status | Evidence |
 |--------|---------|--------|----------|
 | Auth | register / login (timing-equalized, dummy hash) | ✓ | `auth.service.ts`, unit+e2e |
 | Auth | HttpOnly cookie sessions (access 15m / refresh 7d) | ✓ | `auth.controller.ts`, e2e |
 | Auth | refresh rotation (per-use; non-atomic — B-P1-1) | ✓ (defect) | `auth.service.ts:278-286` |
-| Auth | logout / logout-all / sessions list / revoke one | ✓ | unit+e2e |
+| Auth | logout / logout-all / sessions list / revoke one | ✓ | `auth.controller.ts`, unit+e2e |
 | Auth | password change (keep current session) | ✓ | `users.service.ts`, unit |
 | Auth | forced recovery (admin temp password, mustChangePassword) | ✓ | `auth.service.ts`, `jwt-auth.guard.ts`, unit |
 | Auth | TOTP 2FA: setup/confirm/verify/disable, backup codes, lockout | ✓ | unit+e2e |
 | Auth | account status enforcement (PENDING/BANNED, DB-fresh) | ✓ | `access-token.service.ts`, unit |
-| Setup | status + first-admin (sequential-safe only — P0) | ✓ (defect) | `setup.service.ts`, unit |
+| Setup | status + transactional first-admin bootstrap with token/throttle | ✓ | `setup.service.ts`, unit + live-Postgres e2e |
 | Admin | user list/filter, role/status changes, last-admin guard | ✓ | `admin.service.ts`, unit+e2e |
 | Admin | temp-password reset, emergency 2FA removal | ✓ | `admin.service.ts`, unit |
 | Admin | MOD permission grant/list/revoke (global + per-server) | ✓ | `admin.service.ts`, unit |
@@ -614,7 +607,7 @@ Verified at `7b542f3`. `✓` = implemented and tested as noted; `(✓)` = implem
 | Servers | graceful stop (RCON warn → save-all → docker stop) | ✓ | `docker.service.ts` RCON exec, e2e (mocked) |
 | Servers | resource admission (disk statfs, memory ratio) | ✓ | unit |
 | Servers | startup reconciliation | ✓ | unit |
-| Servers | delete: container+row, data retained (202 sync) | ✓ (semantics open) | `servers.service.ts:465-494` |
+| Servers | delete: container+row, data retained (202 sync) | ✓ | `servers.service.ts:465-494` |
 | Access | request/approve/revoke, OPEN/REQUEST/PRIVATE, non-disclosure | ✓ | `server-access.service.ts`, unit |
 | Docker | socket-only client, degraded mode, guardrail container spec | ✓ | unit |
 | Docker | host info, statfs disk, free mem | ✓ | unit |
@@ -622,7 +615,8 @@ Verified at `7b542f3`. `✓` = implemented and tested as noted; `(✓)` = implem
 | Common | CSRF origin guard, exact-origin CORS, helmet, ValidationPipe | ✓ | unit |
 | Errors | PG-code filter (23505/23503/42P01/42703) | ✓ | unit |
 | Deploy | compose (nestjs/postgres/caddy/prefetch), preflight, boot migrations | ✓ | image+smoke jobs |
-| CI | lint/build/unit/migration/e2e/image/publish, Trivy, multi-arch | ✓ | green at HEAD |
+| CI | lint/build/unit/migration/e2e/image/publish, Trivy, multi-arch | ✓ | configured CI gates |
+| API | protocol-1 capability discovery with no-store | ✓ | `app.controller.ts`, unit |
 
 **Not implemented at all** (old SPEC claimed or implied them as current): `@nestjs/schedule` cron (any), `nestjs-pino` logging, `/users` controller, `/versions`, `PATCH /servers/:id` (config), `PATCH /servers/:id/version`, server/panel icons, `/panel/logo`, `/system/stats` REST, magic links, OAuth endpoints, Minecraft linking endpoints, API keys, webhooks, audit log, system events, backups, scheduled tasks, notifications, plugins, file manager, player management, proxies, Bedrock, Ban table, pagination beyond `GET /servers`.
 
@@ -630,12 +624,11 @@ Verified at `7b542f3`. `✓` = implemented and tested as noted; `(✓)` = implem
 
 ## 16. Prioritized implementation backlog
 
-Generated from spec/implementation gaps (this pass; runtime code unchanged). Priorities: **P0** release blockers, **P1** important before stable v1, **P2** later improvements, **P3** hygiene/acceptance.
+Generated from current implementation gaps. Priorities: **P0** release blockers, **P1** important before stable v1, **P2** later improvements, **P3** hygiene/acceptance.
 
 ### P0 — release blockers (security invariants)
 
-- **B-P0-1 Setup bootstrap invariant (§8.1):** atomic transaction + advisory lock 7330 + one-time setup token (`SETUP_TOKEN` or logged random) + throttle on `/setup/init`. Fixes multi-admin race and first-boot claim.
-- **B-P0-2 Hosted-frontend auth decision (D-1) must be resolved and implemented before any hosted `app.minepanel.xyz` work (§8.5).** Same-origin deployment is unaffected.
+- **B-P0-2 Hosted-frontend auth compatibility:** D-1 is decided and CHIPS primary is shipped. The PKCE authorization-code fallback remains reserved/not implemented and is still a release blocker for complete hosted-browser compatibility. Same-origin deployment is unaffected.
 
 ### P1 — important before stable v1
 
@@ -652,8 +645,7 @@ Generated from spec/implementation gaps (this pass; runtime code unchanged). Pri
 - **B-P1-11 RCON credential management:** per-server random `RCON_PASSWORD` at create, AES-GCM-encrypted in the existing `rcon_password` column, passed as env; unpins the current itzg-generated-password behavior.
 - **B-P1-12 Per-account login brute-force counter:** per-username in-memory counter (≥5 fails → 15 min lock, distinct 429 code), admin unlock; complements IP throttling.
 - **B-P1-13 Real Docker lifecycle e2e (release-only, §14.4):** container create → run → graceful stop → delete → data-retention assertions against a real daemon before tagging.
-- **B-P1-14 Delete semantics documentation (D-3):** v1 = retain-data contract with manual cleanup command; consider 204 instead of 202 (§11.6).
-- **B-P1-15 Concurrency, throttling and delete-contract coverage (§14.4):** add deterministic regressions for setup initialization, refresh rotation, `ThrottlerGuard`, and retained-data deletion semantics.
+- **B-P1-15** Remaining concurrency and delete-contract coverage: setup initialization and setup throttling are covered by live e2e; refresh rotation concurrency and retained-data deletion semantics remain.
 
 ### P2 — later improvements
 
@@ -667,7 +659,6 @@ Generated from spec/implementation gaps (this pass; runtime code unchanged). Pri
 - **B-P2-8** Fix `system.stats` free-RAM semantics (container cgroup vs host); or document.
 - **B-P2-9** Password hashing upgrade (D-9): HMAC-SHA384 pepper pre-hash (or Argon2id later) + UTF-8 byte measurement, no silent truncation (§18.1).
 - **B-P2-10** Declarative env validation (Joi/Zod) instead of manual preflight.
-- **B-P2-11** Capability discovery in `/api/info` (§7.1): expose explicit protocol/capability flags (API compatibility, CHIPS auth support, PKCE fallback support, WebSocket-ticket support) so the hosted `minepanel-pwa` never infers behavior from version strings.
 
 ### P3 — hygiene / accept-and-document
 
@@ -767,21 +758,21 @@ Running server: `save-off` → `save-all flush` → snapshot copy → `save-on` 
 
 ---
 
-## 19. Decision-required register
+## 19. Decision register (status as of this implementation)
 
-| # | Decision | Options (recommendation) | Blocking |
-|---|----------|--------------------------|----------|
-| D-1 | Hosted-frontend cross-origin auth (§8.5) | (a) same-origin frontend per backend · (b) CHIPS `Partitioned` cookies · (c) PKCE authorization-code fallback with memory-only bearer access token · (d) bridge — **(b) primary + (c) fallback** | Hosted dashboard at `app.minepanel.xyz` |
-| D-2 | Setup token mandatory? (§8.1) — **(mandatory)** | mandatory vs optional | Stable v1 |
-| D-3 | Deletion semantics (§11.6) — **v1 retain-data; tombstone deferred** | v1 retain-data vs tombstone+24h now | Stable v1 documentation |
-| D-4 | Shipped socket default (§10.2) — **keep rootful default** | rootful vs rootless default | Compose config |
-| D-5 | OAuth token binding (§17.1) — **backend-issued challenge** | challenge binding vs per-backend client vs assertion broker | Phase 1.5 |
-| D-6 | WS auth primary path (§8.6) — **cookie under D-1(b); ticket under D-1(c) or when cookies are unavailable** | cookie vs ticket primary | Phase 3 real-time |
-| D-7 | Identity linking policy (§17.1) — **confirmation required** | explicit confirmation vs silent email-match | Phase 1.5 |
-| D-8 | Write architecture (§10.4) — **filesystem-helper sidecar** | sidecar vs rw mount w/ path module vs per-op exec | Phase 3 write features |
-| D-9 | Password hashing (§18.1) — **pepper pre-hash** | pepper pre-hash vs byte-limit vs Argon2id | Stable v1 hardening |
-| D-10 | Identity normalization (§8.8) — **normalize username at registration** | normalize vs case-insensitive lookup | Stable v1 |
-| D-11 | License (B-P3-10) — **pick one before public release** | e.g. MIT / Apache-2.0 / AGPL-3.0 | Any public release |
+| # | Decision | Status | Options / record | Blocking |
+|---|----------|--------|------------------|----------|
+| D-1 | Hosted-frontend cross-origin auth (§8.5) | **ADOPTED** | CHIPS `Partitioned` cookies primary; PKCE authorization-code flow with memory-only bearer access token is the reserved fallback and is not implemented | Complete hosted-browser compatibility |
+| D-2 | Setup token mandatory? (§8.1) | **ADOPTED** | `X-Setup-Token` required; configured `SETUP_TOKEN` or one-time generated/logged bootstrap token | Stable v1 |
+| D-3 | Deletion semantics (§11.6) | **ADOPTED** | v1 retains host data; guarded manual cleanup; tombstone/backup/sweeper deferred | Stable v1 documentation |
+| D-4 | Shipped socket default (§10.2) | **OPEN** | rootful vs rootless default | Compose config |
+| D-5 | OAuth token binding (§17.1) | **OPEN** | challenge binding vs per-backend client vs assertion broker | Phase 1.5 |
+| D-6 | WS auth primary path (§8.6) | **OPEN** | cookie vs ticket primary after D-1 / when cookies unavailable | Phase 3 real-time |
+| D-7 | Identity linking policy (§17.1) | **OPEN** | explicit confirmation vs silent email-match | Phase 1.5 |
+| D-8 | Write architecture (§10.4) | **OPEN** | sidecar vs rw mount with path module vs per-op exec | Phase 3 write features |
+| D-9 | Password hashing (§18.1) | **OPEN** | pepper pre-hash vs byte-limit vs Argon2id | Stable v1 hardening |
+| D-10 | Identity normalization (§8.8) | **OPEN** | normalize username at registration vs case-insensitive lookup | Stable v1 |
+| D-11 | License (B-P3-10) | **OPEN** | e.g. MIT / Apache-2.0 / AGPL-3.0 | Any public release |
 
 ---
 
@@ -821,4 +812,4 @@ The previous SPEC.md (pre-rewrite) was an ambitious design document that conflat
 
 ## Appendix B — Validation note
 
-This specification was validated against HEAD `7b542f3` by: full SPEC read, git state inspection (CI green), three independent read-only code scouts (implementation truth; schema/migrations/config; docs/claims/tests), first-hand verification of `schema.ts`, `main.ts`, `app.module.ts`, `auth.service.ts`, `setup.service.ts`, `docker.service.ts`, `servers.service.ts`, gateway files, controllers, guards, DTOs, compose, Dockerfile, CI workflow, and a Kimi K3 architecture/security decision record (15 items, 16 findings). Endpoint/schema/env inventories were re-run against the finalized text (§7–§13 and §15) during the review pass. A post-rewrite adversarial audit found ten documentation defects; each was reconciled before final validation. No runtime code, schema, migration, test, compose or dependency was changed in this pass.
+This specification was validated against the repository working tree by: full SPEC read, git state inspection, independent read-only code scouts (implementation truth; schema/migrations/config; docs/claims/tests), first-hand verification of schema, bootstrap, auth, Docker, servers, gateway, controllers, guards, DTOs, compose, Dockerfile, and CI workflow. No commit hash is recorded here.

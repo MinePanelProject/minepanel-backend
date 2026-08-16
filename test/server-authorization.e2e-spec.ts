@@ -28,6 +28,8 @@ import { SetupModule } from '../src/setup/setup.module';
 import { UsersModule } from '../src/users/users.module';
 import { assertSafeTestDatabase } from './test-database';
 
+const E2E_SETUP_TOKEN = 'e2e-setup-token-9f27c4d1a6b34802';
+
 type TestUser = schema.User;
 type TestServer = schema.Server;
 type Role = 'ADMIN' | 'MOD' | 'USER';
@@ -184,6 +186,7 @@ describe('Server authorization (PostgreSQL e2e)', () => {
   };
 
   beforeAll(async () => {
+    process.env.SETUP_TOKEN = E2E_SETUP_TOKEN;
     originalDatabaseUrl = process.env.DATABASE_URL;
     if (originalDatabaseUrl !== undefined && originalDatabaseUrl !== sentinelDatabaseUrl) {
       throw new Error(
@@ -249,10 +252,11 @@ describe('Server authorization (PostgreSQL e2e)', () => {
     await app.init();
 
     // create first admin through the public setup API
-    const setupAgent = request.agent(app.getHttpServer());
     const adminUsername = `auth_admin_${Date.now()}`;
+    const setupAgent = request.agent(app.getHttpServer());
     await setupAgent
       .post('/api/setup/init')
+      .set('X-Setup-Token', E2E_SETUP_TOKEN)
       .send({
         email: `${adminUsername}@example.com`,
         username: adminUsername,

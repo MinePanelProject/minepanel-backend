@@ -29,10 +29,40 @@ describe('AppController', () => {
     controller = module.get<AppController>(AppController);
   });
 
-  it('returns the panel name and version from configuration', () => {
-    getConfig.mockReturnValueOnce('MinePanel').mockReturnValueOnce('1.0.0');
+  it('returns the exact protocol-1 panel info with a no-store header', () => {
+    getConfig.mockImplementation((key: string, defaultValue?: string) => {
+      if (key === 'PANEL_NAME') return 'MinePanel';
+      if (key === 'PANEL_VERSION') return '1.0.0';
+      return defaultValue;
+    });
+    const res = { setHeader: jest.fn() } as unknown as Response;
 
-    expect(controller.getInfo()).toEqual({ name: 'MinePanel', version: '1.0.0' });
+    expect(controller.getInfo(res)).toEqual({
+      name: 'MinePanel',
+      version: '1.0.0',
+      api: { protocolVersion: 1 },
+      capabilities: {
+        auth: {
+          partitionedCookies: true,
+          pkceAuthorizationCode: false,
+        },
+        realtime: {
+          websocketTicket: false,
+        },
+      },
+    });
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+  });
+
+  it('falls back to display defaults when panel name and version are unset', () => {
+    getConfig.mockImplementation((_key: string, defaultValue?: string) => defaultValue);
+    const res = { setHeader: jest.fn() } as unknown as Response;
+
+    const info = controller.getInfo(res);
+
+    expect(info.name).toBe('MinePanel');
+    expect(info.version).toBe('1.0');
+    expect(info.api.protocolVersion).toBe(1);
   });
 
   it('reports ok for a healthy database and docker daemon', async () => {

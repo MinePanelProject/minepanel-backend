@@ -30,13 +30,22 @@ describe('SetupController', () => {
     await expect(controller.getStatus()).resolves.toBe(state);
   });
 
-  it('delegates first-admin registration and reports the created admin', async () => {
+  it('delegates first-admin registration with the setup token header', async () => {
     const dto = { email: 'admin@example.com', username: 'admin', password: 's3cret' };
     setupService.initAdminRegister.mockResolvedValue(true);
 
-    await expect(controller.init(dto)).resolves.toEqual({
+    await expect(controller.init(dto, 'setup-token')).resolves.toEqual({
       message: 'Admin admin created successfully',
     });
-    expect(setupService.initAdminRegister).toHaveBeenCalledWith(dto);
+    expect(setupService.initAdminRegister).toHaveBeenCalledWith(dto, 'setup-token');
+  });
+
+  it('passes a missing setup token header through as undefined', async () => {
+    const dto = { email: 'admin@example.com', username: 'admin', password: 's3cret' };
+    setupService.initAdminRegister.mockResolvedValue(true);
+
+    await controller.init(dto, undefined);
+
+    expect(setupService.initAdminRegister).toHaveBeenCalledWith(dto, undefined);
   });
 });

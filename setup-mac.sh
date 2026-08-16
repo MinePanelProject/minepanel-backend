@@ -93,6 +93,7 @@ if [[ $SKIP_ENV -eq 0 ]]; then
   JWT_SECRET=$(openssl rand -hex 32)
   POSTGRES_PASSWORD=$(openssl rand -hex 24)
   ENCRYPTION_KEY=$(openssl rand -hex 32)
+  SETUP_TOKEN=$(openssl rand -hex 24)
   MC_DATA_PATH_HOST="${HOME}/.minepanel/mc-data"
 
   # secrets file: 0600, owned by the invoking user
@@ -111,6 +112,7 @@ DATABASE_URL="postgresql://minepanel:${POSTGRES_PASSWORD}@postgres:5432/minepane
 JWT_SECRET=${JWT_SECRET}
 JWT_EXPIRES_IN="15m"
 JWT_REFRESH_EXPIRES_IN="7d"
+SETUP_TOKEN=${SETUP_TOKEN}
 
 REQUIRE_ADMIN_APPROVAL=true
 LOGIN_THROTTLE_LIMIT=5

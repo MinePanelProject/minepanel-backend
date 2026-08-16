@@ -14,7 +14,7 @@
 
 ---
 
-> **Phase 1 - v1.0 release candidate.** Auth (JWT cookies, 2FA, admin approval), server lifecycle, host metrics over WebSocket, and the one-command Docker deployment (Caddy auto-HTTPS, Drizzle migrations on boot, multi-arch images on GHCR) are shipped and CI-green. Open decisions and the hardening backlog are tracked in [SPEC.md](./SPEC.md) §16/§19.
+> **Phase 1 - v1.0 release candidate.** Auth (JWT cookies, 2FA, admin approval), transactional first-admin bootstrap, protocol-1 capability discovery, server lifecycle, host metrics over WebSocket, and the one-command Docker deployment (Caddy auto-HTTPS, Drizzle migrations on boot, multi-arch images on GHCR) are shipped and CI-green. Open decisions and the hardening backlog are tracked in [SPEC.md](./SPEC.md) §16/§19.
 >
 > **Phase 1.5 Round 1 - authorization spine shipped.** Per-server visibility (`OPEN`/`REQUEST`/`PRIVATE`), request/approval workflows, and MOD granular permissions (`PermissionsGuard` + `mod_permissions`) are live. OAuth, Minecraft linking, magic links, and invites are planned for later Phase 1.5 rounds - see the [roadmap](https://minepanel.xyz/#roadmap).
 
@@ -24,7 +24,7 @@
 
 MinePanel is a self-hosted Minecraft server management panel. It runs entirely on your own hardware via Docker - no cloud lock-in, no external services.
 
-The backend is a **NestJS REST + WebSocket API** that manages user authentication, spawns Minecraft server containers through the Docker socket, and exposes all panel operations to the web dashboard (separate `minepanel-pwa` repo - planned, not created yet).
+The backend is a **NestJS REST + WebSocket API** that manages user authentication, spawns Minecraft server containers through the Docker socket, and exposes all panel operations to the web dashboard (`minepanel-pwa` repo exists as a discovery shell; hosted-browser PKCE fallback is reserved and not implemented).
 
 ---
 
@@ -87,6 +87,8 @@ POSTGRES_PASSWORD=strong-random-password
 JWT_SECRET=long-random-string
 # Generate exactly 32 random bytes encoded as 64 hexadecimal characters: openssl rand -hex 32
 ENCRYPTION_KEY=64-hex-character-output
+# One-time first-admin secret; send as X-Setup-Token to POST /api/setup/init
+SETUP_TOKEN=random-secret
 # Absolute host directory for Minecraft data (e.g. $HOME/.minepanel/mc-data)
 MC_DATA_PATH_HOST=/absolute/path/to/mc-data
 ```
@@ -137,12 +139,13 @@ See [`.env.example`](./.env.example) for the full list. Key variables:
 | `DATABASE_URL`          | PostgreSQL connection string                       | required             |
 | `JWT_SECRET`            | Secret for JWT signing                             | required             |
 | `ENCRYPTION_KEY`        | 32 random bytes encoded as 64 hexadecimal characters; generate with `openssl rand -hex 32` | required |
+| `SETUP_TOKEN`           | One-time first-admin secret sent as `X-Setup-Token`; if omitted, a token is generated/logged once per incomplete process | optional fallback |
 | `REQUIRE_ADMIN_APPROVAL`| New users start as PENDING until admin approves    | `true`               |
 | `MC_PORT_MIN/MAX`       | Port range for Minecraft server containers         | `25565` / `25665`    |
 | `MC_DATA_PATH_HOST`     | Host data root - **required in Compose** (wizards default `$HOME/.minepanel/mc-data`; mounted read-only at `/mc-data`) | `$HOME/.minepanel/mc-data` |
 | `MC_DATA_PATH`          | Base path inside the backend; Compose fixes it to `/mc-data` (direct backend execution only) | `/mc-data` |
 | `MIN_FREE_DISK_MB`      | Minimum free disk to allow server creation         | `2048`               |
-| `MAX_MEMORY_RATIO`      | Max fraction of host RAM allocatable to MC servers | `0.90`               |
+| `MAX_MEMORY_RATIO`       | Max fraction of host RAM allocatable to MC servers | `0.90`               |
 
 ---
 
@@ -165,12 +168,15 @@ In production, migrations run automatically inside the container before the API 
 
 Full docs at `/docs` (Swagger UI) when the server is running.
 
+`GET /api/info` returns protocol 1 and explicit capability flags. Production session cookies use `HttpOnly; Secure; SameSite=None; Partitioned; Path=/` (CHIPS). The PKCE authorization-code fallback and WebSocket tickets are reserved, not implemented, and advertised as unsupported; clients must not infer compatibility from `PANEL_VERSION`.
+
 | Group      | Endpoints                                                                                     |
 |------------|-----------------------------------------------------------------------------------------------|
-| Setup      | `GET /setup/status` · `POST /setup/init`                                                      |
+| Setup      | `GET /setup/status` · `POST /setup/init` (requires `X-Setup-Token`, throttled 5/10 min/IP) |
 | Auth       | `POST /auth/register` · `POST /auth/login` · `POST /auth/refresh` · `POST /auth/logout` · `POST /auth/logout-all` · `GET /auth/profile` · `GET /auth/sessions` · `PATCH /auth/profile` · `PATCH /auth/password` · `POST /auth/2fa/setup` · `POST /auth/2fa/confirm` · `POST /auth/2fa/verify` · `DELETE /auth/2fa/disable` |
 | Admin      | `GET /admin/users` · `PATCH /admin/users/:id/status` · `PATCH /admin/users/:id/role` · `POST /admin/users/:id/reset-password` · `DELETE /admin/users/:id/2fa` · `GET/POST /admin/users/:id/permissions` · `DELETE /admin/users/:id/permissions/:permId` |
 | Health     | `GET /health`                                                                                 |
+| Info       | `GET /api/info` - protocol-1 capability discovery (`Cache-Control: no-store`) |
 | Servers    | `POST /servers` · `GET /servers` · `GET /servers/:id` · `POST /servers/:id/start` · `POST /servers/:id/stop` · `POST /servers/:id/restart` · `DELETE /servers/:id` · `POST /servers/:id/request-access` · `GET /servers/:id/my-access-request` · `GET /servers/:id/access-requests` · `POST /servers/:id/access-requests/:userId/approve` · `DELETE /servers/:id/access-requests/:userId` |
 | WebSocket  | `system.stats` - host metrics for ADMIN sockets only ([docs/realtime.md](./docs/realtime.md)) |
 

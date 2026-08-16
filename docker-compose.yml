@@ -15,6 +15,7 @@ services:
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:?}
       JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?}
+      SETUP_TOKEN: ${SETUP_TOKEN:-}
       CORS_ORIGIN: ${CORS_ORIGIN:?}
       DOMAIN: ${DOMAIN:?}
       # container-side path (the host socket is mounted at this fixed location)

@@ -12,6 +12,8 @@ import { DOCKERODE } from '../src/docker/docker.constants';
 import { DockerService } from '../src/docker/docker.service';
 import { assertSafeTestDatabase } from './test-database';
 
+const E2E_SETUP_TOKEN = 'e2e-setup-token-9f27c4d1a6b34802';
+
 describe('Authentication flow (PostgreSQL e2e)', () => {
   let sql: postgres.Sql;
   let db: PostgresJsDatabase<typeof schema>;
@@ -21,6 +23,7 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
   let setupRowCreatedBySuite = false;
 
   beforeAll(async () => {
+    process.env.SETUP_TOKEN = E2E_SETUP_TOKEN;
     const databaseUrl = assertSafeTestDatabase();
     sql = postgres(databaseUrl, { max: 8 });
     db = drizzle(sql, { schema });
@@ -72,6 +75,7 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
     };
     const setup = await request(app.getHttpServer())
       .post('/api/setup/init')
+      .set('X-Setup-Token', E2E_SETUP_TOKEN)
       .send(adminCredentials)
       .expect(201);
     setupRowCreatedBySuite = true;
@@ -79,11 +83,10 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
 
     const secondSetup = await request(app.getHttpServer())
       .post('/api/setup/init')
+      .set('X-Setup-Token', E2E_SETUP_TOKEN)
       .send({ ...adminCredentials, username: `${adminCredentials.username}2` })
-      .expect((response) => {
-        expect([403, 409]).toContain(response.status);
-      });
-    expect(secondSetup.status).toBeGreaterThanOrEqual(400);
+      .expect(409);
+    expect(secondSetup.body).toEqual({ error: 'SetupAlreadyComplete' });
 
     const registration = {
       email: `round3-user-${Date.now()}@example.com`,

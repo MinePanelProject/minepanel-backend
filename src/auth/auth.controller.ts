@@ -19,6 +19,12 @@ import type { Request, Response } from 'express';
 import { Public } from 'src/common/decorators/public.decorator';
 import { type PublicUser } from 'src/users/public-user';
 import { AuthService, type AuthTokens, type TwoFactorChallenge } from './auth.service';
+import {
+  clearAuthCookies,
+  setAccessTokenCookie,
+  setAuthCookies,
+  setRefreshTokenCookie,
+} from './auth-cookies';
 import { TwoFactorTokenDto } from './dto/2fa.dto';
 import { EditUserDto } from './dto/editUser.dto';
 import { LoginUserDto } from './dto/login.dto';
@@ -61,7 +67,7 @@ export class AuthController {
       return loginResult;
     }
 
-    this.setAuthCookies(res, loginResult);
+    setAuthCookies(res, loginResult);
     return loginResult.user;
   }
 
@@ -85,19 +91,7 @@ export class AuthController {
     await this.authService.logoutUser(user.id, refreshToken);
 
     // set both tokens as invalid in cookies
-    res.cookie('access_token', '', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 0,
-    });
-
-    res.cookie('refresh_token', '', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 0,
-    });
+    clearAuthCookies(res);
   }
 
   @Public()
@@ -115,20 +109,10 @@ export class AuthController {
 
     const { accessToken, refreshToken } = newTokens;
 
-    res.cookie('access_token', accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 15 * 60 * 1000, // 15 minutes in ms
-    });
+    setAccessTokenCookie(res, accessToken);
 
     if (refreshToken) {
-      res.cookie('refresh_token', refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
-      });
+      setRefreshTokenCookie(res, refreshToken);
     }
   }
 
@@ -142,19 +126,7 @@ export class AuthController {
     await this.authService.logoutAll(user.id);
 
     // set both tokens as invalid in cookies
-    res.cookie('access_token', '', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 0,
-    });
-
-    res.cookie('refresh_token', '', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 0,
-    });
+    clearAuthCookies(res);
   }
 
   @ApiOperation({ summary: 'List own active sessions (refresh tokens)' })
@@ -203,7 +175,7 @@ export class AuthController {
     );
 
     if (result.session) {
-      this.setAuthCookies(res, result.session);
+      setAuthCookies(res, result.session);
     }
 
     return result.user;
@@ -247,7 +219,7 @@ export class AuthController {
           preAuth.temporaryCredentialFingerprint,
         )
       : await this.authService.completeTwoFactorLogin(preAuth.sub, body.token);
-    this.setAuthCookies(res, session);
+    setAuthCookies(res, session);
     return session.user;
   }
 
@@ -258,19 +230,5 @@ export class AuthController {
     const user = req.user as JwtPayload;
 
     return await this.authService.disable2FA(user.id, body.token);
-  }
-  private setAuthCookies(res: Response, tokens: Pick<AuthTokens, 'accessToken' | 'refreshToken'>) {
-    res.cookie('access_token', tokens.accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 15 * 60 * 1000,
-    });
-    res.cookie('refresh_token', tokens.refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
   }
 }

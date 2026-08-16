@@ -1,11 +1,30 @@
 import { Controller, Get, HttpCode, HttpStatus, Inject, Res } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { sql } from 'drizzle-orm';
 import type { Response } from 'express';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
 import { Public } from './common/decorators/public.decorator';
 import { DockerService } from './docker/docker.service';
+
+export const PANEL_PROTOCOL_VERSION = 1;
+
+export interface PanelCapabilities {
+  auth: {
+    partitionedCookies: boolean;
+    pkceAuthorizationCode: boolean;
+  };
+  realtime: {
+    websocketTicket: boolean;
+  };
+}
+
+export interface PanelInfo {
+  name: string;
+  version: string;
+  api: { protocolVersion: number };
+  capabilities: PanelCapabilities;
+}
 
 @ApiTags('api')
 @Controller()
@@ -17,14 +36,29 @@ export class AppController {
   ) {}
 
   @Public()
-  @ApiOperation({ summary: 'Returns `{ name, version }` for frontend listing' })
+  @ApiOperation({
+    summary: 'Panel metadata and capability discovery (protocol 1); name/version are display-only',
+  })
+  @ApiResponse({ status: 200, description: 'Protocol-1 panel info with capability flags' })
   @HttpCode(HttpStatus.OK)
   @Get('info')
-  getInfo() {
-    const name = this.configService.get<string>('PANEL_NAME');
-    const version = this.configService.get<string>('PANEL_VERSION');
+  getInfo(@Res({ passthrough: true }) res: Response): PanelInfo {
+    res.setHeader('Cache-Control', 'no-store');
 
-    return { name, version };
+    return {
+      name: this.configService.get<string>('PANEL_NAME', 'MinePanel'),
+      version: this.configService.get<string>('PANEL_VERSION', '1.0'),
+      api: { protocolVersion: PANEL_PROTOCOL_VERSION },
+      capabilities: {
+        auth: {
+          partitionedCookies: true,
+          pkceAuthorizationCode: false,
+        },
+        realtime: {
+          websocketTicket: false,
+        },
+      },
+    };
   }
 
   @Public()

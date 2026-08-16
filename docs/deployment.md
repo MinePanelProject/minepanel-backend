@@ -25,17 +25,15 @@ Edit `.env` and set the required values:
 | `DATABASE_URL` | `postgresql://minepanel:<url-encoded password>@postgres:5432/minepanel` — use a URL-safe (percent-encoded) password |
 | `JWT_SECRET` | Long random string for JWT signing (min 32 chars; not the example placeholder) |
 | `ENCRYPTION_KEY` | Exactly 32 random bytes encoded as 64 hexadecimal characters. Generate with `openssl rand -hex 32`. |
+| `SETUP_TOKEN` | Required one-time secret for `POST /api/setup/init`; generate a random value and keep it private. If omitted, the backend generates and logs a one-time token once per incomplete process. |
 | `MC_DATA_PATH_HOST` | Absolute host directory for Minecraft data (e.g. `$HOME/.minepanel/mc-data`) — required, mounted read-only into the backend |
-
 Then deploy:
 
 ```bash
 docker compose pull && docker compose up -d
 ```
 
-Caddy automatically provisions an HTTPS certificate. The backend will be available at `https://your-domain`.
-
-> The domain must already resolve to the server IP before running `docker compose up`, otherwise the ACME challenge will fail.
+> The first-admin endpoint requires `X-Setup-Token: $SETUP_TOKEN`. A configured token is never logged or returned. If `SETUP_TOKEN` is omitted, retrieve the generated token from `docker compose logs nestjs` and use it before setup completes; it changes on restart.
 
 ## How it works
 
@@ -61,6 +59,7 @@ Key variables:
 | `DATABASE_URL` | — | **Required.** PostgreSQL connection string. In Compose this is injected verbatim; never constructed inside `docker-compose.yml`. |
 | `JWT_SECRET` | — | **Required.** Min 32 chars recommended. |
 | `ENCRYPTION_KEY` | — | **Required.** Exactly 64 hex characters. |
+| `SETUP_TOKEN` | — | One-time first-admin bootstrap secret; configure it explicitly and send it as `X-Setup-Token`. |
 | `REQUIRE_ADMIN_APPROVAL` | `true` | New users start as PENDING until an admin approves. |
 | `MC_PORT_MIN` / `MC_PORT_MAX` | `25565` / `25665` | Port range for Minecraft server containers. |
 | `MC_DATA_PATH_HOST` | **Required** (wizards default `$HOME/.minepanel/mc-data`) | Host data root mounted read-only into the backend at `/mc-data`; also the bind source for Minecraft containers. |
@@ -185,8 +184,30 @@ The `minecraft-image` service pulls the `itzg/minecraft-server` image and create
 
 ### CORS, secure cookies, and CSRF
 
-Authenticated browser requests use HttpOnly `Secure` cookies. `CORS_ORIGIN` must be the one exact frontend origin (for example `https://minepanel.xyz`), must use `https://` in production, and must never be `*`. CORS permits that frontend to read credentialed API responses; it does **not** prevent a malicious site from submitting a cookie-bearing HTML form.
+Authenticated browser requests use HttpOnly cookies. In production the backend emits `Secure; SameSite=None; Partitioned; Path=/` (CHIPS) for both session cookies; development omits `Secure` and `Partitioned` and uses `SameSite=Lax`. CHIPS is the primary hosted cross-origin mechanism where supported. The PKCE authorization-code fallback is reserved and not implemented, so complete hosted-browser compatibility is not claimed.
+
+`CORS_ORIGIN` must be the one exact frontend origin (for example `https://minepanel.xyz`), must use `https://` in production, and must never be `*`. CORS permits that frontend to read credentialed API responses; it does **not** prevent a malicious site from submitting a cookie-bearing HTML form.
 
 The API therefore rejects every HTTP `POST`, `PUT`, `PATCH`, or `DELETE` request that supplies an `Origin` header other than the canonical `CORS_ORIGIN` (or the API's own origin — same-origin callers such as the Swagger UI at `/docs`), returning `403 {"error":"CsrfOriginForbidden"}`. This protects bodyless form-targetable actions such as session invalidation and server lifecycle operations. Browser requests from the configured frontend must preserve their exact `Origin` header. Origin-less mutating requests remain supported for non-browser automation and CLI clients; do not expose a browser client through a different origin. `OPTIONS` preflights and read-only methods are not subject to this check. Socket.IO/Engine.IO enforces its own matching Origin admission.
+
+### Retained Minecraft data cleanup
+
+Deleting a server is synchronous at the API layer but deliberately retains world data at `$MC_DATA_PATH_HOST/$SERVER_UUID`. Runtime deletion does not remove files. If cleanup is required, use an exact root and UUID; display and verify the target first. This guarded command has no wildcard and warns that deletion is irreversible:
+
+```bash
+: "${MC_DATA_PATH_HOST:?Set MC_DATA_PATH_HOST to an absolute host data root}"
+: "${SERVER_UUID:?Set SERVER_UUID to the exact server UUID}"
+case "$MC_DATA_PATH_HOST" in /*) ;; *) echo "MC_DATA_PATH_HOST must be absolute" >&2; exit 1 ;; esac
+if [[ ! "$SERVER_UUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$ ]]; then
+  echo "SERVER_UUID must be a UUID" >&2
+  exit 1
+fi
+target="$MC_DATA_PATH_HOST/$SERVER_UUID"
+printf 'Deletion target: %s\n' "$target"
+printf '%s\n' 'WARNING: this permanently deletes retained Minecraft data and cannot be undone.'
+read -r -p 'Type DELETE to continue: ' confirmation
+[ "$confirmation" = DELETE ] || { echo "Aborted."; exit 1; }
+rm -rf -- "$target"
+```
 
 > Never share `docker compose config` output: Compose interpolation renders `DATABASE_URL`, `POSTGRES_PASSWORD`, `JWT_SECRET`, and `ENCRYPTION_KEY` values into the expanded configuration. Redact secrets before posting any config output.

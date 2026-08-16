@@ -50,8 +50,8 @@ server  →  verifies refresh token JWT → extracts userId from sub
 server  →  fetches all RefreshTokens for that user from DB
 server  →  bcrypt.compare(cookieToken, each DB hash) to find a match
 server  →  generates new access token
-server  →  if within 24h of expiry → deletes old record, issues new refresh token
-server  →  sets new cookies
+server  →  rotates the refresh token on every successful refresh
+server  →  sets the new cookies
 ```
 
 ### Logout — `POST /auth/logout`
@@ -115,11 +115,14 @@ Logout deletes the specific row for that session. Without DB storage you cannot 
 
 ## Cookie Settings
 
-| Cookie          | maxAge   | httpOnly | secure (prod) | sameSite |
-|-----------------|----------|----------|---------------|----------|
-| `access_token`  | 15 min   | true     | true          | lax      |
-| `refresh_token` | 7 days   | true     | true          | lax      |
+| Cookie          | maxAge   | httpOnly | secure (prod) | sameSite | path | partitioned (prod) |
+|-----------------|----------|----------|---------------|----------|------|--------------------|
+| `access_token`  | 15 min   | true     | true          | none     | `/`  | true |
+| `refresh_token` | 7 days   | true     | true          | none     | `/`  | true |
+
+Production issuance and clearing use the same explicit attributes: `HttpOnly; Secure; SameSite=None; Partitioned; Path=/`. Development uses `HttpOnly; SameSite=Lax; Path=/` and omits `Secure` and `Partitioned`.
 
 `httpOnly: true` — JavaScript cannot read the cookie (XSS protection).
 `secure: true` in production — cookie only sent over HTTPS.
-`sameSite: lax` — cookie sent on same-site requests and top-level navigations.
+`sameSite: none` plus `Partitioned` — CHIPS is the primary hosted cross-origin mechanism on supported browsers.
+The PKCE authorization-code flow with a memory-only bearer access token is the reserved fallback and is not implemented; this backend does not claim complete hosted-browser compatibility.

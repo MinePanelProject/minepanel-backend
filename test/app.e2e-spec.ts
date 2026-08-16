@@ -13,6 +13,16 @@ describe('AppController health (e2e)', () => {
 
   beforeAll(async () => {
     assertSafeTestDatabase();
+    const tx = {
+      execute: jest.fn().mockResolvedValue([]),
+      select: jest.fn(() => ({
+        from: jest.fn(() => ({
+          where: jest.fn(() => ({
+            limit: jest.fn().mockResolvedValue([]),
+          })),
+        })),
+      })),
+    };
     const db = {
       execute: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
       select: jest.fn(() => ({
@@ -20,6 +30,9 @@ describe('AppController health (e2e)', () => {
           where: jest.fn().mockResolvedValue([]),
         })),
       })),
+      transaction: jest.fn(async (callback: (handle: typeof tx) => Promise<unknown>) =>
+        callback(tx),
+      ),
     };
     const docker = { ping: jest.fn().mockResolvedValue(true) };
     const moduleFixture: TestingModule = await Test.createTestingModule({

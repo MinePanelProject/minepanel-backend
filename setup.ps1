@@ -96,6 +96,7 @@ if (-not $skipEnv) {
   $jwtSecret      = New-HexSecret 32
   $pgPassword     = New-HexSecret 24
   $encryptionKey  = New-HexSecret 32
+  $setupToken     = New-HexSecret 24
   $mcDataPathHost = Join-Path $env:USERPROFILE '.minepanel' 'mc-data'
   $timestamp      = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
@@ -112,6 +113,7 @@ DATABASE_URL="postgresql://minepanel:$pgPassword@postgres:5432/minepanel"
 JWT_SECRET=$jwtSecret
 JWT_EXPIRES_IN="15m"
 JWT_REFRESH_EXPIRES_IN="7d"
+SETUP_TOKEN=$setupToken
 
 REQUIRE_ADMIN_APPROVAL=true
 LOGIN_THROTTLE_LIMIT=5
