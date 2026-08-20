@@ -8,6 +8,10 @@ const allowInTypeGuards = [{ allowInTypeGuards: true }];
 
 tester.run("anti-slop/no-runtime-typeof", noRuntimeTypeofRule, {
 	valid: [
+		{
+			filename: "scripts/check-package-scripts.mjs",
+			code: 'if (typeof scripts[name] !== "string") missing.push(name);',
+		},
 		"const value = input;",
 		{
 			code: 'function isString(value: unknown): value is string { return typeof value === "string"; }',
@@ -41,6 +45,14 @@ tester.run("anti-slop/no-runtime-typeof", noRuntimeTypeofRule, {
 		},
 		{
 			code: 'function parseUnknown(value: unknown): unknown { return typeof value === "string" ? value : undefined; }',
+			errors: [error],
+		},
+		{
+			code: 'function parseItems(value: unknown): unknown[] { if (typeof value !== "object" || value === null || !Array.isArray(value)) throw new Error(); return value; }',
+			errors: [error],
+		},
+		{
+			code: 'function decodeRecord(value: unknown): { value: unknown } { if (typeof value !== "object" || value === null) throw new Error(); return value as { value: unknown }; }',
 			errors: [error],
 		},
 		{

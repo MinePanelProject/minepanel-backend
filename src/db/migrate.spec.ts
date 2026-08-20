@@ -44,15 +44,19 @@ describe('runProductionMigrations', () => {
     return query;
   };
 
+  // SAFETY: mockPostgres is the postgres producer; runProductionMigrations consumes this
+  // exact dependency member as its SQL client factory.
+  const postgresDependency = mockPostgres as never;
+  // SAFETY: mockDrizzle is the drizzle producer; runProductionMigrations consumes this exact
+  // dependency member to wrap the lock client.
+  const drizzleDependency = mockDrizzle as never;
+  // SAFETY: mockMigrate is the migration producer; runProductionMigrations consumes this
+  // exact dependency member to apply migrations.
+  const migrateDependency = mockMigrate as never;
   const dependencies: MigrationDependencies = {
-    postgres:
-      /* SAFETY: mockPostgres is the postgres producer; runProductionMigrations consumes this
-      exact dependency member as its SQL client factory. */ mockPostgres as never,
-    drizzle:
-      /* SAFETY: mockDrizzle is the drizzle producer; runProductionMigrations consumes this exact
-      dependency member to wrap the lock client. */ mockDrizzle as never,
-    migrate: /* SAFETY: mockMigrate is the migration producer; runProductionMigrations consumes this
-      exact dependency member to apply migrations. */ mockMigrate as never,
+    postgres: postgresDependency,
+    drizzle: drizzleDependency,
+    migrate: migrateDependency,
   };
 
   const run = (databaseUrl = validUrl, migrationsFolder = realMigrationsFolder) =>

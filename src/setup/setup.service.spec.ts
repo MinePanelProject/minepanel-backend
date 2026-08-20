@@ -44,7 +44,8 @@ describe('SetupService', () => {
   let warnSpy: jest.SpyInstance;
 
   const rowsResult = (rows: SetupStateRow[]) => {
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: Drizzle's select-where query chain is awaited directly by getSetupState and also
+    // exposes limit(); this Promise double supplies both members.
     const result = Promise.resolve(rows) as Promise<SetupStateRow[]> & { limit: jest.Mock };
     result.limit = jest.fn().mockResolvedValue(rows);
     return result;
@@ -73,7 +74,8 @@ describe('SetupService', () => {
       insert: jest.fn((table: typeof users | typeof setupState) => ({
         values: jest.fn((value: SetupInsertValue) => {
           txInsertCalls.push({ table, value });
-          // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+          // SAFETY: Drizzle's insert-values chain resolves after onConflictDoNothing(); this
+          // Promise double supplies that exact terminal member to the transaction fixture.
           const pending = Promise.resolve() as Promise<void> & {
             onConflictDoNothing: jest.Mock;
           };
@@ -145,7 +147,8 @@ describe('SetupService', () => {
 
     const userInserts = txInsertCalls.filter((call) => call.table === users);
     expect(userInserts).toHaveLength(1);
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: The transaction insert double records Drizzle values(); this users-row fixture
+    // exposes the exact email, username, passwordHash, status, and role fields consumed below.
     const inserted = userInserts[0].value as {
       email: string;
       username: string;
@@ -179,11 +182,13 @@ describe('SetupService', () => {
 
     expect(missing).toBeInstanceOf(UnauthorizedException);
     expect(wrong).toBeInstanceOf(UnauthorizedException);
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    expect((wrong as UnauthorizedException).getResponse()).toEqual(
-      // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
-      (missing as UnauthorizedException).getResponse(),
-    );
+    // SAFETY: NestJS UnauthorizedException produces the response payload compared by this test;
+    // getResponse() is the exact member consumed from the wrong-token rejection.
+    const wrongResponse = (wrong as UnauthorizedException).getResponse();
+    // SAFETY: NestJS UnauthorizedException produces the response payload compared by this test;
+    // getResponse() is the exact member consumed from the missing-token rejection.
+    const missingResponse = (missing as UnauthorizedException).getResponse();
+    expect(wrongResponse).toEqual(missingResponse);
     expect(transaction).not.toHaveBeenCalled();
   });
 
@@ -216,11 +221,13 @@ describe('SetupService', () => {
 
     expect(missing).toBeInstanceOf(UnauthorizedException);
     expect(wrong).toBeInstanceOf(UnauthorizedException);
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    expect((wrong as UnauthorizedException).getResponse()).toEqual(
-      // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
-      (missing as UnauthorizedException).getResponse(),
-    );
+    // SAFETY: NestJS UnauthorizedException produces the response payload compared by this test;
+    // getResponse() is the exact member consumed from the wrong-token rejection.
+    const wrongResponse = (wrong as UnauthorizedException).getResponse();
+    // SAFETY: NestJS UnauthorizedException produces the response payload compared by this test;
+    // getResponse() is the exact member consumed from the missing-token rejection.
+    const missingResponse = (missing as UnauthorizedException).getResponse();
+    expect(wrongResponse).toEqual(missingResponse);
     expect(transaction).not.toHaveBeenCalled();
     expect(warnSpy).not.toHaveBeenCalled();
   });
@@ -233,7 +240,8 @@ describe('SetupService', () => {
 
     expect(transaction).toHaveBeenCalledTimes(2);
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: NestJS Logger.warn produces the bootstrap-token message as its first call argument;
+    // the spy captures that exact string before the token-format assertion.
     const logged = warnSpy.mock.calls[0][0] as string;
     const token = /process: ([A-Za-z0-9_-]+) —/.exec(logged)?.[1];
     expect(token).toMatch(/^[A-Za-z0-9_-]{32}$/);

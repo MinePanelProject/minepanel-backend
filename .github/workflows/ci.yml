@@ -29,11 +29,20 @@ jobs:
       - name: Install dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
 
-      - name: Biome check
+      - name: Package-script contract check
+        run: bun scripts/check-package-scripts.mjs
+
+      - name: Biome check (typecheck + anti-slop oxlint + biome)
         run: bun run lint:ci
 
       - name: Build
         run: bun run build
+
+      - name: Anti-slop rule tests
+        run: node --experimental-strip-types --test tools/oxlint/anti-slop/rules/*.test.ts
+
+      - name: Compiled TOTP seam smoke (post-build)
+        run: bun run smoke:totp
 
       - name: Unit tests (in-band)
         run: bun run test:ci

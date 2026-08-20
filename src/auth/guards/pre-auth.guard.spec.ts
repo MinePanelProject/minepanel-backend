@@ -3,16 +3,16 @@ import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 import { PreAuthGuard } from './pre-auth.guard';
 
-// SAFETY: PreAuthGuard only reads request.headers.authorization; the partial request
-// and context doubles cover exactly that surface.
-const makeContext = (authorization?: string) =>
-  ({
-    switchToHttp: () => ({
-      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-      getRequest: () => ({ headers: { authorization } }) as Request,
-    }),
-    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
-  }) as ExecutionContext;
+// SAFETY: PreAuthGuard reads request.headers.authorization through the NestJS HTTP context;
+// these request and context doubles expose exactly that producer boundary.
+const makeContext = (authorization?: string) => {
+  // SAFETY: Express request parsing produces headers.authorization, the exact member
+  // PreAuthGuard reads through switchToHttp().getRequest().
+  const request = { headers: { authorization } } as Request;
+  // SAFETY: NestJS guard execution produces ExecutionContext.switchToHttp().getRequest();
+  // this double returns the request fixture through that exact member chain.
+  return { switchToHttp: () => ({ getRequest: () => request }) } as ExecutionContext;
+};
 
 describe('PreAuthGuard', () => {
   let jwtService: Pick<JwtService, 'verifyAsync'>;

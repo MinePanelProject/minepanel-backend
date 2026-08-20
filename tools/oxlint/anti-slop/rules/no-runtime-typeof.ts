@@ -28,13 +28,102 @@ function functionName(node: RuntimeFunction): string | null {
 	return null;
 }
 
-function containsUnknownType(type: ESTree.TSType): boolean {
-	if (type.type === "TSUnknownKeyword" || type.type === "TSAnyKeyword") return true;
-	if (type.type === "TSParenthesizedType") return containsUnknownType(type.typeAnnotation);
-	if (type.type === "TSUnionType" || type.type === "TSIntersectionType") {
-		return type.types.some(containsUnknownType);
+function containsUnknownSignature(
+	signature:
+		| ESTree.TSIndexSignature
+		| ESTree.TSPropertySignature
+		| ESTree.TSCallSignatureDeclaration
+		| ESTree.TSConstructSignatureDeclaration
+		| ESTree.TSMethodSignature,
+): boolean {
+	switch (signature.type) {
+		case "TSPropertySignature":
+			return (
+				signature.typeAnnotation !== null &&
+				signature.typeAnnotation !== undefined &&
+				containsUnknownType(signature.typeAnnotation.typeAnnotation)
+			);
+		case "TSIndexSignature":
+			return containsUnknownType(signature.typeAnnotation.typeAnnotation);
+		case "TSCallSignatureDeclaration":
+		case "TSConstructSignatureDeclaration":
+		case "TSMethodSignature":
+			return (
+				signature.returnType !== null &&
+				signature.returnType !== undefined &&
+				containsUnknownType(signature.returnType.typeAnnotation)
+			);
+		default:
+			return false;
 	}
-	return false;
+}
+
+function containsUnknownType(
+	type: ESTree.TSType | ESTree.TSOptionalType | ESTree.TSRestType,
+): boolean {
+	if (type.type === "TSOptionalType" || type.type === "TSRestType") {
+		return containsUnknownType(type.typeAnnotation);
+	}
+	switch (type.type) {
+		case "TSUnknownKeyword":
+		case "TSAnyKeyword":
+			return true;
+		case "TSArrayType":
+			return containsUnknownType(type.elementType);
+		case "TSTypeReference":
+			return type.typeArguments?.params.some(containsUnknownType) ?? false;
+		case "TSTypeLiteral":
+			return type.members.some(containsUnknownSignature);
+		case "TSMappedType":
+			return (
+				containsUnknownType(type.constraint) ||
+				(type.nameType !== null && containsUnknownType(type.nameType)) ||
+				(type.typeAnnotation !== null && containsUnknownType(type.typeAnnotation))
+			);
+		case "TSParenthesizedType":
+			return containsUnknownType(type.typeAnnotation);
+		case "TSUnionType":
+		case "TSIntersectionType":
+			return type.types.some(containsUnknownType);
+		case "TSConditionalType":
+			return (
+				containsUnknownType(type.checkType) ||
+				containsUnknownType(type.extendsType) ||
+				containsUnknownType(type.trueType) ||
+				containsUnknownType(type.falseType)
+			);
+		case "TSIndexedAccessType":
+			return containsUnknownType(type.objectType) || containsUnknownType(type.indexType);
+		case "TSTupleType":
+			return type.elementTypes.some(containsUnknownType);
+		case "TSNamedTupleMember":
+			return containsUnknownType(type.elementType);
+		case "TSTypeOperator":
+			return containsUnknownType(type.typeAnnotation);
+		case "TSFunctionType":
+		case "TSConstructorType":
+			return containsUnknownType(type.returnType.typeAnnotation);
+		case "TSImportType":
+			return type.typeArguments?.params.some(containsUnknownType) ?? false;
+		case "TSTypeQuery":
+			return type.typeArguments?.params.some(containsUnknownType) ?? false;
+		case "TSTemplateLiteralType":
+			return type.types.some(containsUnknownType);
+		case "TSTypePredicate":
+			return (
+				type.typeAnnotation !== null &&
+				containsUnknownType(type.typeAnnotation.typeAnnotation)
+			);
+		case "TSInferType":
+			return (
+				(type.typeParameter.constraint !== null &&
+					containsUnknownType(type.typeParameter.constraint)) ||
+				(type.typeParameter.default !== null &&
+					containsUnknownType(type.typeParameter.default))
+			);
+		default:
+			return false;
+	}
 }
 
 function isParserBoundary(node: RuntimeFunction): boolean {
@@ -94,9 +183,11 @@ export const noRuntimeTypeofRule = defineRule({
 		],
 		defaultOptions: [{ allowInTypeGuards: false }],
 	},
-	createOnce(context) {
+	create(context) {
+		const isJavaScriptFile = /\.(?:js|mjs|cjs|jsx)$/u.test(context.filename.replaceAll("\\", "/"));
 		return {
 			UnaryExpression(node) {
+				if (isJavaScriptFile) return;
 				const option = context.options?.[0];
 				const allowInTypeGuards =
 					typeof option === "object" &&

@@ -16,7 +16,7 @@ import { JwtAuthGuard } from '../src/auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../src/auth/guards/permissions.guard';
 import { RolesGuard } from '../src/auth/guards/roles.guard';
 import { CsrfOriginGuard } from '../src/common/guards/csrf-origin.guard';
-import { DbModule, DRIZZLE, type DrizzleDB } from '../src/db/db.module';
+import { DbModule, DRIZZLE } from '../src/db/db.module';
 import * as schema from '../src/db/schema';
 import { DOCKERODE } from '../src/docker/docker.constants';
 import { DockerModule } from '../src/docker/docker.module';
@@ -28,6 +28,8 @@ import { UsersModule } from '../src/users/users.module';
 import { assertSafeTestDatabase } from './test-database';
 
 const E2E_SETUP_TOKEN = 'e2e-setup-token-9f27c4d1a6b34802';
+
+const isStringValue = (value: string | undefined): value is string => typeof value === 'string';
 
 type TestUser = schema.User;
 type TestServer = schema.Server;
@@ -235,7 +237,7 @@ describe('Server authorization (PostgreSQL e2e)', () => {
       ],
     })
       .overrideProvider(DRIZZLE)
-      .useValue(db as DrizzleDB)
+      .useValue(db)
       .overrideProvider(DockerService)
       .useValue(docker)
       .overrideProvider(DOCKERODE)
@@ -565,14 +567,8 @@ describe('Server authorization (PostgreSQL e2e)', () => {
 
       // supertest resolves with the HTTP response even for 409 — distinguish by
       // response status, not allSettled state
-      const created = results.filter(
-        // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-        (r) => r.status === 'fulfilled' && (r.value as { status: number }).status === 201,
-      );
-      const conflicts = results.filter(
-        // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
-        (r) => r.status === 'fulfilled' && (r.value as { status: number }).status === 409,
-      );
+      const created = results.filter((r) => r.status === 'fulfilled' && r.value.status === 201);
+      const conflicts = results.filter((r) => r.status === 'fulfilled' && r.value.status === 409);
       expect(created).toHaveLength(1);
       expect(conflicts).toHaveLength(2);
 
@@ -782,11 +778,15 @@ describe('Server authorization (PostgreSQL e2e)', () => {
     it('allows the canonical Origin on a mutating route', async () => {
       const server = await createServer('REQUEST');
 
-      // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
+      // SAFETY: ConfigModule.forRoot loads CORS_ORIGIN for this e2e app; the canonical string
+      // is sent to SuperTest's Origin header for the same-origin request path.
+      const corsOrigin = process.env.CORS_ORIGIN;
+      if (!isStringValue(corsOrigin)) {
+        throw new Error('CORS_ORIGIN must be configured for this e2e request');
+      }
       const response = await userAgent
         .post(`/api/servers/${server.id}/request-access`)
-        // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-        .set('Origin', process.env.CORS_ORIGIN as string)
+        .set('Origin', corsOrigin)
         .expect(201);
       expect(response.body.status).toBe('PENDING');
     });

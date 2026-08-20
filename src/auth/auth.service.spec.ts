@@ -142,11 +142,18 @@ describe('AuthService', () => {
       updateProfile: jest.fn(),
       updatePassword: jest.fn(),
     };
-    // SAFETY: AuthService consumes only the listed UsersService and JwtService collaborator
-    // methods in these tests; each double adopts its concrete producer prototype.
+    // SAFETY: AuthService consumes these UsersService methods; adopting UsersService.prototype
+    // supplies the concrete producer contract for the test double.
+    const usersServiceDouble = Object.setPrototypeOf(
+      usersService,
+      UsersService.prototype,
+    ) as UsersService;
+    // SAFETY: AuthService consumes these JwtService methods; adopting JwtService.prototype
+    // supplies the concrete producer contract for the test double.
+    const jwtServiceDouble = Object.setPrototypeOf(jwtService, JwtService.prototype) as JwtService;
     service = new AuthService(
-      Object.setPrototypeOf(usersService, UsersService.prototype) as UsersService,
-      Object.setPrototypeOf(jwtService, JwtService.prototype) as JwtService,
+      usersServiceDouble,
+      jwtServiceDouble,
       db,
       Object.assign(new ConfigService(), { get: jest.fn().mockReturnValue('a'.repeat(64)) }),
     );

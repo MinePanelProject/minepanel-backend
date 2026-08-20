@@ -1,6 +1,5 @@
 import { type ExecutionContext, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Request } from 'express';
 import { CsrfOriginGuard } from './csrf-origin.guard';
 
 const makeConfig = (corsOrigin: string): ConfigService =>
@@ -13,35 +12,39 @@ const makeContext = (
   origin: string | string[] | undefined,
   host = 'minepanel.xyz',
   protocol = 'https',
-): ExecutionContextLike =>
-  ({
+): ExecutionContext => {
+  // SAFETY: NestJS request parsing produces method, protocol, headers.origin, headers.host,
+  // and get('host'), the exact request members CsrfOriginGuard reads.
+  const request = {
+    method,
+    protocol,
+    headers: { origin, host },
+    get: (name: string) => (name === 'host' ? host : undefined),
+  } satisfies RequestFixture;
+  // SAFETY: NestJS execution-context parsing produces getType and
+  // switchToHttp().getRequest(), the exact members consumed by CsrfOriginGuard.
+  return asExecutionContext({
     getType: () => 'http',
-    switchToHttp: () => ({
-      getRequest: () =>
-        /* SAFETY: NestJS request parsing produces method, protocol, headers.origin, headers.host,
-        and get('host'), the exact request members CsrfOriginGuard reads. */ ({
-          method,
-          protocol,
-          headers: { origin, host },
-          get: (name: string) => (name === 'host' ? host : undefined),
-        }) as Request,
-    }),
-  }) as ExecutionContextLike;
+    switchToHttp: () => ({ getRequest: () => request }),
+  });
+};
 
-type ExecutionContextLike = ExecutionContext;
+type RequestFixture = {
+  method: string;
+  protocol: string;
+  headers: { origin: string | string[] | undefined; host: string };
+  get: (name: string) => string | undefined;
+};
 type CsrfContextFixture = {
   getType: () => string;
-  switchToHttp: () => never;
-  getClass?: ExecutionContext['getClass'];
-  getHandler?: ExecutionContext['getHandler'];
-  getArgs?: ExecutionContext['getArgs'];
-  getArgByIndex?: ExecutionContext['getArgByIndex'];
-  switchToRpc?: ExecutionContext['switchToRpc'];
-  switchToWs?: ExecutionContext['switchToWs'];
+  switchToHttp: () => { getRequest: () => RequestFixture };
 };
-const asExecutionContext = (fixture: CsrfContextFixture): ExecutionContext =>
-  /* SAFETY: NestJS execution-context parsing produces getType and switchToHttp().getRequest(),
-  the exact members consumed by CsrfOriginGuard. */ fixture as ExecutionContext;
+const asExecutionContext = (fixture: CsrfContextFixture): ExecutionContext => {
+  // SAFETY: NestJS execution-context parsing produces getType and switchToHttp().getRequest(),
+  // the exact members consumed by CsrfOriginGuard.
+  const context = fixture as ExecutionContext;
+  return context;
+};
 const assertForbidden = (call: () => boolean): void => {
   try {
     call();

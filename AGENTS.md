@@ -305,7 +305,24 @@ Use an optional scope only when the change is clearly feature-local, for example
 - Controllers and DTOs use `class-validator`, `class-transformer`, and Swagger decorators. Global validation whitelists, transforms, and rejects extra properties.
 - CI contains separate unit/build, migration, e2e, image, and trusted publish jobs. Preserve the daemon boundary: ordinary PR image tests run degraded without a mounted Docker socket.
 
-## 15. Red Lines
+## 15. Anti-slop and trust-boundary checklist
+
+Repository policy: `docs/engineering/anti-slop.md`. Anti-slop lint rules are
+guardrails, never the reason a design exists. Before completing any lint
+remediation, every agent must verify all of the following:
+
+1. Did any trust boundary change from `unknown` to a typed generic?
+2. Did any runtime guard disappear?
+3. Did runtime reflection appear solely to avoid an assertion?
+4. Did a new production abstraction exist only because tests/lint required it?
+5. Did tests begin mocking the exact integration that needs validation?
+6. Are SAFETY comments describing actual producer + invariant?
+7. Did package scripts/config/files unrelated to the task change?
+8. Would this production code exist without the linter?
+
+If any answer indicates the linter drove the code, fix the code or the lint rule.
+
+## 16. Red Lines
 
 > **Repo-wide:** these prohibitions are grounded in the current codebase and release design.
 

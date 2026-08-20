@@ -580,7 +580,8 @@ describe('ServersService', () => {
     });
 
     it('uses the authenticated owner and never accepts an owner id from the DTO', async () => {
-      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+      // SAFETY: makeDto() supplies the CreateServerDto fields; this test adds ownerId to that
+      // fixture solely to verify the authenticated principal overrides forged ownership.
       const dto = makeDto() as CreateServerDto & { ownerId?: string };
       dto.ownerId = 'forged-owner';
       const creating = makeServer({
@@ -799,10 +800,10 @@ describe('ServersService', () => {
         'RUNNING',
       ]);
       expect(updatedValues.map((value) => value.status)).not.toContain('STOPPED');
-      expect(
-        // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-        (docker as { restartContainer?: jest.Mock }).restartContainer,
-      ).toBeUndefined();
+      // SAFETY: The DockerService double supplies stopContainer and startContainer but no
+      // restartContainer; this structural view checks that absent member.
+      const restartContainer = 'restartContainer' in docker ? docker.restartContainer : undefined;
+      expect(restartContainer).toBeUndefined();
     });
 
     it('moves STOPPING to ERROR when the stop phase is ambiguous', async () => {
@@ -1181,10 +1182,10 @@ describe('ServersService', () => {
       expect(events.slice(0, 5)).toEqual(['rcon:say', 'rcon:save-all', 'stop:15', 'host', 'disk']);
       expect(docker.stopContainer).toHaveBeenCalledWith('container-1', 15);
       expect(updatedValues.map((value) => value.status)).not.toContain('STOPPED');
-      expect(
-        // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-        (docker as { restartContainer?: jest.Mock }).restartContainer,
-      ).toBeUndefined();
+      // SAFETY: The DockerService double supplies stopContainer and startContainer but no
+      // restartContainer; this structural view checks that absent member.
+      const restartContainer = 'restartContainer' in docker ? docker.restartContainer : undefined;
+      expect(restartContainer).toBeUndefined();
     });
   });
   describe('deleteServer', () => {

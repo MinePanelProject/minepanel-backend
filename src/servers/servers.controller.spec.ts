@@ -9,7 +9,8 @@ import type { ServersService } from './servers.service';
 const adminPrincipal: ServerPrincipal = { id: 'authenticated-owner', role: 'ADMIN' };
 
 const makeRequest = (principal: ServerPrincipal = adminPrincipal): Request =>
-  // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+  // SAFETY: NestJS @Req() supplies an Express Request; this fixture exposes the user id,
+  // username, and role members consumed by ServersController.
   ({ user: { id: principal.id, username: 'admin', role: principal.role } }) as Request;
 
 const makePublicServer = (overrides: Partial<PublicServer> = {}): PublicServer => ({
@@ -35,20 +36,20 @@ const makePublicServer = (overrides: Partial<PublicServer> = {}): PublicServer =
   updatedAt: new Date('2026-01-01T00:00:00.000Z'),
   ...overrides,
 });
-const routeStatus = (method: string): number | undefined =>
-  Reflect.getMetadata(
-    '__httpCode__',
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    ServersController.prototype[method as keyof ServersController],
-  );
-const routeRoles = (method: string): string[] | undefined =>
-  // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
-  Reflect.getMetadata('roles', ServersController.prototype[method as keyof ServersController]);
-const routePermission = (method: string): string | undefined =>
+type RouteMethod = 'create' | 'list' | 'get' | 'start' | 'stop' | 'restart' | 'delete';
+
+const routeStatus = (method: RouteMethod): number | undefined =>
+  Reflect.getMetadata('__httpCode__', ServersController.prototype[method]);
+const routeRoles = (method: RouteMethod): string[] | undefined =>
+  // SAFETY: This spec's method literals are ServersController keys; Reflect metadata reads the
+  // exact prototype methods carrying the roles metadata.
+  Reflect.getMetadata('roles', ServersController.prototype[method]);
+const routePermission = (method: RouteMethod): string | undefined =>
   Reflect.getMetadata(
     'requiresPermission',
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    ServersController.prototype[method as keyof ServersController],
+    // SAFETY: This spec's method literals are ServersController keys; Reflect metadata reads
+    // those exact prototype methods carrying the permission metadata.
+    ServersController.prototype[method],
   );
 
 describe('ServersController', () => {
@@ -76,7 +77,8 @@ describe('ServersController', () => {
       restartServer: jest.fn().mockResolvedValue(publicServer),
       deleteServer: jest.fn().mockResolvedValue(undefined),
     };
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: ServersController consumes the listed ServersService methods; this Pick double
+    // supplies the exact collaborator members used by the constructor.
     controller = new ServersController(service as ServersService);
   });
 
@@ -84,7 +86,8 @@ describe('ServersController', () => {
     const dto = { name: 'Survival', ownerId: 'forged-owner' };
     const request = makeRequest();
 
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: NestJS validation normally produces CreateServerDto; this fixture intentionally
+    // adds ownerId to verify the service derives ownership from the authenticated principal.
     await expect(controller.create(dto as never, request)).resolves.toEqual(publicServer);
 
     expect(service.createServer).toHaveBeenCalledWith(dto, adminPrincipal);
@@ -95,10 +98,12 @@ describe('ServersController', () => {
   });
 
   it('returns 401 before calling the service when authenticated context is missing', async () => {
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: NestJS @Req() supplies an Express Request; this empty fixture omits user to exercise
+    // ServersController's UnauthorizedException branch.
     const request = {} as Request;
 
-    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
+    // SAFETY: NestJS validation normally supplies CreateServerDto; this empty body deliberately
+    // reaches the controller's authentication branch before service invocation.
     await expect(controller.create({} as never, request)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
@@ -144,7 +149,10 @@ describe('ServersController', () => {
     ['stop', ['ADMIN', 'MOD']],
     ['restart', ['ADMIN', 'MOD']],
     ['delete', ['ADMIN']],
-  ] satisfies [string, string[]][])('publishes the %s authorization matrix', (method, roles) => {
+  ] satisfies [
+    RouteMethod,
+    string[],
+  ][])('publishes the %s authorization matrix', (method, roles) => {
     expect(routeRoles(method)).toEqual(roles);
   });
 
@@ -156,12 +164,12 @@ describe('ServersController', () => {
     ['restart', 200],
     ['create', 201],
     ['delete', 202],
-  ] satisfies [string, number][])('publishes HTTP %s for the route', (method, status) => {
+  ] satisfies [RouteMethod, number][])('publishes HTTP %s for the route', (method, status) => {
     expect(routeStatus(method)).toBe(status);
   });
 
   it('does not treat a USER role as authorized for mutation metadata', () => {
-    for (const method of ['create', 'start', 'stop', 'restart', 'delete']) {
+    for (const method of ['create', 'start', 'stop', 'restart', 'delete'] as const) {
       expect(routeRoles(method)).not.toContain('USER');
     }
   });
@@ -171,14 +179,14 @@ describe('ServersController', () => {
     ['stop', 'SERVER_LIFECYCLE'],
     ['restart', 'SERVER_LIFECYCLE'],
   ] satisfies [
-    string,
+    RouteMethod,
     string,
   ][])('publishes %s permission metadata as %s', (method, permission) => {
     expect(routePermission(method)).toBe(permission);
   });
 
   it('does not publish permission metadata on non-lifecycle routes', () => {
-    for (const method of ['list', 'get', 'create', 'delete']) {
+    for (const method of ['list', 'get', 'create', 'delete'] as const) {
       expect(routePermission(method)).toBeUndefined();
     }
   });

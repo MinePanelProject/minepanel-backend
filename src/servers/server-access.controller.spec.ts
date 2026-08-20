@@ -46,11 +46,14 @@ describe('ServerAccessController', () => {
   });
 
   it('rejects an unauthenticated request before reaching the service', async () => {
-    // SAFETY: NestJS route parsing produces the id field consumed by requestAccess; this
-    // unauthenticated Request fixture deliberately omits user for the guard rejection branch.
-    await expect(
-      controller.requestAccess({ id: 'server-1' } as never, {} as Request),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    // SAFETY: NestJS route parsing produces the id field consumed by requestAccess.
+    const params = { id: 'server-1' } as never;
+    // SAFETY: Express request parsing supplies a Request object; this unauthenticated fixture
+    // deliberately omits user so ServerAccessController rejects before service access.
+    const request = {} as Request;
+    await expect(controller.requestAccess(params, request)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
     expect(service.requestAccess).not.toHaveBeenCalled();
   });
 

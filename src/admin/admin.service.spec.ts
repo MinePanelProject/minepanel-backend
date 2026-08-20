@@ -28,6 +28,9 @@ import { modPermissions, refreshTokens, type User, users } from 'src/db/schema';
 import type { PublicUser } from 'src/users/public-user';
 import { AdminService } from './admin.service';
 
+const isStringValue = (value: string | null | undefined): value is string =>
+  typeof value === 'string';
+
 const makeUser = (overrides: Partial<User> = {}): User => ({
   id: 'user-1',
   email: 'admin@example.com',
@@ -87,7 +90,8 @@ describe('AdminService', () => {
           where(condition);
           // count query is awaited directly on the where() result; find/list queries
           // call limit()/orderBy() on it, so the chain doubles as a resolved promise
-          // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+          // SAFETY: Drizzle's where() query producer returns a thenable chain; this double supplies
+          // the limit() and orderBy() members consumed by AdminService.
           const chain = Promise.resolve(countRows) as Promise<{ activeAdmins: number }[]> & {
             limit: jest.Mock;
             orderBy: jest.Mock;
@@ -120,7 +124,8 @@ describe('AdminService', () => {
     );
 
     client = { select, update, delete: deleteMock, execute, transaction };
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: AdminService consumes select, update, delete, execute, and transaction; this
+    // Drizzle client double supplies exactly those collaborator members.
     service = new AdminService(client);
   });
 
@@ -298,12 +303,18 @@ describe('AdminService', () => {
       const stored = updatedValues[0];
       expect(stored.tempPasswordHash).toEqual(expect.any(String));
       expect(stored.tempPasswordHash).not.toBe(result.tempPassword);
+      const tempPasswordHash = stored.tempPasswordHash;
+      if (!isStringValue(tempPasswordHash)) {
+        throw new Error('resetPassword did not store a string password hash');
+      }
       await expect(
-        // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-        bcrypt.compare(result.tempPassword, stored.tempPasswordHash as string),
+        // SAFETY: Drizzle update().set() produces tempPasswordHash; this captured row stores the
+        // bcrypt hash passed to compare() below.
+        bcrypt.compare(result.tempPassword, tempPasswordHash),
       ).resolves.toBe(true);
 
-      // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
+      // SAFETY: Drizzle update().set() produces tempPasswordExpiresAt; this captured Date is the
+      // expiry member whose TTL is checked below.
       const expiresAt = stored.tempPasswordExpiresAt as Date;
       const ttl = expiresAt.getTime() - Date.now();
       expect(ttl).toBeGreaterThan(23 * 60 * 60 * 1000);
@@ -418,7 +429,8 @@ describe('AdminService', () => {
         ),
       };
 
-      // SAFETY: The fixture implements the AdminService collaborator surface used by these tests.
+      // SAFETY: AdminService permission tests consume the captured execute and transaction
+      // members; this Drizzle client double supplies that collaborator surface.
       permService = new AdminService(permClient);
     });
 
