@@ -1,5 +1,16 @@
 import { ConsoleLogger, LogLevel } from '@nestjs/common';
 
+type LogMessage =
+  | string
+  | number
+  | boolean
+  | bigint
+  | symbol
+  | null
+  | undefined
+  | Error
+  | readonly LogMessage[]
+  | { readonly [key: string]: LogMessage };
 export class CustomLogger extends ConsoleLogger {
   protected getTimestamp(): string {
     return new Date().toLocaleString('en-GB', {
@@ -15,7 +26,7 @@ export class CustomLogger extends ConsoleLogger {
 
   protected formatMessage(
     logLevel: LogLevel,
-    message: unknown,
+    message: LogMessage,
     pidMessage: string,
     formattedLogLevel: string,
     contextMessage: string,

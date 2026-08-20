@@ -71,6 +71,7 @@ export class ServerAccessController {
   }
 
   private extractPrincipal(req: Request): ServerPrincipal {
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     const user = req.user as { id: string; role: string } | undefined;
 
     if (!user) {

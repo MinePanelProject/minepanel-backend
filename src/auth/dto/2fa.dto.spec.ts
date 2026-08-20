@@ -2,7 +2,7 @@ import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
 import { TwoFactorTokenDto } from './2fa.dto';
 
-const validateToken = (token: unknown) =>
+const validateToken = (token: string) =>
   validateSync(plainToInstance(TwoFactorTokenDto, { token }));
 
 describe('TwoFactorTokenDto', () => {

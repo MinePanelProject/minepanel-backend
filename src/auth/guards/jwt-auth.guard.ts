@@ -6,8 +6,15 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import type { Request } from 'express';
 import { AccessTokenService } from 'src/auth/access-token.service';
 import { IS_PUBLIC_KEY } from 'src/common/decorators/public.decorator';
+
+type GuardedUser = { id: string; username: string; role: string; temporaryAuth?: boolean };
+type GuardedRequest = Request & {
+  cookies: { access_token?: string };
+  user?: GuardedUser;
+};
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -24,8 +31,8 @@ export class JwtAuthGuard implements CanActivate {
 
     if (isPublic) return true;
 
-    const request = context.switchToHttp().getRequest();
-    const token = request.cookies?.access_token as string | undefined;
+    const request = context.switchToHttp().getRequest<GuardedRequest>();
+    const token = request.cookies.access_token;
 
     if (!token) throw new UnauthorizedException();
 
@@ -47,12 +54,15 @@ export class JwtAuthGuard implements CanActivate {
         throw new UnauthorizedException();
       }
 
-      request.user = {
+      const authenticatedUser: GuardedUser = {
         id: principal.id,
         username: principal.username,
         role: principal.role,
-        ...(principal.temporaryAuth ? { temporaryAuth: true } : {}),
       };
+      if (principal.temporaryAuth) {
+        authenticatedUser.temporaryAuth = true;
+      }
+      request.user = authenticatedUser;
     } catch (error) {
       if (error instanceof ForbiddenException) throw error;
       throw new UnauthorizedException();

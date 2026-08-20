@@ -4,6 +4,8 @@ import type { Request } from 'express';
 import { getCanonicalCorsOrigin } from 'src/common/cors-origin';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const isSingleOriginHeader = (value: string | readonly string[] | undefined): value is string =>
+  typeof value === 'string';
 
 // CSRF defense for cookie-authenticated, credentialed-CORS requests.
 //
@@ -41,7 +43,7 @@ export class CsrfOriginGuard implements CanActivate {
     const origin = request.headers.origin;
 
     if (origin !== undefined) {
-      if (typeof origin !== 'string' || !this.isAllowedOrigin(request, origin)) {
+      if (!isSingleOriginHeader(origin) || !this.isAllowedOrigin(request, origin)) {
         throw new ForbiddenException({ error: 'CsrfOriginForbidden' });
       }
     }

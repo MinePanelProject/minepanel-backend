@@ -24,23 +24,26 @@ const sessionCookieOptions = (maxAge: number): SessionCookieOptions =>
       }
     : { httpOnly: true, sameSite: 'lax', path: '/', maxAge };
 
-export const setAccessTokenCookie = (res: Response, accessToken: string): void => {
+export const setAccessTokenCookie = (res: Pick<Response, 'cookie'>, accessToken: string): void => {
   res.cookie('access_token', accessToken, sessionCookieOptions(ACCESS_TOKEN_COOKIE_MAX_AGE_MS));
 };
 
-export const setRefreshTokenCookie = (res: Response, refreshToken: string): void => {
+export const setRefreshTokenCookie = (
+  res: Pick<Response, 'cookie'>,
+  refreshToken: string,
+): void => {
   res.cookie('refresh_token', refreshToken, sessionCookieOptions(REFRESH_TOKEN_COOKIE_MAX_AGE_MS));
 };
 
 export const setAuthCookies = (
-  res: Response,
+  res: Pick<Response, 'cookie'>,
   tokens: Pick<AuthTokens, 'accessToken' | 'refreshToken'>,
 ): void => {
   setAccessTokenCookie(res, tokens.accessToken);
   setRefreshTokenCookie(res, tokens.refreshToken);
 };
 
-export const clearAuthCookies = (res: Response): void => {
+export const clearAuthCookies = (res: Pick<Response, 'cookie'>): void => {
   res.cookie('access_token', '', sessionCookieOptions(0));
   res.cookie('refresh_token', '', sessionCookieOptions(0));
 };

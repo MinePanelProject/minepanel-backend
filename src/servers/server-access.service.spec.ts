@@ -1,3 +1,18 @@
+type AccessRequestProjection = {
+  userId: string;
+  username: string;
+  email: string;
+  status: ServerAccessRow['status'];
+  requestedAt: Date;
+  approvedAt: Date | null;
+};
+
+type ServerAccessMutation = Partial<
+  Pick<ServerAccessRow, 'serverId' | 'userId' | 'status' | 'approvedAt'>
+>;
+
+type SelectRow = ServerRow | ServerAccessRow | UserRow | AccessRequestProjection;
+
 import { NotFoundException } from '@nestjs/common';
 import { type DrizzleDB } from 'src/db/db.module';
 import { serverAccess, servers, users } from 'src/db/schema';
@@ -66,12 +81,12 @@ const makeAccess = (overrides: Partial<ServerAccessRow> = {}): ServerAccessRow =
 
 describe('ServerAccessService', () => {
   let service: ServerAccessService;
-  let selectRows: unknown[][];
+  let selectRows: SelectRow[][];
   let insertReturning: (ServerAccessRow | undefined)[];
   let updateReturning: (ServerAccessRow | undefined)[];
   let deleteReturning: { id: string }[][];
-  let insertedValues: Record<string, unknown>[];
-  let updatedValues: Record<string, unknown>[];
+  let insertedValues: ServerAccessMutation[];
+  let updatedValues: ServerAccessMutation[];
   let db: DrizzleDB;
 
   const mockSelect = () => {
@@ -93,10 +108,10 @@ describe('ServerAccessService', () => {
     insertedValues = [];
     updatedValues = [];
 
-    db = {
+    const dbFixture = {
       select: jest.fn(mockSelect),
       insert: jest.fn(() => ({
-        values: jest.fn((values: Record<string, unknown>) => {
+        values: jest.fn((values: ServerAccessMutation) => {
           insertedValues.push(values);
           const row = insertReturning.shift();
           return {
@@ -107,7 +122,7 @@ describe('ServerAccessService', () => {
         }),
       })),
       update: jest.fn(() => ({
-        set: jest.fn((values: Record<string, unknown>) => {
+        set: jest.fn((values: ServerAccessMutation) => {
           updatedValues.push(values);
           return {
             where: jest.fn(() => ({
@@ -124,7 +139,9 @@ describe('ServerAccessService', () => {
           returning: jest.fn(async () => deleteReturning.shift() ?? []),
         })),
       })),
-    } as unknown as DrizzleDB;
+    };
+    // SAFETY: The fixture implements every DrizzleDB method ServerAccessService calls in this spec.
+    db = dbFixture as never;
 
     service = new ServerAccessService(db);
   });

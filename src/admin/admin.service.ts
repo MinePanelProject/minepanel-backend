@@ -22,6 +22,7 @@ import { type GrantModPermissionDto } from './dto/grant-mod-permission.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 
 type AdminTransaction = Parameters<Parameters<DrizzleDB['transaction']>[0]>[0];
+type AdminDatabase = Pick<DrizzleDB, 'select' | 'update' | 'delete' | 'execute' | 'transaction'>;
 
 // Advisory lock key serializing every role/status transition so the
 // "at least one active admin" invariant can never be raced away.
@@ -30,7 +31,7 @@ const TEMP_PASSWORD_TTL_MS = 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class AdminService {
-  constructor(@Inject(DRIZZLE) private readonly db: DrizzleDB) {}
+  constructor(@Inject(DRIZZLE) private readonly db: AdminDatabase) {}
 
   async listUsers(query: ListUsersQueryDto): Promise<PublicUser[]> {
     const filters: SQL[] = [];

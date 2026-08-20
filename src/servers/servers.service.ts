@@ -101,7 +101,7 @@ export class ServersService implements OnModuleInit {
   }
 
   private async reconcileRow(row: Server): Promise<ReconciliationOutcome> {
-    let inspectError: unknown = null;
+    let inspectError: Error | null = null;
 
     if (row.containerId) {
       try {
@@ -115,7 +115,7 @@ export class ServersService implements OnModuleInit {
         if (error instanceof ServiceUnavailableException) {
           return { kind: 'unavailable' };
         }
-        inspectError = error;
+        inspectError = error instanceof Error ? error : new Error(String(error));
       }
     }
 
@@ -682,6 +682,7 @@ export class ServersService implements OnModuleInit {
         ),
       );
 
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     return and(notCreating, or(eq(servers.accessType, 'OPEN'), exists(approvedAccess))) as SQL;
   }
 

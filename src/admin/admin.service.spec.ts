@@ -1,7 +1,31 @@
+type UserMutation = Partial<User>;
+
+type PermissionRow = typeof modPermissions.$inferSelect;
+
+type PermissionListRow = Pick<PermissionRow, 'id' | 'permission'>;
+
+type PermissionGrantRow = Pick<PermissionRow, 'id' | 'userId' | 'permission' | 'serverId'>;
+
+type IdRow = { id: string };
+
+type PermissionMutation = Partial<PermissionRow>;
+
+type AdminQueryRow =
+  | User
+  | PermissionListRow
+  | PermissionGrantRow
+  | IdRow
+  | { activeAdmins: number };
+
+type AdminTable = typeof users | typeof refreshTokens | typeof modPermissions;
+
+type AdminTransactionResult = PublicUser | PermissionGrantRow;
+
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import type { DrizzleDB } from 'src/db/db.module';
-import { modPermissions, refreshTokens, type User } from 'src/db/schema';
+import type { SQL } from 'drizzle-orm';
+import { modPermissions, refreshTokens, type User, users } from 'src/db/schema';
+import type { PublicUser } from 'src/users/public-user';
 import { AdminService } from './admin.service';
 
 const makeUser = (overrides: Partial<User> = {}): User => ({
@@ -24,25 +48,29 @@ const makeUser = (overrides: Partial<User> = {}): User => ({
   ...overrides,
 });
 
+type AdminClient = {
+  select: jest.Mock;
+  update: jest.Mock;
+  delete: jest.Mock;
+  execute: jest.Mock;
+  transaction: jest.Mock;
+};
+
+type PermissionClient = AdminClient & { insert: jest.Mock };
+
 describe('AdminService', () => {
   let rows: User[];
   let countRows: { activeAdmins: number }[];
   let updatedRows: User[];
-  let client: {
-    select: jest.Mock;
-    update: jest.Mock;
-    delete: jest.Mock;
-    execute: jest.Mock;
-    transaction: jest.Mock;
-  };
+  let client: AdminClient;
   let select: jest.Mock;
   let update: jest.Mock;
   let deleteMock: jest.Mock;
   let execute: jest.Mock;
   let transaction: jest.Mock;
   let where: jest.Mock;
-  let updatedValues: Record<string, unknown>[];
-  let deleteTables: unknown[];
+  let updatedValues: UserMutation[];
+  let deleteTables: AdminTable[];
   let service: AdminService;
 
   beforeEach(() => {
@@ -55,10 +83,11 @@ describe('AdminService', () => {
 
     select = jest.fn(() => ({
       from: jest.fn(() => ({
-        where: jest.fn((condition: unknown) => {
+        where: jest.fn((condition: SQL) => {
           where(condition);
           // count query is awaited directly on the where() result; find/list queries
           // call limit()/orderBy() on it, so the chain doubles as a resolved promise
+          // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
           const chain = Promise.resolve(countRows) as Promise<{ activeAdmins: number }[]> & {
             limit: jest.Mock;
             orderBy: jest.Mock;
@@ -70,7 +99,7 @@ describe('AdminService', () => {
       })),
     }));
     update = jest.fn(() => ({
-      set: jest.fn((values: Record<string, unknown>) => {
+      set: jest.fn((values: UserMutation) => {
         updatedValues.push(values);
         return {
           where: jest.fn(() => ({
@@ -79,17 +108,20 @@ describe('AdminService', () => {
         };
       }),
     }));
-    deleteMock = jest.fn((table: unknown) => {
+    deleteMock = jest.fn((table: AdminTable) => {
       deleteTables.push(table);
       return {
         where: jest.fn(async () => undefined),
       };
     });
     execute = jest.fn(async () => []);
-    transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback(client));
+    transaction = jest.fn(async (callback: (tx: AdminClient) => Promise<AdminTransactionResult>) =>
+      callback(client),
+    );
 
     client = { select, update, delete: deleteMock, execute, transaction };
-    service = new AdminService(client as unknown as DrizzleDB);
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    service = new AdminService(client);
   });
 
   describe('listUsers', () => {
@@ -267,9 +299,11 @@ describe('AdminService', () => {
       expect(stored.tempPasswordHash).toEqual(expect.any(String));
       expect(stored.tempPasswordHash).not.toBe(result.tempPassword);
       await expect(
+        // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
         bcrypt.compare(result.tempPassword, stored.tempPasswordHash as string),
       ).resolves.toBe(true);
 
+      // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
       const expiresAt = stored.tempPasswordExpiresAt as Date;
       const ttl = expiresAt.getTime() - Date.now();
       expect(ttl).toBeGreaterThan(23 * 60 * 60 * 1000);
@@ -320,19 +354,12 @@ describe('AdminService', () => {
 
   describe('mod permissions', () => {
     let permService: AdminService;
-    let permClient: {
-      select: jest.Mock;
-      insert: jest.Mock;
-      update: jest.Mock;
-      delete: jest.Mock;
-      execute: jest.Mock;
-      transaction: jest.Mock;
-    };
-    let permSelectResults: unknown[][];
-    let permInsertReturning: unknown[][];
-    let permUpdatedValues: Record<string, unknown>[];
-    let permDeletedTables: unknown[];
-    let permExecuteCalls: unknown[];
+    let permClient: PermissionClient;
+    let permSelectResults: AdminQueryRow[][];
+    let permInsertReturning: PermissionGrantRow[][];
+    let permUpdatedValues: PermissionMutation[];
+    let permDeletedTables: AdminTable[];
+    let permExecuteCalls: SQL[];
 
     const makeSelect = () => {
       const chain = {
@@ -354,7 +381,7 @@ describe('AdminService', () => {
       permClient = {
         select: jest.fn(makeSelect),
         insert: jest.fn(() => ({
-          values: jest.fn((values: Record<string, unknown>) => {
+          values: jest.fn((_values: PermissionMutation) => {
             const returningRows = permInsertReturning.shift() ?? [];
             return {
               onConflictDoNothing: jest.fn(() => ({
@@ -364,7 +391,7 @@ describe('AdminService', () => {
           }),
         })),
         update: jest.fn(() => ({
-          set: jest.fn((values: Record<string, unknown>) => {
+          set: jest.fn((values: PermissionMutation) => {
             permUpdatedValues.push(values);
             return {
               where: jest.fn(() => ({
@@ -373,7 +400,7 @@ describe('AdminService', () => {
             };
           }),
         })),
-        delete: jest.fn((table: unknown) => {
+        delete: jest.fn((table: AdminTable) => {
           permDeletedTables.push(table);
           return {
             where: jest.fn(() => ({
@@ -381,16 +408,18 @@ describe('AdminService', () => {
             })),
           };
         }),
-        execute: jest.fn(async (...args: unknown[]) => {
-          permExecuteCalls.push(args);
+        execute: jest.fn(async (...args: SQL[]) => {
+          permExecuteCalls.push(...args);
           return [];
         }),
-        transaction: jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
-          callback(permClient),
+        transaction: jest.fn(
+          async (callback: (tx: PermissionClient) => Promise<AdminTransactionResult>) =>
+            callback(permClient),
         ),
       };
 
-      permService = new AdminService(permClient as unknown as DrizzleDB);
+      // SAFETY: The fixture implements the AdminService collaborator surface used by these tests.
+      permService = new AdminService(permClient);
     });
 
     it('lists mod permissions ordered by createdAt and id', async () => {

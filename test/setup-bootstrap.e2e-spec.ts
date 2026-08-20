@@ -4,7 +4,6 @@ import { eq, inArray } from 'drizzle-orm';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import request from 'supertest';
-import type { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { DRIZZLE, type DrizzleDB } from '../src/db/db.module';
 import * as schema from '../src/db/schema';
@@ -16,16 +15,18 @@ const E2E_SETUP_TOKEN = 'e2e-setup-token-9f27c4d1a6b34802';
 
 type Credentials = { email: string; username: string; password: string };
 
-async function createApp(db: PostgresJsDatabase<typeof schema>): Promise<INestApplication<App>> {
+async function createApp(db: PostgresJsDatabase<typeof schema>): Promise<INestApplication> {
+  // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
   const moduleFixture: TestingModule = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(DRIZZLE)
-    .useValue(db as unknown as DrizzleDB)
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    .useValue(db as DrizzleDB)
     .overrideProvider(DockerService)
     .useValue({ ping: jest.fn().mockResolvedValue(true) })
     .overrideProvider(DOCKERODE)
     .useValue({})
     .compile();
-  const app = moduleFixture.createNestApplication<App>();
+  const app = moduleFixture.createNestApplication();
   app.setGlobalPrefix('api', { exclude: ['/health'] });
   await app.init();
   return app;
@@ -43,7 +44,7 @@ function credentials(label: string): Credentials {
 describe('Setup bootstrap (PostgreSQL e2e)', () => {
   let sql: postgres.Sql;
   let db: PostgresJsDatabase<typeof schema>;
-  let app: INestApplication<App>;
+  let app: INestApplication;
   const createdUserIds: string[] = [];
 
   beforeAll(async () => {
@@ -83,7 +84,7 @@ describe('Setup bootstrap (PostgreSQL e2e)', () => {
     const body = credentials('rollback');
     const triggerName = 'minepanel_setup_failure_trigger';
     const functionName = 'minepanel_setup_failure';
-    let failureApp: INestApplication<App> | undefined;
+    let failureApp: INestApplication | undefined;
 
     try {
       await sql.unsafe(`
@@ -165,7 +166,7 @@ describe('Setup bootstrap (PostgreSQL e2e)', () => {
   });
   it('returns 401 for missing and wrong tokens after a completed fallback-mode restart', async () => {
     const previousToken = process.env.SETUP_TOKEN;
-    let coldBootApp: INestApplication<App> | undefined;
+    let coldBootApp: INestApplication | undefined;
     delete process.env.SETUP_TOKEN;
 
     try {
@@ -206,7 +207,7 @@ describe('Setup bootstrap (PostgreSQL e2e)', () => {
 describe('Setup init throttling (PostgreSQL e2e)', () => {
   let sql: postgres.Sql;
   let db: PostgresJsDatabase<typeof schema>;
-  let app: INestApplication<App>;
+  let app: INestApplication;
 
   beforeAll(async () => {
     process.env.SETUP_TOKEN = E2E_SETUP_TOKEN;

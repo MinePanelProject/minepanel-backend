@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { type ExecutionContext, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request } from 'express';
 import { CsrfOriginGuard } from './csrf-origin.guard';
@@ -12,32 +12,45 @@ const makeContext = (
   host = 'minepanel.xyz',
   protocol = 'https',
 ): ExecutionContextLike =>
+  // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
   ({
     getType: () => 'http',
     switchToHttp: () => ({
       getRequest: () =>
+        // SAFETY: CsrfOriginGuard reads only these request fields and get('host');
+        // the partial request double covers that exercised contract.
         ({
           method,
           protocol,
           headers: { origin, host },
           get: (name: string) => (name === 'host' ? host : undefined),
-        }) as unknown as Request,
+          // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+        }) as Request,
     }),
-  }) as unknown as ExecutionContextLike;
+    // SAFETY: CsrfOriginGuard reads only getType and switchToHttp().getRequest() from this context.
+  }) as ExecutionContextLike;
 
-type ExecutionContextLike = {
+type ExecutionContextLike = ExecutionContext;
+type CsrfContextFixture = {
   getType: () => string;
-  switchToHttp: () => {
-    getRequest: () => Request;
-  };
+  switchToHttp: () => never;
+  getClass?: ExecutionContext['getClass'];
+  getHandler?: ExecutionContext['getHandler'];
+  getArgs?: ExecutionContext['getArgs'];
+  getArgByIndex?: ExecutionContext['getArgByIndex'];
+  switchToRpc?: ExecutionContext['switchToRpc'];
+  switchToWs?: ExecutionContext['switchToWs'];
 };
-
+// SAFETY: The fixture supplies getType and switchToHttp, the only context members read here.
+const asExecutionContext = (fixture: CsrfContextFixture): ExecutionContext =>
+  fixture as ExecutionContext;
 const assertForbidden = (call: () => boolean): void => {
   try {
     call();
     throw new Error('expected ForbiddenException');
   } catch (error) {
     expect(error).toBeInstanceOf(ForbiddenException);
+    // SAFETY: assertForbidden is called only with guard branches that throw ForbiddenException.
     const response = (error as ForbiddenException).getResponse();
     expect(response).toEqual({ error: 'CsrfOriginForbidden' });
   }
@@ -98,12 +111,13 @@ describe('CsrfOriginGuard', () => {
   });
 
   it('passes non-HTTP execution contexts (defensive scope boundary)', () => {
-    const wsContext = {
+    // SAFETY: the non-HTTP branch reads only getType and never calls switchToHttp.
+    const wsContext = asExecutionContext({
       getType: () => 'ws',
       switchToHttp: () => {
         throw new Error('should not be called');
       },
-    } as unknown as ExecutionContextLike;
+    });
     expect(guard.canActivate(wsContext)).toBe(true);
   });
 

@@ -4,13 +4,24 @@ import Dockerode from 'dockerode';
 import { DOCKER_REQUEST_TIMEOUT_MS, DOCKERODE } from './docker.constants';
 import { DockerService } from './docker.service';
 
+export type DockerClientOptions = { socketPath: string; timeout: number };
+export type DockerClient = Pick<Dockerode, 'ping'>;
+export type DockerClientFactory = (options: DockerClientOptions) => DockerClient;
+export const DOCKER_CLIENT_FACTORY = Symbol('DOCKER_CLIENT_FACTORY');
+
+const defaultDockerClientFactory: DockerClientFactory = (options) => new Dockerode(options);
+
 @Module({
   providers: [
     DockerService,
     {
+      provide: DOCKER_CLIENT_FACTORY,
+      useValue: defaultDockerClientFactory,
+    },
+    {
       provide: DOCKERODE,
-      inject: [ConfigService],
-      useFactory: async (configService: ConfigService) => {
+      inject: [ConfigService, DOCKER_CLIENT_FACTORY],
+      useFactory: async (configService: ConfigService, createDockerClient: DockerClientFactory) => {
         const socketPath = configService.get('DOCKER_SOCKET', '/var/run/docker.sock');
 
         // docker-modem prefers the ambient DOCKER_HOST env var over socketPath and throws on
@@ -26,9 +37,9 @@ import { DockerService } from './docker.service';
           delete process.env.DOCKER_HOST;
         }
 
-        let docker: Dockerode;
+        let docker: DockerClient;
         try {
-          docker = new Dockerode({ socketPath, timeout: DOCKER_REQUEST_TIMEOUT_MS });
+          docker = createDockerClient({ socketPath, timeout: DOCKER_REQUEST_TIMEOUT_MS });
         } finally {
           if (ambientDockerHost !== undefined) {
             process.env.DOCKER_HOST = ambientDockerHost;

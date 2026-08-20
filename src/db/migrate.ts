@@ -8,11 +8,34 @@ import postgres from 'postgres';
 
 const ADVISORY_LOCK_KEY = 7333;
 
+const isTrimmedNonEmptyString = (value: string): value is string =>
+  typeof value === 'string' && value.length > 0 && value === value.trim();
+
+type JournalEntry = { tag: string };
+type JournalEntryCandidate = { tag?: string } | null;
+type JournalCandidate = { entries?: JournalEntryCandidate[] } | null | undefined;
+
+const isJournalEntry = (entry: JournalEntryCandidate): entry is JournalEntry =>
+  entry !== null && typeof entry.tag === 'string';
+
+const isJournal = (value: JournalCandidate): value is { entries: JournalEntry[] } =>
+  value !== null &&
+  value !== undefined &&
+  Array.isArray(value.entries) &&
+  value.entries.every(isJournalEntry);
+
+export type MigrationDependencies = {
+  postgres: typeof postgres;
+  drizzle: typeof drizzle;
+  migrate: typeof migrate;
+};
+
+const defaultDependencies: MigrationDependencies = { postgres, drizzle, migrate };
+
 function validateDatabaseUrl(url: string): void {
-  if (typeof url !== 'string' || url.length === 0 || url !== url.trim()) {
+  if (!isTrimmedNonEmptyString(url)) {
     throw new Error('Invalid database URL');
   }
-
   let parsed: URL;
 
   try {
@@ -25,10 +48,6 @@ function validateDatabaseUrl(url: string): void {
     throw new Error('Invalid database URL');
   }
 }
-
-type JournalEntry = {
-  tag: string;
-};
 
 async function validateMigrationsFolder(migrationsFolder: string): Promise<void> {
   let folderStat: Stats;
@@ -52,23 +71,21 @@ async function validateMigrationsFolder(migrationsFolder: string): Promise<void>
     throw new Error('Missing migration journal');
   }
 
-  let journal: { entries?: JournalEntry[] };
+  let journal: JournalCandidate;
 
   try {
-    journal = JSON.parse(journalRaw) as { entries?: JournalEntry[] };
+    // SAFETY: JSON.parse is the only source for this value; isJournal validates every
+    // entry's tag before the migration path is constructed.
+    journal = JSON.parse(journalRaw) as JournalCandidate;
   } catch {
     throw new Error('Invalid migration journal');
   }
 
-  if (!Array.isArray(journal.entries)) {
+  if (!isJournal(journal)) {
     throw new Error('Invalid migration journal');
   }
 
   for (const entry of journal.entries) {
-    if (typeof entry?.tag !== 'string') {
-      throw new Error('Invalid migration journal');
-    }
-
     const sqlPath = path.join(migrationsFolder, `${entry.tag}.sql`);
 
     try {
@@ -82,6 +99,7 @@ async function validateMigrationsFolder(migrationsFolder: string): Promise<void>
 export async function runProductionMigrations(
   databaseUrl: string,
   migrationsFolder = path.resolve(process.cwd(), 'drizzle'),
+  dependencies: MigrationDependencies = defaultDependencies,
 ): Promise<void> {
   validateDatabaseUrl(databaseUrl);
   await validateMigrationsFolder(migrationsFolder);
@@ -92,7 +110,7 @@ export async function runProductionMigrations(
   let migrationClient: postgres.Sql | undefined;
 
   try {
-    lockClient = postgres(databaseUrl, {
+    lockClient = dependencies.postgres(databaseUrl, {
       max: 1,
       idle_timeout: 0,
       max_lifetime: null,
@@ -100,9 +118,9 @@ export async function runProductionMigrations(
     await lockClient`SELECT pg_advisory_lock(${ADVISORY_LOCK_KEY})`;
 
     try {
-      migrationClient = postgres(databaseUrl);
-      const db = drizzle(migrationClient);
-      await migrate(db, { migrationsFolder });
+      migrationClient = dependencies.postgres(databaseUrl);
+      const db = dependencies.drizzle(migrationClient);
+      await dependencies.migrate(db, { migrationsFolder });
       Logger.log('Database migrations complete', 'Migrate');
     } finally {
       try {

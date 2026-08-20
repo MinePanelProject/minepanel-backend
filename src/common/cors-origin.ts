@@ -1,11 +1,13 @@
-import type { ConfigService } from '@nestjs/config';
+export type CorsConfig = { get: (key: string, fallback: string) => string | undefined };
 
 const DEFAULT_ORIGIN = 'http://localhost:5173';
 
-export const getCanonicalCorsOrigin = (configService: ConfigService): string => {
-  const raw = configService.get<string>('CORS_ORIGIN', DEFAULT_ORIGIN);
+const isStringValue = (value: string | undefined): value is string => typeof value === 'string';
 
-  if (typeof raw !== 'string') {
+export const getCanonicalCorsOrigin = (configService: CorsConfig): string => {
+  const raw = configService.get('CORS_ORIGIN', DEFAULT_ORIGIN);
+
+  if (!isStringValue(raw)) {
     throw new Error('CORS_ORIGIN must be a string');
   }
 

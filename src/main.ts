@@ -13,14 +13,29 @@ import { runProductionMigrations } from './db/migrate';
 import { SocketIoAdapter } from './gateway/socket-io.adapter';
 import { SocketReservationService } from './gateway/socket-reservation.service';
 
+const isNonEmptyString = (value: string | undefined): value is string =>
+  typeof value === 'string' && value.length > 0;
+
+const isTrimmedNonEmptyString = (value: string | undefined): value is string =>
+  isNonEmptyString(value) && value === value.trim();
+
+const isValidJwtSecret = (value: string | undefined): value is string =>
+  isNonEmptyString(value) && value.length >= 32;
+
+const isEncryptionKey = (value: string | undefined): value is string =>
+  typeof value === 'string' && /^[0-9a-f]{64}$/iu.test(value);
+
+const isDockerSocket = (value: string | undefined): value is string =>
+  isNonEmptyString(value) && value.startsWith('/') && !value.startsWith('tcp://');
+
+type HttpAdapterInstance = {
+  set: (setting: string, value: string | number | boolean) => void;
+};
+
 function runProductionPreflight(configService: ConfigService): void {
   const databaseUrl = configService.get<string>('DATABASE_URL');
 
-  if (
-    typeof databaseUrl !== 'string' ||
-    databaseUrl.length === 0 ||
-    databaseUrl !== databaseUrl.trim()
-  ) {
+  if (!isTrimmedNonEmptyString(databaseUrl)) {
     throw new Error('Missing required environment configuration');
   }
 
@@ -41,34 +56,27 @@ function runProductionPreflight(configService: ConfigService): void {
   const PLACEHOLDER_JWT_SECRET = 'your-jwt-secret-here-make-it-long-and-random';
 
   if (
-    typeof jwtSecret !== 'string' ||
-    jwtSecret.length < 32 ||
+    !isValidJwtSecret(jwtSecret) ||
     jwtSecret === PLACEHOLDER_JWT_SECRET ||
-    typeof jwtExpiresIn !== 'string' ||
-    jwtExpiresIn.length === 0
+    !isNonEmptyString(jwtExpiresIn)
   ) {
     throw new Error('Missing required environment configuration');
   }
 
   const encryptionKey = configService.get<string>('ENCRYPTION_KEY');
 
-  if (typeof encryptionKey !== 'string' || !/^[0-9a-f]{64}$/iu.test(encryptionKey)) {
+  if (!isEncryptionKey(encryptionKey)) {
     throw new Error('Missing required environment configuration');
   }
 
   const dockerSocket = configService.get<string>('DOCKER_SOCKET', '/var/run/docker.sock');
 
-  if (
-    typeof dockerSocket !== 'string' ||
-    dockerSocket.length === 0 ||
-    !dockerSocket.startsWith('/') ||
-    dockerSocket.startsWith('tcp://')
-  ) {
+  if (!isDockerSocket(dockerSocket)) {
     throw new Error('Missing required environment configuration');
   }
 
   const rawCorsOrigin = configService.get<string>('CORS_ORIGIN');
-  if (typeof rawCorsOrigin !== 'string' || rawCorsOrigin.length === 0) {
+  if (!isNonEmptyString(rawCorsOrigin)) {
     // no implicit localhost fallback in production (Compose requires the var)
     throw new Error('Missing required environment configuration');
   }
@@ -102,9 +110,9 @@ async function bootstrap() {
   // the only inbound path is the Caddy reverse proxy on the app network:
   // honor X-Forwarded-* from it so protocol/host detection (CSRF same-origin
   // check) and per-client throttling see the real client
-  const httpAdapter = app.getHttpAdapter().getInstance() as {
-    set: (setting: string, value: unknown) => void;
-  };
+  // SAFETY: Nest's HTTP adapter exposes Express's set(setting, value) method;
+  // bootstrap only uses it to configure trust proxy.
+  const httpAdapter = app.getHttpAdapter().getInstance() as HttpAdapterInstance;
   httpAdapter.set('trust proxy', 1);
 
   app.use(helmet());

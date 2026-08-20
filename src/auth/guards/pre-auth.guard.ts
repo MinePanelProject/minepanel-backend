@@ -1,4 +1,10 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  CanActivate,
+  ExecutionContext,
+  Inject,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 
@@ -8,11 +14,26 @@ type PreAuthPayload = {
   temporaryAuth?: boolean;
   temporaryCredentialFingerprint?: string;
 };
+type PreAuthPayloadCandidate = {
+  sub?: string;
+  type?: string;
+  temporaryAuth?: boolean;
+  temporaryCredentialFingerprint?: string;
+};
 type PreAuthRequest = Request & { preAuth?: PreAuthPayload };
+
+const isPreAuthPayload = (payload: PreAuthPayloadCandidate): payload is PreAuthPayload =>
+  payload.type === 'pre-auth' &&
+  typeof payload.sub === 'string' &&
+  payload.sub.trim().length > 0 &&
+  (payload.temporaryAuth === undefined || payload.temporaryAuth === true) &&
+  (payload.temporaryAuth !== true ||
+    /^[\da-f]{64}$/i.test(payload.temporaryCredentialFingerprint ?? '')) &&
+  (payload.temporaryAuth === true || payload.temporaryCredentialFingerprint === undefined);
 
 @Injectable()
 export class PreAuthGuard implements CanActivate {
-  constructor(private readonly jwtService: JwtService) {}
+  constructor(@Inject(JwtService) private readonly jwtService: JwtService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<PreAuthRequest>();
@@ -31,16 +52,8 @@ export class PreAuthGuard implements CanActivate {
     const bearerToken = authorizationParts[1];
 
     try {
-      const payload = await this.jwtService.verifyAsync<PreAuthPayload>(bearerToken);
-      if (
-        payload.type !== 'pre-auth' ||
-        typeof payload.sub !== 'string' ||
-        payload.sub.trim().length === 0 ||
-        (payload.temporaryAuth !== undefined && payload.temporaryAuth !== true) ||
-        (payload.temporaryAuth === true &&
-          !/^[\da-f]{64}$/i.test(payload.temporaryCredentialFingerprint ?? '')) ||
-        (payload.temporaryAuth !== true && payload.temporaryCredentialFingerprint !== undefined)
-      ) {
+      const payload = await this.jwtService.verifyAsync<PreAuthPayloadCandidate>(bearerToken);
+      if (!isPreAuthPayload(payload)) {
         throw new UnauthorizedException();
       }
 

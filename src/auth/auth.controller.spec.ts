@@ -4,7 +4,7 @@ import { AuthController } from './auth.controller';
 import type { AuthService } from './auth.service';
 import type { PreAuthRequest } from './guards/pre-auth.guard';
 
-jest.mock('./auth.service', () => ({ AuthService: class AuthService {} }));
+type CookieResponse = Pick<Response, 'cookie'>;
 
 const publicUser: PublicUser = {
   id: 'user-1',
@@ -24,7 +24,7 @@ const publicUser: PublicUser = {
 describe('AuthController', () => {
   let authService: Pick<AuthService, 'completeTwoFactorLogin' | 'loginUser'>;
   let controller: AuthController;
-  let response: Pick<Response, 'cookie'>;
+  let response: CookieResponse;
 
   beforeEach(() => {
     authService = {
@@ -39,15 +39,16 @@ describe('AuthController', () => {
         refreshToken: 'refresh-token',
       }),
     };
+    // SAFETY: the controller methods under test call only loginUser and completeTwoFactorLogin;
+    // this Pick is the complete exercised collaborator surface.
+    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
     controller = new AuthController(authService as AuthService);
+    // SAFETY: cookie helpers only call response.cookie, which this test double provides.
     response = { cookie: jest.fn() };
   });
 
   it('sets raw tokens only in HttpOnly cookies and returns the public user', async () => {
-    const result = await controller.login(
-      { identifier: 'player', password: 'password' },
-      response as Response,
-    );
+    const result = await controller.login({ identifier: 'player', password: 'password' }, response);
 
     expect(result).toEqual(publicUser);
     expect(result).not.toHaveProperty('accessToken');
@@ -65,10 +66,13 @@ describe('AuthController', () => {
   });
 
   it('completes two-factor login with HttpOnly cookies and a public user response', async () => {
+    // SAFETY: verify2FA reads only preAuth.sub, preAuth.type, and response.cookie;
+    // the partial request and response doubles cover those members.
     const result = await controller.verify2FA(
+      // SAFETY: verify2FA reads only preAuth.sub and preAuth.type from this partial request.
       { preAuth: { sub: 'user-1', type: 'pre-auth' } } as PreAuthRequest,
       { token: '123456' },
-      response as Response,
+      response,
     );
 
     expect(authService.completeTwoFactorLogin).toHaveBeenCalledWith('user-1', '123456');
@@ -97,7 +101,7 @@ describe('AuthController', () => {
       .mockResolvedValue({ requiresTwoFactor: true, preAuthToken: 'pre-auth-token' });
 
     await expect(
-      controller.login({ identifier: 'player', password: 'password' }, response as Response),
+      controller.login({ identifier: 'player', password: 'password' }, response),
     ).resolves.toEqual({ requiresTwoFactor: true, preAuthToken: 'pre-auth-token' });
     expect(response.cookie).not.toHaveBeenCalled();
   });

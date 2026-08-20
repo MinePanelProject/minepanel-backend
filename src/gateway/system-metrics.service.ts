@@ -8,7 +8,7 @@ export type SystemStats = {
   cpuCount: number;
 };
 
-const isSafeNonNegativeInteger = (value: unknown): value is number =>
+const isSafeNonNegativeInteger = (value: number | null | undefined): value is number =>
   typeof value === 'number' &&
   Number.isFinite(value) &&
   Number.isInteger(value) &&

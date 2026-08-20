@@ -1,7 +1,6 @@
 import { HttpStatus } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, type TestingModule } from '@nestjs/testing';
-import type { Response } from 'express';
 import { DRIZZLE } from 'src/db/db.module';
 import { AppController } from './app.controller';
 import { DockerService } from './docker/docker.service';
@@ -35,7 +34,8 @@ describe('AppController', () => {
       if (key === 'PANEL_VERSION') return '1.0.0';
       return defaultValue;
     });
-    const res = { setHeader: jest.fn() } as unknown as Response;
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    const res = { setHeader: jest.fn() };
 
     expect(controller.getInfo(res)).toEqual({
       name: 'MinePanel',
@@ -56,7 +56,8 @@ describe('AppController', () => {
 
   it('falls back to display defaults when panel name and version are unset', () => {
     getConfig.mockImplementation((_key: string, defaultValue?: string) => defaultValue);
-    const res = { setHeader: jest.fn() } as unknown as Response;
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    const res = { setHeader: jest.fn() };
 
     const info = controller.getInfo(res);
 
@@ -69,7 +70,8 @@ describe('AppController', () => {
     getConfig.mockReturnValue('1.0');
     executeDb.mockResolvedValue(undefined);
     pingDocker.mockResolvedValue(true);
-    const res = { status: jest.fn().mockReturnThis() } as unknown as Response;
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    const res = { status: jest.fn().mockReturnThis() };
 
     await expect(controller.getHealth(res)).resolves.toEqual({
       status: 'ok',
@@ -84,7 +86,8 @@ describe('AppController', () => {
     getConfig.mockReturnValue('1.0');
     executeDb.mockRejectedValue(new Error('db down'));
     pingDocker.mockResolvedValue(true);
-    const res = { status: jest.fn().mockReturnThis() } as unknown as Response;
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    const res = { status: jest.fn().mockReturnThis() };
 
     await expect(controller.getHealth(res)).resolves.toEqual({
       status: 'degraded',
@@ -99,7 +102,8 @@ describe('AppController', () => {
     getConfig.mockReturnValue('1.0');
     executeDb.mockResolvedValue(undefined);
     pingDocker.mockResolvedValue(false);
-    const res = { status: jest.fn().mockReturnThis() } as unknown as Response;
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    const res = { status: jest.fn().mockReturnThis() };
 
     await expect(controller.getHealth(res)).resolves.toEqual({
       status: 'degraded',

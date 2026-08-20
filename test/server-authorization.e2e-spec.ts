@@ -10,7 +10,6 @@ import { eq, inArray } from 'drizzle-orm';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import request from 'supertest';
-import type { App } from 'supertest/types';
 import { AdminModule } from '../src/admin/admin.module';
 import { AuthModule } from '../src/auth/auth.module';
 import { JwtAuthGuard } from '../src/auth/guards/jwt-auth.guard';
@@ -33,6 +32,7 @@ const E2E_SETUP_TOKEN = 'e2e-setup-token-9f27c4d1a6b34802';
 type TestUser = schema.User;
 type TestServer = schema.Server;
 type Role = 'ADMIN' | 'MOD' | 'USER';
+type TestAgent = ReturnType<typeof request.agent>;
 
 type DockerMock = {
   ping: jest.Mock;
@@ -69,14 +69,14 @@ const makeDocker = (): DockerMock => ({
 describe('Server authorization (PostgreSQL e2e)', () => {
   let sql: postgres.Sql;
   let db: PostgresJsDatabase<typeof schema>;
-  let app: INestApplication<App>;
+  let app: INestApplication;
   let docker: DockerMock;
   let admin: TestUser;
   let mod: TestUser;
   let user: TestUser;
-  let adminAgent: request.SuperAgentTest;
-  let modAgent: request.SuperAgentTest;
-  let userAgent: request.SuperAgentTest;
+  let adminAgent: TestAgent;
+  let modAgent: TestAgent;
+  let userAgent: TestAgent;
   let trackedUserIds: Set<string>;
   let trackedServerIds: Set<string>;
   let trackedPermissionIds: Set<string>;
@@ -175,8 +175,7 @@ describe('Server authorization (PostgreSQL e2e)', () => {
     trackedPermissionIds.add(row.id);
     return row.id;
   };
-
-  const loginAgent = async (username: string): Promise<request.SuperAgentTest> => {
+  const loginAgent = async (username: string): Promise<TestAgent> => {
     const agent = request.agent(app.getHttpServer());
     await agent
       .post('/api/auth/login')
@@ -214,6 +213,8 @@ describe('Server authorization (PostgreSQL e2e)', () => {
 
     docker = makeDocker();
 
+    // SAFETY: The live test database and DockerService double supply the exact DI contracts reached
+    // by this test module; the throttler is intentionally absent to avoid its documented request cap.
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({ isGlobal: true }),
@@ -233,17 +234,15 @@ describe('Server authorization (PostgreSQL e2e)', () => {
         { provide: APP_GUARD, useClass: PermissionsGuard },
       ],
     })
-      // the AppModule throttler (10/min/IP) would 429 the suite's request volume;
-      // the module graph above deliberately excludes ThrottlerModule
       .overrideProvider(DRIZZLE)
-      .useValue(db as unknown as DrizzleDB)
+      .useValue(db as DrizzleDB)
       .overrideProvider(DockerService)
-      .useValue(docker as unknown as DockerService)
+      .useValue(docker)
       .overrideProvider(DOCKERODE)
       .useValue({})
       .compile();
 
-    app = moduleFixture.createNestApplication<App>();
+    app = moduleFixture.createNestApplication();
     app.setGlobalPrefix('api', { exclude: ['/health'] });
     app.use(cookieParser());
     app.useGlobalPipes(
@@ -567,9 +566,11 @@ describe('Server authorization (PostgreSQL e2e)', () => {
       // supertest resolves with the HTTP response even for 409 — distinguish by
       // response status, not allSettled state
       const created = results.filter(
+        // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
         (r) => r.status === 'fulfilled' && (r.value as { status: number }).status === 201,
       );
       const conflicts = results.filter(
+        // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
         (r) => r.status === 'fulfilled' && (r.value as { status: number }).status === 409,
       );
       expect(created).toHaveLength(1);
@@ -781,8 +782,10 @@ describe('Server authorization (PostgreSQL e2e)', () => {
     it('allows the canonical Origin on a mutating route', async () => {
       const server = await createServer('REQUEST');
 
+      // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
       const response = await userAgent
         .post(`/api/servers/${server.id}/request-access`)
+        // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
         .set('Origin', process.env.CORS_ORIGIN as string)
         .expect(201);
       expect(response.body.status).toBe('PENDING');

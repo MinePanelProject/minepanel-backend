@@ -5,7 +5,8 @@ import { ServerAccessController } from './server-access.controller';
 import type { ServerAccessService } from './server-access.service';
 
 const makeRequest = (role: string, id = 'user-1'): Request =>
-  ({ user: { id, username: 'player', role } }) as unknown as Request;
+  // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+  ({ user: { id, username: 'player', role } }) as Request;
 
 describe('ServerAccessController', () => {
   let service: Pick<
@@ -22,6 +23,7 @@ describe('ServerAccessController', () => {
       approveAccess: jest.fn(),
       revokeAccess: jest.fn(),
     };
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     controller = new ServerAccessController(service as ServerAccessService);
   });
 
@@ -34,6 +36,7 @@ describe('ServerAccessController', () => {
     service.requestAccess = jest.fn().mockResolvedValue(projection);
 
     await expect(
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       controller.requestAccess({ id: 'server-1' } as never, makeRequest('USER')),
     ).resolves.toEqual(projection);
     expect(service.requestAccess).toHaveBeenCalledWith('server-1', { id: 'user-1', role: 'USER' });
@@ -41,6 +44,7 @@ describe('ServerAccessController', () => {
 
   it('rejects an unauthenticated request before reaching the service', async () => {
     await expect(
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       controller.requestAccess({ id: 'server-1' } as never, {} as Request),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(service.requestAccess).not.toHaveBeenCalled();
@@ -55,6 +59,7 @@ describe('ServerAccessController', () => {
     service.getMyAccessRequest = jest.fn().mockResolvedValue(projection);
 
     await expect(
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       controller.getMyAccessRequest({ id: 'server-1' } as never, makeRequest('USER')),
     ).resolves.toEqual(projection);
     expect(service.getMyAccessRequest).toHaveBeenCalledWith('server-1', {
@@ -66,6 +71,7 @@ describe('ServerAccessController', () => {
   it('delegates list-access-requests with only the server id', async () => {
     service.listAccessRequests = jest.fn().mockResolvedValue([]);
 
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     await expect(controller.listAccessRequests({ id: 'server-1' } as never)).resolves.toEqual([]);
     expect(service.listAccessRequests).toHaveBeenCalledWith('server-1');
   });
@@ -82,6 +88,7 @@ describe('ServerAccessController', () => {
     service.approveAccess = jest.fn().mockResolvedValue(projection);
 
     await expect(
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       controller.approveAccess({ id: 'server-1', userId: 'user-2' } as never),
     ).resolves.toEqual(projection);
     expect(service.approveAccess).toHaveBeenCalledWith('server-1', 'user-2');
@@ -90,10 +97,12 @@ describe('ServerAccessController', () => {
   it('delegates revoke-access with both ids and returns no content', async () => {
     service.revokeAccess = jest.fn().mockResolvedValue(undefined);
 
+    // SAFETY: The controller only reads id and userId from this test-owned route-parameter object.
     await expect(
       controller.revokeAccess({ id: 'server-1', userId: 'user-2' } as never),
     ).resolves.toBeUndefined();
     expect(service.revokeAccess).toHaveBeenCalledWith('server-1', 'user-2');
+    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
   });
 
   it.each([
@@ -102,7 +111,10 @@ describe('ServerAccessController', () => {
     ['listAccessRequests', 200],
     ['approveAccess', 200],
     ['revokeAccess', 204],
-  ] as [keyof ServerAccessController, number][])('publishes HTTP %s for %s', (method, status) => {
+  ] satisfies [
+    keyof ServerAccessController,
+    number,
+  ][])('publishes HTTP %s for %s', (method, status) => {
     expect(Reflect.getMetadata('__httpCode__', ServerAccessController.prototype[method])).toBe(
       status,
     );

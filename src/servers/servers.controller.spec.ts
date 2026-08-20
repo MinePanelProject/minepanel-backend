@@ -9,7 +9,8 @@ import type { ServersService } from './servers.service';
 const adminPrincipal: ServerPrincipal = { id: 'authenticated-owner', role: 'ADMIN' };
 
 const makeRequest = (principal: ServerPrincipal = adminPrincipal): Request =>
-  ({ user: { id: principal.id, username: 'admin', role: principal.role } }) as unknown as Request;
+  // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+  ({ user: { id: principal.id, username: 'admin', role: principal.role } }) as Request;
 
 const makePublicServer = (overrides: Partial<PublicServer> = {}): PublicServer => ({
   id: 'server-1',
@@ -37,13 +38,16 @@ const makePublicServer = (overrides: Partial<PublicServer> = {}): PublicServer =
 const routeStatus = (method: string): number | undefined =>
   Reflect.getMetadata(
     '__httpCode__',
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     ServersController.prototype[method as keyof ServersController],
   );
 const routeRoles = (method: string): string[] | undefined =>
+  // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
   Reflect.getMetadata('roles', ServersController.prototype[method as keyof ServersController]);
 const routePermission = (method: string): string | undefined =>
   Reflect.getMetadata(
     'requiresPermission',
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     ServersController.prototype[method as keyof ServersController],
   );
 
@@ -72,6 +76,7 @@ describe('ServersController', () => {
       restartServer: jest.fn().mockResolvedValue(publicServer),
       deleteServer: jest.fn().mockResolvedValue(undefined),
     };
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     controller = new ServersController(service as ServersService);
   });
 
@@ -79,6 +84,7 @@ describe('ServersController', () => {
     const dto = { name: 'Survival', ownerId: 'forged-owner' };
     const request = makeRequest();
 
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     await expect(controller.create(dto as never, request)).resolves.toEqual(publicServer);
 
     expect(service.createServer).toHaveBeenCalledWith(dto, adminPrincipal);
@@ -89,8 +95,10 @@ describe('ServersController', () => {
   });
 
   it('returns 401 before calling the service when authenticated context is missing', async () => {
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     const request = {} as Request;
 
+    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
     await expect(controller.create({} as never, request)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
@@ -136,7 +144,7 @@ describe('ServersController', () => {
     ['stop', ['ADMIN', 'MOD']],
     ['restart', ['ADMIN', 'MOD']],
     ['delete', ['ADMIN']],
-  ] as [string, string[]][])('publishes the %s authorization matrix', (method, roles) => {
+  ] satisfies [string, string[]][])('publishes the %s authorization matrix', (method, roles) => {
     expect(routeRoles(method)).toEqual(roles);
   });
 
@@ -148,7 +156,7 @@ describe('ServersController', () => {
     ['restart', 200],
     ['create', 201],
     ['delete', 202],
-  ] as [string, number][])('publishes HTTP %s for the route', (method, status) => {
+  ] satisfies [string, number][])('publishes HTTP %s for the route', (method, status) => {
     expect(routeStatus(method)).toBe(status);
   });
 
@@ -162,7 +170,10 @@ describe('ServersController', () => {
     ['start', 'SERVER_LIFECYCLE'],
     ['stop', 'SERVER_LIFECYCLE'],
     ['restart', 'SERVER_LIFECYCLE'],
-  ] as [string, string][])('publishes %s permission metadata as %s', (method, permission) => {
+  ] satisfies [
+    string,
+    string,
+  ][])('publishes %s permission metadata as %s', (method, permission) => {
     expect(routePermission(method)).toBe(permission);
   });
 

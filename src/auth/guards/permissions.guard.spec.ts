@@ -1,7 +1,34 @@
 import { inspect } from 'node:util';
-import { ExecutionContext, ForbiddenException, Reflector } from '@nestjs/common';
+import { type ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import type { SQL } from 'drizzle-orm';
 import { PermissionsGuard } from './permissions.guard';
 
+type PermissionsContextFixture = {
+  getHandler: () => void;
+  getClass: () => void;
+  switchToHttp: () => { getRequest: () => PermissionsRequest };
+  request?: PermissionsRequest;
+};
+// SAFETY: The fixture supplies every execution-context member consumed by PermissionsGuard.
+const asExecutionContext = (fixture: PermissionsContextFixture): ExecutionContext =>
+  fixture as ExecutionContext;
+type PermissionConfig = { global?: boolean; scopedServerId?: string } | Error | null;
+type PermissionsRequest = {
+  user?: { id: string; role: string };
+  params: Record<string, string>;
+};
+
+const isScopedConfig = (
+  value: PermissionConfig,
+): value is { global?: boolean; scopedServerId: string } =>
+  value !== null && !(value instanceof Error) && typeof value.scopedServerId === 'string';
+type MockDatabase = {
+  select: jest.Mock;
+  from: jest.Mock;
+  where: jest.Mock;
+  limit: jest.Mock;
+};
 const makeContext = ({
   role,
   params,
@@ -9,18 +36,21 @@ const makeContext = ({
   role?: string;
   params?: Record<string, string>;
 }): ExecutionContext => {
-  const request = {
+  const request: PermissionsRequest = {
     user: role ? { id: 'user-1', role } : undefined,
     params: params ?? {},
   };
-  return {
+  // SAFETY: PermissionsGuard only calls getHandler, getClass, and switchToHttp().getRequest();
+  // request is exposed for focused assertions.
+  return asExecutionContext({
     getHandler: () => undefined,
     getClass: () => undefined,
     switchToHttp: () => ({ getRequest: () => request }),
-  } as never;
+    request,
+  });
 };
 
-const makeDb = (cfg: { global?: boolean; scopedServerId?: string } | Error | null) => {
+const makeDb = (cfg: PermissionConfig): MockDatabase => {
   let matched = false;
   const limit = jest.fn().mockImplementation(async () => {
     if (cfg instanceof Error) throw cfg;
@@ -35,18 +65,18 @@ const makeDb = (cfg: { global?: boolean; scopedServerId?: string } | Error | nul
       },
     ];
   });
-  const where = jest.fn((conditions: unknown) => {
+  const where = jest.fn((conditions: SQL) => {
     // behavioral: the mock "holds" either a global grant, a grant scoped to one
     // server, or nothing; match only when the query's conditions cover it
     const text = inspect(conditions, { depth: 30, maxArrayLength: 300 });
     const hasGlobalClause = text.includes('is null');
-    const hasRequestedServer =
-      cfg === null || cfg instanceof Error ? false : text.includes(`'${cfg.scopedServerId}'`);
+    const hasRequestedServer = isScopedConfig(cfg)
+      ? text.includes(`'${cfg.scopedServerId}'`)
+      : false;
     matched =
       cfg === null || cfg instanceof Error
         ? false
-        : (cfg.global === true && hasGlobalClause) ||
-          (typeof cfg.scopedServerId === 'string' && hasRequestedServer);
+        : (cfg.global === true && hasGlobalClause) || (isScopedConfig(cfg) && hasRequestedServer);
     return { limit };
   });
   const from = jest.fn(() => ({ where }));
@@ -59,13 +89,22 @@ describe('PermissionsGuard', () => {
   let guard: PermissionsGuard;
 
   beforeEach(() => {
+    // SAFETY: PermissionsGuard only calls reflector.getAllAndOverride, which this double provides.
     reflector = { getAllAndOverride: jest.fn() };
   });
+
+  const makeGuard = (db: MockDatabase): PermissionsGuard => {
+    // SAFETY: this test double provides getAllAndOverride and adopts Reflector's prototype.
+    return new PermissionsGuard(
+      Object.setPrototypeOf(reflector, Reflector.prototype) as Reflector,
+      db,
+    );
+  };
 
   it('passes through routes with no @RequiresPermission metadata', async () => {
     reflector.getAllAndOverride = jest.fn().mockReturnValue(undefined);
     const db = makeDb(null);
-    guard = new PermissionsGuard(reflector as Reflector, db as never);
+    guard = makeGuard(db);
 
     await expect(guard.canActivate(makeContext({ role: 'USER' }))).resolves.toBe(true);
     expect(db.select).not.toHaveBeenCalled();
@@ -74,7 +113,7 @@ describe('PermissionsGuard', () => {
   it('rejects a request with no authenticated principal', async () => {
     reflector.getAllAndOverride = jest.fn().mockReturnValue('SERVER_LIFECYCLE');
     const db = makeDb(null);
-    guard = new PermissionsGuard(reflector as Reflector, db as never);
+    guard = makeGuard(db);
 
     await expect(guard.canActivate(makeContext({}))).rejects.toBeInstanceOf(ForbiddenException);
     expect(db.select).not.toHaveBeenCalled();
@@ -83,7 +122,7 @@ describe('PermissionsGuard', () => {
   it('allows ADMIN without querying the database', async () => {
     reflector.getAllAndOverride = jest.fn().mockReturnValue('SERVER_LIFECYCLE');
     const db = makeDb(null);
-    guard = new PermissionsGuard(reflector as Reflector, db as never);
+    guard = makeGuard(db);
 
     await expect(
       guard.canActivate(makeContext({ role: 'ADMIN', params: { id: 'server-1' } })),
@@ -94,7 +133,7 @@ describe('PermissionsGuard', () => {
   it('rejects a USER role before any database query', async () => {
     reflector.getAllAndOverride = jest.fn().mockReturnValue('SERVER_LIFECYCLE');
     const db = makeDb(null);
-    guard = new PermissionsGuard(reflector as Reflector, db as never);
+    guard = makeGuard(db);
 
     await expect(
       guard.canActivate(makeContext({ role: 'USER', params: { id: 'server-1' } })),
@@ -105,7 +144,7 @@ describe('PermissionsGuard', () => {
   it('allows a MOD with a global permission and no scoped route id', async () => {
     reflector.getAllAndOverride = jest.fn().mockReturnValue('SERVER_LIFECYCLE');
     const db = makeDb({ global: true });
-    guard = new PermissionsGuard(reflector as Reflector, db as never);
+    guard = makeGuard(db);
 
     await expect(guard.canActivate(makeContext({ role: 'MOD' }))).resolves.toBe(true);
     expect(db.where).toHaveBeenCalled();
@@ -114,7 +153,7 @@ describe('PermissionsGuard', () => {
   it('allows a MOD with a scoped permission on the matching route id', async () => {
     reflector.getAllAndOverride = jest.fn().mockReturnValue('SERVER_LIFECYCLE');
     const db = makeDb({ scopedServerId: 'server-1' });
-    guard = new PermissionsGuard(reflector as Reflector, db as never);
+    guard = makeGuard(db);
 
     await expect(
       guard.canActivate(makeContext({ role: 'MOD', params: { id: 'server-1' } })),
@@ -124,7 +163,7 @@ describe('PermissionsGuard', () => {
   it('rejects a MOD whose global permission does not cover a scoped route', async () => {
     reflector.getAllAndOverride = jest.fn().mockReturnValue('SERVER_LIFECYCLE');
     const db = makeDb(null);
-    guard = new PermissionsGuard(reflector as Reflector, db as never);
+    guard = makeGuard(db);
 
     await expect(
       guard.canActivate(makeContext({ role: 'MOD', params: { id: 'server-1' } })),
@@ -134,7 +173,7 @@ describe('PermissionsGuard', () => {
   it('rejects a MOD with only a differently-scoped permission', async () => {
     reflector.getAllAndOverride = jest.fn().mockReturnValue('SERVER_LIFECYCLE');
     const db = makeDb({ scopedServerId: 'server-1' });
-    guard = new PermissionsGuard(reflector as Reflector, db as never);
+    guard = makeGuard(db);
 
     await expect(
       guard.canActivate(makeContext({ role: 'MOD', params: { id: 'server-2' } })),
@@ -144,7 +183,7 @@ describe('PermissionsGuard', () => {
   it('treats an empty route id as global-only and rejects a scoped-only grant', async () => {
     reflector.getAllAndOverride = jest.fn().mockReturnValue('SERVER_LIFECYCLE');
     const db = makeDb({ scopedServerId: 'server-1' });
-    guard = new PermissionsGuard(reflector as Reflector, db as never);
+    guard = makeGuard(db);
 
     await expect(
       guard.canActivate(makeContext({ role: 'MOD', params: { id: '' } })),
@@ -154,7 +193,7 @@ describe('PermissionsGuard', () => {
   it('fails closed with ServiceUnavailableException on database errors', async () => {
     reflector.getAllAndOverride = jest.fn().mockReturnValue('SERVER_LIFECYCLE');
     const db = makeDb(new Error('connection lost'));
-    guard = new PermissionsGuard(reflector as Reflector, db as never);
+    guard = makeGuard(db);
 
     await expect(
       guard.canActivate(makeContext({ role: 'MOD', params: { id: 'server-1' } })),
@@ -167,7 +206,7 @@ describe('PermissionsGuard', () => {
   it('rethrows ForbiddenException from the database branch unchanged', async () => {
     reflector.getAllAndOverride = jest.fn().mockReturnValue('SERVER_LIFECYCLE');
     const db = makeDb(null);
-    guard = new PermissionsGuard(reflector as Reflector, db as never);
+    guard = makeGuard(db);
 
     await expect(
       guard.canActivate(makeContext({ role: 'MOD', params: { id: 'server-1' } })),

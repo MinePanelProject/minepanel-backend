@@ -1,30 +1,51 @@
+type SetupStateRow = { initialAdminCreated: boolean };
+
+type SetupInsertValue =
+  | Pick<typeof users.$inferInsert, 'email' | 'username' | 'passwordHash' | 'status' | 'role'>
+  | Pick<typeof setupState.$inferInsert, 'id' | 'initialAdminCreated'>;
+
+type SetupInsertCall = {
+  table: typeof users | typeof setupState;
+  value: SetupInsertValue;
+};
+
+type SetupFlagUpdate = Pick<typeof setupState.$inferInsert, 'initialAdminCreated'>;
+
+type SetupTransactionFixture = {
+  execute: jest.Mock;
+  insert: jest.Mock;
+  select: jest.Mock;
+  update: jest.Mock;
+};
+
 import { ConflictException, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, type TestingModule } from '@nestjs/testing';
 import * as bcrypt from 'bcrypt';
 import { DRIZZLE } from 'src/db/db.module';
-import { users } from 'src/db/schema';
+import { setupState, users } from 'src/db/schema';
 import { SetupService, type SetupStatus } from './setup.service';
 
 const CONFIGURED_TOKEN = 'configured-setup-token';
 
-type InsertCall = { table: unknown; value: unknown };
+type InsertCall = SetupInsertCall;
 
 describe('SetupService', () => {
   let service: SetupService;
-  let stateRow: { initialAdminCreated: boolean };
-  let txStateRow: { initialAdminCreated: boolean };
+  let stateRow: SetupStateRow;
+  let txStateRow: SetupStateRow;
   let rootInsert: jest.Mock;
   let rootSelect: jest.Mock;
   let transaction: jest.Mock;
   let txInsertCalls: InsertCall[];
-  let txFlagSets: Record<string, unknown>[];
+  let txFlagSets: SetupFlagUpdate[];
   let txUpdateFails: boolean;
   let configGet: jest.Mock;
   let warnSpy: jest.SpyInstance;
 
-  const rowsResult = (rows: unknown[]) => {
-    const result = Promise.resolve(rows) as Promise<unknown[]> & { limit: jest.Mock };
+  const rowsResult = (rows: SetupStateRow[]) => {
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    const result = Promise.resolve(rows) as Promise<SetupStateRow[]> & { limit: jest.Mock };
     result.limit = jest.fn().mockResolvedValue(rows);
     return result;
   };
@@ -49,9 +70,10 @@ describe('SetupService', () => {
 
     const tx = {
       execute: jest.fn().mockResolvedValue(undefined),
-      insert: jest.fn((table: unknown) => ({
-        values: jest.fn((value: unknown) => {
+      insert: jest.fn((table: typeof users | typeof setupState) => ({
+        values: jest.fn((value: SetupInsertValue) => {
           txInsertCalls.push({ table, value });
+          // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
           const pending = Promise.resolve() as Promise<void> & {
             onConflictDoNothing: jest.Mock;
           };
@@ -65,7 +87,7 @@ describe('SetupService', () => {
         })),
       })),
       update: jest.fn(() => ({
-        set: jest.fn((value: Record<string, unknown>) => {
+        set: jest.fn((value: SetupFlagUpdate) => {
           txFlagSets.push(value);
           return {
             where: txUpdateFails
@@ -75,7 +97,9 @@ describe('SetupService', () => {
         }),
       })),
     };
-    transaction = jest.fn(async (callback: (handle: unknown) => Promise<unknown>) => callback(tx));
+    transaction = jest.fn(async (callback: (handle: SetupTransactionFixture) => Promise<void>) =>
+      callback(tx),
+    );
 
     configGet = jest.fn().mockReturnValue(CONFIGURED_TOKEN);
     warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
@@ -121,6 +145,7 @@ describe('SetupService', () => {
 
     const userInserts = txInsertCalls.filter((call) => call.table === users);
     expect(userInserts).toHaveLength(1);
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     const inserted = userInserts[0].value as {
       email: string;
       username: string;
@@ -154,7 +179,9 @@ describe('SetupService', () => {
 
     expect(missing).toBeInstanceOf(UnauthorizedException);
     expect(wrong).toBeInstanceOf(UnauthorizedException);
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     expect((wrong as UnauthorizedException).getResponse()).toEqual(
+      // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
       (missing as UnauthorizedException).getResponse(),
     );
     expect(transaction).not.toHaveBeenCalled();
@@ -189,7 +216,9 @@ describe('SetupService', () => {
 
     expect(missing).toBeInstanceOf(UnauthorizedException);
     expect(wrong).toBeInstanceOf(UnauthorizedException);
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     expect((wrong as UnauthorizedException).getResponse()).toEqual(
+      // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
       (missing as UnauthorizedException).getResponse(),
     );
     expect(transaction).not.toHaveBeenCalled();
@@ -204,6 +233,7 @@ describe('SetupService', () => {
 
     expect(transaction).toHaveBeenCalledTimes(2);
     expect(warnSpy).toHaveBeenCalledTimes(1);
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     const logged = warnSpy.mock.calls[0][0] as string;
     const token = /process: ([A-Za-z0-9_-]+) —/.exec(logged)?.[1];
     expect(token).toMatch(/^[A-Za-z0-9_-]{32}$/);

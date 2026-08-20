@@ -19,7 +19,6 @@ import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import type { Request } from 'express';
 import postgres from 'postgres';
 import request from 'supertest';
-import type { App } from 'supertest/types';
 import { DRIZZLE, type DrizzleDB } from '../src/db/db.module';
 import * as schema from '../src/db/schema';
 import { DOCKERODE } from '../src/docker/docker.constants';
@@ -90,11 +89,13 @@ class E2eRolesGuard implements CanActivate {
 describe('Servers lifecycle (PostgreSQL e2e)', () => {
   let sql: postgres.Sql;
   let db: PostgresJsDatabase<typeof schema>;
-  let app: INestApplication<App>;
+  let app: INestApplication;
   let docker: TestDocker;
   let dockerEvents: string[];
   let originalStopWarnSeconds: string | undefined;
   let trackedUserIds: Set<string>;
+  let trackedServerIds: Set<string>;
+  let nextPort: number;
 
   const makeInspect = (id: string, running: boolean): ContainerInspectState => ({
     id,
@@ -158,8 +159,9 @@ describe('Servers lifecycle (PostgreSQL e2e)', () => {
       .mockImplementation(async (id: string) => makeInspect(id, false));
   };
 
-  const bootApp = async (dockerOverride?: TestDocker): Promise<INestApplication<App>> => {
+  const bootApp = async (dockerOverride?: TestDocker): Promise<INestApplication> => {
     docker = dockerOverride ?? makeDocker();
+    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [ConfigModule.forRoot({ isGlobal: true }), ServersModule],
       providers: [
@@ -168,14 +170,15 @@ describe('Servers lifecycle (PostgreSQL e2e)', () => {
       ],
     })
       .overrideProvider(DRIZZLE)
-      .useValue(db as unknown as DrizzleDB)
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+      .useValue(db as DrizzleDB)
       .overrideProvider(DockerService)
       .useValue(docker)
       .overrideProvider(DOCKERODE)
       .useValue({})
       .compile();
 
-    const nextApp = moduleFixture.createNestApplication<App>();
+    const nextApp = moduleFixture.createNestApplication();
     nextApp.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,

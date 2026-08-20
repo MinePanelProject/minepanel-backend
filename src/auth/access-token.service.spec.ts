@@ -1,46 +1,44 @@
 import { UnauthorizedException } from '@nestjs/common';
-import type { JwtService } from '@nestjs/jwt';
+import { JwtService } from '@nestjs/jwt';
 import type { DrizzleDB } from 'src/db/db.module';
 import { AccessTokenService } from './access-token.service';
 
 type UserRow = { status: string; role: string; mustChangePassword: boolean };
-
-const makeDb = (row: UserRow | undefined) => {
-  const select = jest.fn(() => ({
+type ClaimValue = string | number | boolean | null | undefined;
+type ClaimsCandidate = { [key: string]: ClaimValue };
+type AccessDbFixture = Pick<DrizzleDB, 'select'> & { select: jest.Mock };
+const makeDb = (row: UserRow | undefined): AccessDbFixture => {
+  const selectMock = jest.fn();
+  selectMock.mockImplementation(() => ({
     from: jest.fn(() => ({
       where: jest.fn().mockResolvedValue(row ? [row] : []),
     })),
   }));
-  return { select };
+  // SAFETY: The mock implements the select method surface required by AccessTokenService.
+  return { select: selectMock } as AccessDbFixture;
 };
-const makeService = (
-  payload: unknown,
-  row: UserRow | undefined = {
-    status: 'ACTIVE',
-    role: 'ADMIN',
-    mustChangePassword: false,
-  },
-) => {
-  const jwtService = { verifyAsync: jest.fn().mockResolvedValue(payload) } as unknown as JwtService;
+const makeService = (payload: ClaimsCandidate, ...rows: [UserRow?]) => {
+  const verifyAsync = jest.fn().mockResolvedValue(payload);
+  const row =
+    rows.length === 0
+      ? {
+          status: 'ACTIVE',
+          role: 'ADMIN',
+          mustChangePassword: false,
+        }
+      : rows[0];
   const db = makeDb(row);
+  // SAFETY: the spec exercises only AccessTokenService.verify, which calls
+  // JwtService.verifyAsync and DrizzleDB.select; these doubles implement exactly that surface.
   return {
-    service: new AccessTokenService(jwtService, db as unknown as DrizzleDB),
-    jwtService,
+    // SAFETY: this test double is attached to JwtService's prototype and implements verifyAsync.
+    service: new AccessTokenService(Object.assign(new JwtService(), { verifyAsync }), db),
+    verifyAsync,
     db,
   };
 };
 
-const makeMissingUserService = (payload: unknown) => {
-  const jwtService = { verifyAsync: jest.fn().mockResolvedValue(payload) } as unknown as JwtService;
-  const db = makeDb(undefined);
-  return {
-    service: new AccessTokenService(jwtService, db as unknown as DrizzleDB),
-    jwtService,
-    db,
-  };
-};
-
-const validPayload = (overrides: Record<string, unknown> = {}) => ({
+const validPayload = (overrides: ClaimsCandidate = {}) => ({
   sub: 'user-1',
   username: 'player',
   type: 'access',
@@ -72,15 +70,15 @@ describe('AccessTokenService', () => {
   });
 
   it('rejects JWT verification failures without exposing the cause', async () => {
-    const { service, jwtService, db } = makeService(validPayload());
-    (jwtService.verifyAsync as jest.Mock).mockRejectedValue(new Error('bad signature'));
+    const { service, verifyAsync, db } = makeService(validPayload());
+    verifyAsync.mockRejectedValue(new Error('bad signature'));
 
     await expect(service.verify('token')).rejects.toEqual(expect.any(UnauthorizedException));
     expect(db.select).not.toHaveBeenCalled();
   });
 
   it('rejects a missing user as UnauthorizedException', async () => {
-    const { service } = makeMissingUserService(validPayload());
+    const { service } = makeService(validPayload(), undefined);
 
     await expect(service.verify('token')).rejects.toBeInstanceOf(UnauthorizedException);
   });

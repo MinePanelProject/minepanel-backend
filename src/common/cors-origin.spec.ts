@@ -1,14 +1,18 @@
-import type { ConfigService } from '@nestjs/config';
-import { getCanonicalCorsOrigin } from './cors-origin';
+import { type CorsConfig, getCanonicalCorsOrigin } from './cors-origin';
 
-const config = (value: unknown): ConfigService =>
-  ({ get: jest.fn().mockReturnValue(value) }) as unknown as ConfigService;
+type ConfigValue = string | null;
+
+const config = (value: ConfigValue): CorsConfig => ({
+  get: jest.fn().mockReturnValue(value),
+});
 
 describe('getCanonicalCorsOrigin', () => {
   it('uses localhost:5173 by default', () => {
+    // SAFETY: the default-origin branch only calls service.get(key, fallback), which this
+    // double implements.
     const service = {
       get: jest.fn((_key: string, fallback: string) => fallback),
-    } as unknown as ConfigService;
+    };
 
     expect(getCanonicalCorsOrigin(service)).toBe('http://localhost:5173');
   });

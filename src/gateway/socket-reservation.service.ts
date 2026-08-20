@@ -21,7 +21,21 @@ export class SocketReservationService implements OnModuleDestroy {
   private readonly reservations = new Map<string, Reservation>();
 
   reserve(rawConn: EngineSocket): void {
-    const handle = rawConn as unknown as EngineSocketHandle;
+    const idValue = String(Object.getOwnPropertyDescriptor(rawConn, 'id')?.value ?? '');
+    const handle: EngineSocketHandle = {
+      id: idValue,
+      close: rawConn.close.bind(rawConn),
+      on: rawConn.on.bind(rawConn),
+    };
+
+    if (idValue.length === 0) {
+      try {
+        handle.close();
+      } catch {
+        // best-effort close for an invalid Engine.IO connection
+      }
+      return;
+    }
 
     if (this.reservations.size >= PENDING_CAP) {
       try {

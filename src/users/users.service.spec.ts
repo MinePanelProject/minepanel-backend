@@ -1,8 +1,20 @@
+type UserMutation = Partial<User>;
+
+type UserTable = typeof users | typeof refreshTokens;
+
+type UserDbFixture = {
+  select: jest.Mock;
+  update: jest.Mock;
+  delete: jest.Mock;
+  transaction: jest.Mock;
+};
+
 import { BadRequestException } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import * as bcrypt from 'bcrypt';
+import type { SQL } from 'drizzle-orm';
 import { DRIZZLE } from 'src/db/db.module';
-import type { RefreshToken, User } from 'src/db/schema';
+import { type RefreshToken, refreshTokens, type User, users } from 'src/db/schema';
 import { UsersService } from './users.service';
 
 const makeUser = (overrides: Partial<User> = {}): User => ({
@@ -32,9 +44,9 @@ describe('UsersService', () => {
   let update: jest.Mock;
   let deleteMock: jest.Mock;
   let updatedRows: User[];
-  let updatedValues: Record<string, unknown>[];
+  let updatedValues: UserMutation[];
+  let deleteCalls: { table: UserTable; where: SQL[] }[];
   let refreshTokenRows: Pick<RefreshToken, 'id' | 'token'>[];
-  let deleteCalls: { table: unknown; where: unknown[] }[];
   let whereSelect: jest.Mock;
 
   beforeEach(async () => {
@@ -47,9 +59,10 @@ describe('UsersService', () => {
 
     select = jest.fn(() => ({
       from: jest.fn(() => ({
-        where: jest.fn((condition: unknown) => {
+        where: jest.fn((condition: SQL) => {
           whereSelect(condition);
           // session listing is awaited directly on where(); user lookups call limit()
+          // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
           const chain = Promise.resolve(refreshTokenRows) as Promise<
             Pick<RefreshToken, 'id' | 'token'>[]
           > & { limit: jest.Mock };
@@ -59,7 +72,7 @@ describe('UsersService', () => {
       })),
     }));
     update = jest.fn(() => ({
-      set: jest.fn((values: Record<string, unknown>) => {
+      set: jest.fn((values: UserMutation) => {
         updatedValues.push(values);
         return {
           where: jest.fn(() => ({
@@ -68,15 +81,16 @@ describe('UsersService', () => {
         };
       }),
     }));
-    deleteMock = jest.fn((table: unknown) => ({
-      where: jest.fn((...args: unknown[]) => {
+    deleteMock = jest.fn((table: UserTable) => ({
+      where: jest.fn((...args: SQL[]) => {
         deleteCalls.push({ table, where: args });
         return Promise.resolve(undefined);
       }),
     }));
-    const transaction = jest.fn(async (callback: (tx: unknown) => unknown) => callback(db));
-
-    const db = { select, update, delete: deleteMock, transaction };
+    const transaction = jest.fn(async (callback: (tx: UserDbFixture) => Promise<User | null>) =>
+      callback(db),
+    );
+    const db: UserDbFixture = { select, update, delete: deleteMock, transaction };
     const module: TestingModule = await Test.createTestingModule({
       providers: [UsersService, { provide: DRIZZLE, useValue: db }],
     }).compile();

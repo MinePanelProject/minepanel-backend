@@ -26,7 +26,8 @@ describe('AdminService last-admin protection (PostgreSQL integration)', () => {
     const connectionString = assertSafeTestDatabase();
     sql = postgres(connectionString, { max: 10 });
     db = drizzle(sql, { schema });
-    service = new AdminService(db as unknown as DrizzleDB);
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    service = new AdminService(db as DrizzleDB);
     baselineActiveAdmins = await countActiveAdmins();
   });
 
@@ -88,6 +89,7 @@ describe('AdminService last-admin protection (PostgreSQL integration)', () => {
 
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(1);
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
     expect(await countActiveAdmins()).toBe(1);
   });

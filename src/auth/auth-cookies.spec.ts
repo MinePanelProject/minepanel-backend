@@ -17,7 +17,8 @@ const makeApp = (): Express => {
 
 const cookiesFor = async (path: string): Promise<string[]> => {
   const response = await request(makeApp()).get(path);
-  return response.headers['set-cookie'] as string[];
+  const header = response.headers['set-cookie'];
+  return Array.isArray(header) ? header : header === undefined ? [] : [header];
 };
 
 describe('auth cookies', () => {

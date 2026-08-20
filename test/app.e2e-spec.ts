@@ -1,7 +1,8 @@
+type TestValue = string | number | boolean | bigint | symbol | null | undefined | Date | object;
+
 import type { INestApplication } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import request from 'supertest';
-import type { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { DRIZZLE } from '../src/db/db.module';
 import { DOCKERODE } from '../src/docker/docker.constants';
@@ -9,7 +10,7 @@ import { DockerService } from '../src/docker/docker.service';
 import { assertSafeTestDatabase } from './test-database';
 
 describe('AppController health (e2e)', () => {
-  let app: INestApplication<App>;
+  let app: INestApplication;
 
   beforeAll(async () => {
     assertSafeTestDatabase();
@@ -30,7 +31,7 @@ describe('AppController health (e2e)', () => {
           where: jest.fn().mockResolvedValue([]),
         })),
       })),
-      transaction: jest.fn(async (callback: (handle: typeof tx) => Promise<unknown>) =>
+      transaction: jest.fn(async (callback: (handle: typeof tx) => Promise<TestValue>) =>
         callback(tx),
       ),
     };
@@ -46,7 +47,7 @@ describe('AppController health (e2e)', () => {
       .useValue({})
       .compile();
 
-    app = moduleFixture.createNestApplication<App>();
+    app = moduleFixture.createNestApplication();
     await app.init();
   });
 

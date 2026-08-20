@@ -8,22 +8,34 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 
+type ExceptionRecord = {
+  cause?: ExceptionRecord;
+  code?: string;
+  message?: string;
+};
+
+const isExceptionRecord = (cause: unknown): cause is ExceptionRecord =>
+  typeof cause === 'object' && cause !== null;
+
+const isStringCause = (cause: unknown): cause is string => typeof cause === 'string';
+
 @Catch()
 export class DbExceptionFilter implements ExceptionFilter {
-  catch(exception: unknown, host: ArgumentsHost) {
+  catch(cause: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
-    const code = this.getPostgresCode(exception);
+    const code = this.getPostgresCode(cause);
 
-    // Only handle postgres.js errors (they have a numeric-ish code like '23505'), the rest gets filtered and returned based on the status
     if (!code) {
-      if (exception instanceof HttpException) {
-        return response.status(exception.getStatus()).json(exception.getResponse());
+      if (cause instanceof HttpException) {
+        return response.status(cause.getStatus()).json(cause.getResponse());
       }
       return response.status(500).json({ message: 'Internal server error' });
     }
 
-    Logger.error((exception as Error).message, code, 'DbExceptionFilter');
+    const message =
+      isExceptionRecord(cause) && isStringCause(cause.message) ? cause.message : String(cause);
+    Logger.error(message, code, 'DbExceptionFilter');
 
     switch (code) {
       case '23505': // unique_violation
@@ -43,16 +55,11 @@ export class DbExceptionFilter implements ExceptionFilter {
     }
   }
 
-  private getPostgresCode(exception: unknown): string | null {
-    if (typeof exception === 'object' && exception != null && 'cause' in exception) {
-      if (
-        typeof exception.cause === 'object' &&
-        exception.cause != null &&
-        'code' in exception.cause
-      ) {
-        return typeof exception.cause.code === 'string' ? exception.cause.code : null;
-      }
+  private getPostgresCode(cause: unknown): string | null {
+    if (!isExceptionRecord(cause) || !isExceptionRecord(cause.cause)) {
+      return null;
     }
-    return null;
+
+    return isStringCause(cause.cause.code) ? cause.cause.code : null;
   }
 }

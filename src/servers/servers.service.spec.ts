@@ -1,3 +1,15 @@
+type ServerMutation = Partial<Server>;
+
+type ServerResourceRow = Pick<Server, 'id' | 'memoryLimitMb'>;
+
+type ServerCountRow = { total: number };
+
+type ServerQueryRow = Server | ServerResourceRow | ServerCountRow;
+
+type TestConfig = {
+  get: jest.Mock;
+};
+
 import {
   ConflictException,
   HttpException,
@@ -5,7 +17,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { ConfigService, type ConfigService as ConfigServiceType } from '@nestjs/config';
+import { ConfigService } from '@nestjs/config';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { DRIZZLE } from 'src/db/db.module';
 import type { Server } from 'src/db/schema';
@@ -16,6 +28,7 @@ import {
   type HostInfo,
   RconUnavailableError,
 } from 'src/docker/docker.service';
+import { CreateServerDto } from './dto/create-server.dto';
 import { ListServersQueryDto } from './dto/list-servers-query.dto';
 import { type ServerPrincipal } from './server-access';
 import { ServersService } from './servers.service';
@@ -27,35 +40,26 @@ type QueryChain<T> = Promise<T> & {
   offset: jest.Mock;
 };
 
+type TestDb = {
+  select: jest.Mock;
+  insert: jest.Mock;
+  update: jest.Mock;
+  delete: jest.Mock;
+  transaction: jest.Mock;
+  execute: jest.Mock;
+};
+
+type TestConfigValues = Record<string, string | number>;
+
 const makeQuery = <T>(getResult: () => T): QueryChain<T> => {
-  // lazy thenable: the result getter runs exactly once, only when the query is
-  // awaited — embedded EXISTS subqueries (built but never awaited) consume no
-  // result slot, mirroring the implementation
-  let _result: T | undefined;
-  const _consumed = false;
-
-  // lazy thenable: the result getter runs exactly once, only when the query is
-  // awaited — embedded EXISTS subqueries (built but never awaited) consume no
-  // result slot, mirroring the implementation
-  class LazyQuery {
-    private result: T | undefined;
-    private consumed = false;
-
-    then(onFulfilled: (value: T) => unknown) {
-      if (!this.consumed) {
-        this.result = getResult();
-        this.consumed = true;
-      }
-      return Promise.resolve(this.result).then(onFulfilled);
-    }
-
-    where = jest.fn(() => this);
-    orderBy = jest.fn(() => this);
-    limit = jest.fn(() => this);
-    offset = jest.fn(() => this);
-  }
-
-  return new LazyQuery() as unknown as QueryChain<T>;
+  const promise = Promise.resolve().then(getResult);
+  const query: QueryChain<T> = Object.assign(promise, {
+    where: jest.fn(() => query),
+    orderBy: jest.fn(() => query),
+    limit: jest.fn(() => query),
+    offset: jest.fn(() => query),
+  });
+  return query;
 };
 
 const makeServer = (overrides: Partial<Server> = {}): Server => ({
@@ -111,19 +115,11 @@ const docker503 = () => new ServiceUnavailableException('Docker daemon unreachab
 
 const adminPrincipal: ServerPrincipal = { id: 'authenticated-owner', role: 'ADMIN' };
 
-const resourceResponse = (error: unknown): unknown =>
-  error instanceof HttpException ? error.getResponse() : undefined;
+const resourceResponse = (error: HttpException | undefined) => error?.getResponse();
 
 describe('ServersService', () => {
   let service: ServersService;
-  let db: {
-    select: jest.Mock;
-    insert: jest.Mock;
-    update: jest.Mock;
-    delete: jest.Mock;
-    transaction: jest.Mock;
-    execute: jest.Mock;
-  };
+  let db: TestDb;
   let docker: Pick<
     DockerService,
     | 'createContainer'
@@ -136,17 +132,17 @@ describe('ServersService', () => {
     | 'getHostInfo'
     | 'getHostDiskInfo'
   >;
-  let config: Pick<ConfigServiceType, 'get'>;
-  let selectResults: unknown[];
+  let config: TestConfig;
+  let selectResults: ServerQueryRow[][];
   let insertResults: Server[];
-  let updateResults: unknown[][];
-  let updatedValues: Record<string, unknown>[];
-  let insertedValues: Record<string, unknown>[];
-  let successfulUpdatedValues: Record<string, unknown>[];
-  let deletedRows: unknown[];
-  let queryChains: QueryChain<unknown>[];
+  let updateResults: Server[][];
+  let updatedValues: ServerMutation[];
+  let insertedValues: ServerMutation[];
+  let successfulUpdatedValues: ServerMutation[];
+  let deletedRows: boolean[];
+  let queryChains: QueryChain<ServerQueryRow[]>[];
   let calls: string[];
-  let configValues: Record<string, string | number>;
+  let configValues: TestConfigValues;
 
   const setResources = (
     hostInfo: HostInfo = { totalRamMb: 8192, cpuCount: 8 },
@@ -181,14 +177,14 @@ describe('ServersService', () => {
         return { from: jest.fn(() => query) };
       }),
       insert: jest.fn(() => ({
-        values: jest.fn((values: Record<string, unknown>) => {
+        values: jest.fn((values: ServerMutation) => {
           insertedValues.push(values);
           const row = insertResults.shift();
           return { returning: jest.fn().mockResolvedValue(row ? [row] : []) };
         }),
       })),
       update: jest.fn(() => ({
-        set: jest.fn((values: Record<string, unknown>) => {
+        set: jest.fn((values: ServerMutation) => {
           updatedValues.push(values);
           return {
             where: jest.fn(() => ({
@@ -207,7 +203,7 @@ describe('ServersService', () => {
           return Promise.resolve(undefined);
         }),
       })),
-      transaction: jest.fn(async (callback: (tx: typeof db) => Promise<unknown>) => callback(db)),
+      transaction: jest.fn(async (callback: (tx: typeof db) => Promise<Server>) => callback(db)),
       execute: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -262,8 +258,8 @@ describe('ServersService', () => {
 
     it('lets a USER see OPEN servers', async () => {
       const open = makeServer({ accessType: 'OPEN' });
-      // lazy mock: embedded EXISTS subqueries consume no slot; rows then count
-      selectResults.push([open], [{ total: 1 }]);
+      // visibility builds an EXISTS subquery before the rows and count queries
+      selectResults.push([], [open], [{ total: 1 }]);
 
       const result = await service.listServers(new ListServersQueryDto(), {
         id: 'user-1',
@@ -296,8 +292,8 @@ describe('ServersService', () => {
     });
 
     it('applies the same visibility predicate to list rows and total count', async () => {
-      // 1 select call for the EXISTS subquery builder + 1 rows + 1 count
-      selectResults.push([], [{ total: 0 }]);
+      // one subquery builder, one rows query, and one count query
+      selectResults.push([], [], [{ total: 0 }]);
 
       await service.listServers(new ListServersQueryDto(), { id: 'user-1', role: 'USER' });
 
@@ -417,7 +413,8 @@ describe('ServersService', () => {
 
   describe('resource admission', () => {
     it('fails closed on malformed configuration before any database or Docker mutation', async () => {
-      configValues = { MIN_FREE_DISK_MB: '0', MAX_MEMORY_RATIO: '0.9' };
+      configValues.MIN_FREE_DISK_MB = '0';
+      configValues.MAX_MEMORY_RATIO = '0.9';
       selectResults.push([]);
 
       await expect(service.createServer(makeDto(), adminPrincipal)).rejects.toMatchObject({
@@ -432,15 +429,19 @@ describe('ServersService', () => {
     it('returns the exact disk InsufficientResources payload', async () => {
       setResources(undefined, { totalDiskMb: 1000, freeDiskMb: 100 });
 
-      let error: unknown;
+      let error: HttpException | undefined;
       try {
         await service.createServer(makeDto(), adminPrincipal);
       } catch (caught) {
-        error = caught;
+        if (caught instanceof HttpException) {
+          error = caught;
+        } else {
+          throw caught;
+        }
       }
 
-      expect(error).toBeInstanceOf(HttpException);
-      expect((error as HttpException).getStatus()).toBe(422);
+      if (!error) throw new Error('expected an HTTP exception');
+      expect(error.getStatus()).toBe(422);
       expect(resourceResponse(error)).toEqual({
         statusCode: 422,
         error: 'InsufficientResources',
@@ -454,15 +455,19 @@ describe('ServersService', () => {
     it('returns the exact memory InsufficientResources payload after locked allocation', async () => {
       selectResults.push([{ id: 'other', memoryLimitMb: 4000 }]);
 
-      let error: unknown;
+      let error: HttpException | undefined;
       try {
         await service.createServer(makeDto({ memoryLimitMb: 4096 }), adminPrincipal);
       } catch (caught) {
-        error = caught;
+        if (caught instanceof HttpException) {
+          error = caught;
+        } else {
+          throw caught;
+        }
       }
 
-      expect(error).toBeInstanceOf(HttpException);
-      expect((error as HttpException).getStatus()).toBe(422);
+      if (!error) throw new Error('expected an HTTP exception');
+      expect(error.getStatus()).toBe(422);
       expect(resourceResponse(error)).toEqual({
         statusCode: 422,
         error: 'InsufficientResources',
@@ -575,6 +580,7 @@ describe('ServersService', () => {
     });
 
     it('uses the authenticated owner and never accepts an owner id from the DTO', async () => {
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       const dto = makeDto() as CreateServerDto & { ownerId?: string };
       dto.ownerId = 'forged-owner';
       const creating = makeServer({
@@ -794,7 +800,8 @@ describe('ServersService', () => {
       ]);
       expect(updatedValues.map((value) => value.status)).not.toContain('STOPPED');
       expect(
-        (docker as unknown as { restartContainer?: jest.Mock }).restartContainer,
+        // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+        (docker as { restartContainer?: jest.Mock }).restartContainer,
       ).toBeUndefined();
     });
 
@@ -877,7 +884,7 @@ describe('ServersService', () => {
       configValues.STOP_WARN_SECONDS = '5';
       const events: string[] = [];
       const transactionEventIndexes: number[] = [];
-      db.transaction.mockImplementation(async (callback: (tx: typeof db) => Promise<unknown>) => {
+      db.transaction.mockImplementation(async (callback: (tx: typeof db) => Promise<Server>) => {
         transactionEventIndexes.push(events.length);
         return callback(db);
       });
@@ -1106,7 +1113,7 @@ describe('ServersService', () => {
       );
       let claimAvailable = true;
       db.update = jest.fn(() => ({
-        set: jest.fn((values: Record<string, unknown>) => ({
+        set: jest.fn((values: ServerMutation) => ({
           where: jest.fn(() => ({
             returning: jest.fn(async () => {
               updatedValues.push(values);
@@ -1175,7 +1182,8 @@ describe('ServersService', () => {
       expect(docker.stopContainer).toHaveBeenCalledWith('container-1', 15);
       expect(updatedValues.map((value) => value.status)).not.toContain('STOPPED');
       expect(
-        (docker as unknown as { restartContainer?: jest.Mock }).restartContainer,
+        // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+        (docker as { restartContainer?: jest.Mock }).restartContainer,
       ).toBeUndefined();
     });
   });

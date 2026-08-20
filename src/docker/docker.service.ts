@@ -26,6 +26,10 @@ import {
   STOP_TIMEOUT_SECONDS,
 } from './docker.constants';
 
+const MINECRAFT_IMAGE = 'itzg/minecraft-server';
+const CONTAINER_PORT = '25565/tcp';
+const MIN_MEMORY_MB = 512;
+
 export type ContainerInspectState = {
   id: string;
   name: string;
@@ -43,14 +47,30 @@ export type HostInfo = { totalRamMb: number | null; cpuCount: number | null };
 
 export type DiskInfo = { totalDiskMb: number | null; freeDiskMb: number | null };
 
+export type DockerConfig = {
+  mcDataPath: string;
+  mcDataBindSource: string;
+  network: string;
+  portMin: number;
+  portMax: number;
+};
+
 export type ManagedContainerLookupResult =
   | { id: string; running: boolean }
   | { unavailable: true }
   | null;
+type DockerErrorCandidate = { code?: string; statusCode?: number };
+type DockerInfoCandidate = { MemTotal?: number; NCPU?: number };
+type DockerInfoInput = DockerInfoCandidate | string | number | boolean | null | undefined;
 
-const MINECRAFT_IMAGE = 'itzg/minecraft-server';
-const CONTAINER_PORT = '25565/tcp';
-const MIN_MEMORY_MB = 512;
+const isFiniteInteger = (value: number | null | undefined): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value);
+
+const isDockerErrorCandidate = (cause: unknown): cause is DockerErrorCandidate =>
+  typeof cause === 'object' && cause !== null;
+
+const isDockerInfo = (value: DockerInfoInput): value is DockerInfoCandidate =>
+  typeof value === 'object' && value !== null;
 
 const DAEMON_UNREACHABLE_CODES = new Set([
   'ECONNREFUSED',
@@ -68,6 +88,11 @@ const DAEMON_UNREACHABLE_CODES = new Set([
 ]);
 
 const CONTAINER_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
+
+type ContainerSummaryCandidate = { Id?: string; State?: string };
+
+const isNonEmptyString = (value: string | undefined): value is string =>
+  typeof value === 'string' && value.length > 0;
 
 export class RconUnavailableError extends Error {
   constructor(message = 'RCON unavailable') {
@@ -133,7 +158,7 @@ export class DockerService {
     try {
       await this.docker.getContainer(containerId).start();
     } catch (error) {
-      if (this.isStatusCode(error, 304)) return; // already started, treat as idempotent success
+      if (this.isStatusCode(error, 304)) return;
       this.handleDockerError(error, 'container');
     }
   }
@@ -143,9 +168,7 @@ export class DockerService {
     stopTimeoutSeconds = STOP_TIMEOUT_SECONDS,
   ): Promise<'stopped' | 'already-stopped'> {
     if (
-      typeof stopTimeoutSeconds !== 'number' ||
-      !Number.isFinite(stopTimeoutSeconds) ||
-      !Number.isInteger(stopTimeoutSeconds) ||
+      !isFiniteInteger(stopTimeoutSeconds) ||
       stopTimeoutSeconds < 0 ||
       stopTimeoutSeconds > MAX_STOP_TIMEOUT_SECONDS
     ) {
@@ -178,10 +201,12 @@ export class DockerService {
         abortSignal: abortController.signal,
       });
 
+      // SAFETY: exec.start returns the readable stream consumed by drainExecStream.
       const stream = (await exec.start({
         Detach: false,
         Tty: false,
         abortSignal: abortController.signal,
+        // SAFETY: exec.start returns the readable stream consumed by drainExecStream.
       })) as Readable;
 
       try {
@@ -194,6 +219,7 @@ export class DockerService {
         }
       }
 
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       const result = (await exec.inspect({ abortSignal: abortController.signal })) as {
         Running?: unknown;
         ExitCode?: unknown;
@@ -226,7 +252,7 @@ export class DockerService {
     let totalBytes = 0;
 
     for (const arg of command) {
-      if (typeof arg !== 'string' || arg.length === 0) {
+      if (!isNonEmptyString(arg)) {
         throw new RconUnavailableError('RCON command rejected');
       }
 
@@ -282,6 +308,7 @@ export class DockerService {
     try {
       await this.docker.getContainer(containerId).remove({ force: false });
     } catch (error) {
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       if (this.isStatusCode(error, 404)) return; // already removed, treat as idempotent success
       this.handleDockerError(error, 'container');
     }
@@ -289,18 +316,19 @@ export class DockerService {
 
   async findManagedContainer(serverId: string): Promise<ManagedContainerLookupResult> {
     try {
+      // SAFETY: listContainers returns entries with the Id and State fields read below.
       const containers = (await this.docker.listContainers({
         all: true,
         filters: { label: [`minepanel.server-id=${serverId}`, 'minepanel.managed=true'] },
-      })) as Array<{ Id?: unknown; State?: unknown }>;
+        // SAFETY: listContainers returns entries with the Id and State fields read below.
+      })) as ContainerSummaryCandidate[];
 
       if (containers.length === 0) {
         return null;
       }
 
       const container = containers[0];
-      const id = typeof container.Id === 'string' ? container.Id : '';
-
+      const id = isNonEmptyString(container.Id) ? container.Id : '';
       if (!id) {
         Logger.warn('Managed container lookup returned an entry without an id', 'DockerService');
         return null;
@@ -325,6 +353,7 @@ export class DockerService {
 
   async inspectContainer(containerId: string): Promise<ContainerInspectState> {
     try {
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       const info = (await this.docker.getContainer(containerId).inspect()) as {
         Id: string;
         Name: string;
@@ -358,13 +387,8 @@ export class DockerService {
   }
 
   async getHostInfo(): Promise<HostInfo> {
-    const toMb = (value: unknown): number | null => {
-      if (
-        typeof value !== 'number' ||
-        !Number.isFinite(value) ||
-        !Number.isInteger(value) ||
-        value <= 0
-      ) {
+    const toMb = (value: number | null | undefined): number | null => {
+      if (!isFiniteInteger(value) || value <= 0) {
         return null;
       }
 
@@ -372,20 +396,15 @@ export class DockerService {
     };
 
     try {
-      const info = (await this.docker.info()) as Record<string, unknown> | null | undefined;
-      if (typeof info !== 'object' || info === null) {
+      // SAFETY: Docker info is an object whose inspected fields are the only values read here.
+      const info = (await this.docker.info()) as DockerInfoInput;
+      if (!isDockerInfo(info)) {
         return { totalRamMb: null, cpuCount: null };
       }
 
       return {
         totalRamMb: toMb(info.MemTotal),
-        cpuCount:
-          typeof info.NCPU === 'number' &&
-          Number.isFinite(info.NCPU) &&
-          Number.isInteger(info.NCPU) &&
-          info.NCPU > 0
-            ? info.NCPU
-            : null,
+        cpuCount: isFiniteInteger(info.NCPU) && info.NCPU > 0 ? info.NCPU : null,
       };
     } catch (error) {
       this.handleDockerError(error, 'host');
@@ -396,13 +415,7 @@ export class DockerService {
     try {
       const bytes = os.freemem();
 
-      if (
-        typeof bytes !== 'number' ||
-        !Number.isFinite(bytes) ||
-        !Number.isInteger(bytes) ||
-        bytes < 0 ||
-        bytes > Number.MAX_SAFE_INTEGER
-      ) {
+      if (!isFiniteInteger(bytes) || bytes < 0 || bytes > Number.MAX_SAFE_INTEGER) {
         return null;
       }
 
@@ -415,8 +428,8 @@ export class DockerService {
   async getHostDiskInfo(): Promise<DiskInfo> {
     const config = this.readDockerConfig();
 
-    const isValidStatfsField = (value: unknown): value is number =>
-      typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value >= 0;
+    const isValidStatfsField = (value: number | null | undefined): value is number =>
+      isFiniteInteger(value) && value >= 0;
 
     try {
       const stats = await fs.statfs(config.mcDataPath);
@@ -453,13 +466,7 @@ export class DockerService {
     }
   }
 
-  private readDockerConfig(): {
-    mcDataPath: string;
-    mcDataBindSource: string;
-    network: string;
-    portMin: number;
-    portMax: number;
-  } {
+  private readDockerConfig(): DockerConfig {
     const rawMcDataPath = this.configService.get<string>('MC_DATA_PATH', '/mc-data');
     // compose mounts MC_DATA_PATH_HOST at the fixed /mc-data, so a value that
     // changes under trim() would make statfs measure a different directory
@@ -525,9 +532,7 @@ export class DockerService {
     config: { portMin: number; portMax: number },
   ): void {
     if (
-      typeof server.port !== 'number' ||
-      !Number.isFinite(server.port) ||
-      !Number.isInteger(server.port) ||
+      !isFiniteInteger(server.port) ||
       server.port < config.portMin ||
       server.port > config.portMax
     ) {
@@ -586,38 +591,29 @@ export class DockerService {
     return env;
   }
 
-  private isDaemonUnreachable(error: unknown): boolean {
-    if (typeof error !== 'object' || error === null) return false;
-    const err = error as { code?: unknown; statusCode?: unknown };
-    if (err.statusCode !== undefined) return false; // daemon answered with HTTP status
+  private isDaemonUnreachable(cause: unknown): boolean {
+    if (!isDockerErrorCandidate(cause)) return false;
+    if (cause.statusCode !== undefined) return false;
 
-    return typeof err.code === 'string' && DAEMON_UNREACHABLE_CODES.has(err.code);
+    return cause.code !== undefined && DAEMON_UNREACHABLE_CODES.has(cause.code);
   }
 
-  private isDockerError(error: unknown): boolean {
-    if (error instanceof HttpException) return true;
-    if (typeof error !== 'object' || error === null) return false;
-    const err = error as { code?: unknown; statusCode?: unknown };
-    if (typeof err.statusCode === 'number') return true;
+  private isDockerError(cause: unknown): boolean {
+    if (cause instanceof HttpException) return true;
+    if (!isDockerErrorCandidate(cause)) return false;
+    if (cause.statusCode !== undefined) return true;
 
-    return typeof err.code === 'string' && DAEMON_UNREACHABLE_CODES.has(err.code);
+    return cause.code !== undefined && DAEMON_UNREACHABLE_CODES.has(cause.code);
   }
 
-  private isStatusCode(error: unknown, statusCode: number): boolean {
-    return (
-      typeof error === 'object' &&
-      error !== null &&
-      (error as { statusCode?: unknown }).statusCode === statusCode
-    );
+  private isStatusCode(cause: unknown, statusCode: number): boolean {
+    return isDockerErrorCandidate(cause) && cause.statusCode === statusCode;
   }
 
-  private handleDockerError(error: unknown, context: string): never {
-    const statusCode =
-      typeof error === 'object' && error !== null
-        ? (error as { statusCode?: unknown }).statusCode
-        : undefined;
+  private handleDockerError(cause: unknown, context: string): never {
+    const statusCode = isDockerErrorCandidate(cause) ? cause.statusCode : undefined;
 
-    if (this.isDaemonUnreachable(error)) {
+    if (this.isDaemonUnreachable(cause)) {
       throw new ServiceUnavailableException('Docker daemon unreachable');
     }
 

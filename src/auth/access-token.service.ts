@@ -15,18 +15,32 @@ export type AccessTokenPrincipal = {
 
 const MAX_EXP_SECONDS = Math.floor(Number.MAX_SAFE_INTEGER / 1000);
 
+type AccessTokenClaims = {
+  sub: string;
+  username: string;
+  type: 'access';
+  temporaryAuth: boolean | undefined;
+  exp: number;
+};
+
+type AccessTokenClaimsCandidate = {
+  sub?: string;
+  username?: string;
+  type?: string;
+  temporaryAuth?: boolean;
+  exp?: number;
+};
 @Injectable()
 export class AccessTokenService {
   constructor(
     private readonly jwtService: JwtService,
-    @Inject(DRIZZLE) private readonly db: DrizzleDB,
+    @Inject(DRIZZLE) private readonly db: Pick<DrizzleDB, 'select'>,
   ) {}
-
   async verify(token: string): Promise<AccessTokenPrincipal> {
-    let payload: unknown;
+    let payload: AccessTokenClaimsCandidate;
 
     try {
-      payload = await this.jwtService.verifyAsync(token);
+      payload = await this.jwtService.verifyAsync<AccessTokenClaimsCandidate>(token);
     } catch {
       throw new UnauthorizedException();
     }
@@ -74,19 +88,7 @@ export class AccessTokenService {
     };
   }
 
-  private isValidPayload(payload: unknown): payload is {
-    sub: string;
-    username: string;
-    type: 'access';
-    temporaryAuth: boolean | undefined;
-    exp: number;
-  } {
-    if (typeof payload !== 'object' || payload === null) {
-      return false;
-    }
-
-    const candidate = payload as Record<string, unknown>;
-
+  private isValidPayload(candidate: AccessTokenClaimsCandidate): candidate is AccessTokenClaims {
     if (typeof candidate.sub !== 'string' || candidate.sub.length === 0) {
       return false;
     }

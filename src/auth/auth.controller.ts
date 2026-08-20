@@ -18,7 +18,7 @@ import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { Public } from 'src/common/decorators/public.decorator';
 import { type PublicUser } from 'src/users/public-user';
-import { AuthService, type AuthTokens, type TwoFactorChallenge } from './auth.service';
+import { AuthService, type TwoFactorChallenge } from './auth.service';
 import {
   clearAuthCookies,
   setAccessTokenCookie,
@@ -33,6 +33,9 @@ import { UpdatePasswordDTO } from './dto/updatePw.dto';
 import { PreAuthGuard, type PreAuthRequest } from './guards/pre-auth.guard';
 
 type JwtPayload = { id: string; username: string; role: string; temporaryAuth?: boolean };
+type AuthCookieJar = { refresh_token?: string };
+type AuthenticatedRequest = Request & { user: JwtPayload; cookies: AuthCookieJar };
+type RefreshRequest = Request & { cookies: AuthCookieJar };
 
 @ApiTags('auth')
 @Controller('auth')
@@ -59,7 +62,7 @@ export class AuthController {
   @Post('login')
   async login(
     @Body() loginUser: LoginUserDto,
-    @Res({ passthrough: true }) res: Response,
+    @Res({ passthrough: true }) res: Pick<Response, 'cookie'>,
   ): Promise<PublicUser | TwoFactorChallenge> {
     const loginResult = await this.authService.loginUser(loginUser);
 
@@ -74,18 +77,21 @@ export class AuthController {
   @ApiOperation({ summary: 'Get profile data' })
   @HttpCode(HttpStatus.OK)
   @Get('profile')
-  async profile(@Req() req: Request) {
+  async profile(@Req() req: AuthenticatedRequest) {
     return req.user;
   }
 
   @ApiOperation({ summary: 'Logout and invalidate tokens cookies' })
   @HttpCode(HttpStatus.OK)
   @Post('logout')
-  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const user = req.user as JwtPayload;
+  async logout(
+    @Req() req: AuthenticatedRequest,
+    @Res({ passthrough: true }) res: Pick<Response, 'cookie'>,
+  ) {
+    const user = req.user;
 
     // find token in cookies
-    const refreshToken = req.cookies.refresh_token as AuthTokens['refreshToken'];
+    const refreshToken = req.cookies.refresh_token!;
 
     // find and delete refresh token db record for the user
     await this.authService.logoutUser(user.id, refreshToken);
@@ -99,8 +105,11 @@ export class AuthController {
   @ApiOperation({ summary: 'Refresh jwt or refresh tokens' })
   @HttpCode(HttpStatus.OK)
   @Post('refresh')
-  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const fetchedRefreshToken = req.cookies.refresh_token as AuthTokens['refreshToken'];
+  async refresh(
+    @Req() req: RefreshRequest,
+    @Res({ passthrough: true }) res: Pick<Response, 'cookie'>,
+  ) {
+    const fetchedRefreshToken = req.cookies.refresh_token!;
     const newTokens = await this.authService.refreshTokens(fetchedRefreshToken);
 
     if (!newTokens) {
@@ -119,8 +128,11 @@ export class AuthController {
   @ApiOperation({ summary: 'Invalidate all user sessions' })
   @HttpCode(HttpStatus.OK)
   @Post('logout-all')
-  async logoutAll(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const user = req.user as JwtPayload;
+  async logoutAll(
+    @Req() req: AuthenticatedRequest,
+    @Res({ passthrough: true }) res: Pick<Response, 'cookie'>,
+  ) {
+    const user = req.user;
 
     // find and delete all refresh token db record for the user
     await this.authService.logoutAll(user.id);
@@ -132,8 +144,8 @@ export class AuthController {
   @ApiOperation({ summary: 'List own active sessions (refresh tokens)' })
   @HttpCode(HttpStatus.OK)
   @Get('sessions')
-  async getSessions(@Req() req: Request) {
-    const user = req.user as JwtPayload;
+  async getSessions(@Req() req: AuthenticatedRequest) {
+    const user = req.user;
 
     return await this.authService.getSessions(user.id);
   }
@@ -141,8 +153,8 @@ export class AuthController {
   @ApiOperation({ summary: 'Revoke a specific session by token id' })
   @HttpCode(HttpStatus.OK)
   @Delete('sessions/:id')
-  async deleteSingleSession(@Req() req: Request, @Param('id') tokenId: string) {
-    const user = req.user as JwtPayload;
+  async deleteSingleSession(@Req() req: AuthenticatedRequest, @Param('id') tokenId: string) {
+    const user = req.user;
 
     await this.authService.deleteSingleSession(user.id, tokenId);
   }
@@ -150,8 +162,8 @@ export class AuthController {
   @ApiOperation({ summary: 'Update profile (link Minecraft account)' })
   @HttpCode(HttpStatus.OK)
   @Patch('profile')
-  async editUserProfile(@Req() req: Request, @Body() editUser: EditUserDto) {
-    const user = req.user as JwtPayload;
+  async editUserProfile(@Req() req: AuthenticatedRequest, @Body() editUser: EditUserDto) {
+    const user = req.user;
 
     return await this.authService.editUserProfile(user.id, editUser);
   }
@@ -160,13 +172,13 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Patch('password')
   async updateUserPassword(
-    @Req() req: Request,
+    @Req() req: AuthenticatedRequest,
     @Body() updatePw: UpdatePasswordDTO,
-    @Res({ passthrough: true }) res: Response,
+    @Res({ passthrough: true }) res: Pick<Response, 'cookie'>,
   ) {
-    const user = req.user as JwtPayload;
+    const user = req.user;
 
-    const refreshToken = req.cookies.refresh_token as AuthTokens['refreshToken'];
+    const refreshToken = req.cookies.refresh_token!;
     const result = await this.authService.updateUserPassword(
       user.id,
       updatePw,
@@ -184,8 +196,8 @@ export class AuthController {
   @ApiOperation({ summary: 'Setup 2FA - generates secret and QR URI' })
   @HttpCode(HttpStatus.OK)
   @Post('2fa/setup')
-  async setup2FA(@Req() req: Request) {
-    const user = req.user as JwtPayload;
+  async setup2FA(@Req() req: AuthenticatedRequest) {
+    const user = req.user;
 
     return await this.authService.setup2FA(user.id);
   }
@@ -193,8 +205,8 @@ export class AuthController {
   @ApiOperation({ summary: 'Confirm 2FA - verify first TOTP code to activate' })
   @HttpCode(HttpStatus.OK)
   @Post('2fa/confirm')
-  async confirm2FA(@Req() req: Request, @Body() body: TwoFactorTokenDto) {
-    const user = req.user as JwtPayload;
+  async confirm2FA(@Req() req: AuthenticatedRequest, @Body() body: TwoFactorTokenDto) {
+    const user = req.user;
 
     return await this.authService.confirm2FA(user.id, body.token);
   }
@@ -208,7 +220,7 @@ export class AuthController {
   async verify2FA(
     @Req() req: PreAuthRequest,
     @Body() body: TwoFactorTokenDto,
-    @Res({ passthrough: true }) res: Response,
+    @Res({ passthrough: true }) res: Pick<Response, 'cookie'>,
   ): Promise<PublicUser> {
     const preAuth = req.preAuth!;
     const session = preAuth.temporaryAuth
@@ -226,8 +238,8 @@ export class AuthController {
   @ApiOperation({ summary: 'Disable 2FA - requires valid TOTP code' })
   @HttpCode(HttpStatus.OK)
   @Delete('2fa/disable')
-  async disable2FA(@Req() req: Request, @Body() body: TwoFactorTokenDto) {
-    const user = req.user as JwtPayload;
+  async disable2FA(@Req() req: AuthenticatedRequest, @Body() body: TwoFactorTokenDto) {
+    const user = req.user;
 
     return await this.authService.disable2FA(user.id, body.token);
   }

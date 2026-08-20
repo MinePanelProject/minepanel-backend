@@ -2,23 +2,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Logger } from '@nestjs/common';
-import { drizzle } from 'drizzle-orm/postgres-js';
-import { migrate } from 'drizzle-orm/postgres-js/migrator';
-import postgres from 'postgres';
+import type { MigrationDependencies } from './migrate';
 import { runProductionMigrations } from './migrate';
-
-jest.mock('postgres', () => ({
-  __esModule: true,
-  default: jest.fn(),
-}));
-
-jest.mock('drizzle-orm/postgres-js', () => ({
-  drizzle: jest.fn(),
-}));
-
-jest.mock('drizzle-orm/postgres-js/migrator', () => ({
-  migrate: jest.fn(),
-}));
 
 type MockSql = jest.Mock & {
   end: jest.Mock;
@@ -28,6 +13,18 @@ type CreatedClient = {
   tag: 'lock' | 'migration';
   sql: MockSql;
 };
+
+type JournalEntryFixture = { tag: string } | null;
+type SqlTemplateValue = string | number | boolean | null | undefined;
+type PostgresOptions = {
+  max?: number;
+  idle_timeout?: number;
+  max_lifetime?: number | null;
+};
+
+const mockPostgres = jest.fn();
+const mockDrizzle = jest.fn();
+const mockMigrate = jest.fn();
 
 describe('runProductionMigrations', () => {
   const validUrl = 'postgresql://user:password@localhost:5432/minepanel';
@@ -39,17 +36,25 @@ describe('runProductionMigrations', () => {
   let tempFolders: string[];
 
   const createMockSql = (): MockSql => {
-    const query = jest.fn().mockResolvedValue([]) as unknown as MockSql;
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    const query = jest.fn().mockResolvedValue([]) as MockSql;
     query.end = jest.fn().mockResolvedValue(undefined);
     return query;
   };
 
-  const mockPostgres = postgres as unknown as jest.Mock;
-  const mockDrizzle = drizzle as unknown as jest.Mock;
-  const mockMigrate = migrate as unknown as jest.Mock;
+  // SAFETY: The injected jest mocks implement the exact dependency functions invoked by
+  // runProductionMigrations; their module-only helper properties are not used by the function.
+  const dependencies: MigrationDependencies = {
+    postgres: mockPostgres as never,
+    drizzle: mockDrizzle as never,
+    migrate: mockMigrate as never,
+  };
+
+  const run = (databaseUrl = validUrl, migrationsFolder = realMigrationsFolder) =>
+    runProductionMigrations(databaseUrl, migrationsFolder, dependencies);
 
   const createTempFolder = async (
-    journalEntries: unknown[],
+    journalEntries: JournalEntryFixture[],
     sqlFiles: Record<string, string>,
   ): Promise<string> => {
     const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'migrate-spec-'));
@@ -82,7 +87,7 @@ describe('runProductionMigrations', () => {
     logSpy = jest.spyOn(Logger, 'log').mockImplementation(() => undefined);
     errorSpy = jest.spyOn(Logger, 'error').mockImplementation(() => undefined);
 
-    mockPostgres.mockImplementation((_url: string, _options?: unknown) => {
+    mockPostgres.mockImplementation((_url: string, _options?: PostgresOptions) => {
       const tag: 'lock' | 'migration' = createdClients.length === 0 ? 'lock' : 'migration';
       const sql = createMockSql();
       createdClients.push({ tag, sql });
@@ -103,7 +108,7 @@ describe('runProductionMigrations', () => {
   });
 
   it('applies migrations using the default migrations folder', async () => {
-    await runProductionMigrations(validUrl);
+    await run(validUrl);
 
     expect(mockMigrate).toHaveBeenCalledWith(expect.anything(), {
       migrationsFolder: realMigrationsFolder,
@@ -111,13 +116,14 @@ describe('runProductionMigrations', () => {
   });
 
   it('acquires advisory lock 7333 before running migrations', async () => {
-    await runProductionMigrations(validUrl);
+    await run(validUrl);
 
     const lock = lockClient();
     const firstCall = lock.mock.calls[0];
     expect(firstCall).toBeDefined();
 
-    const values = firstCall!.slice(1) as unknown[];
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    const values = firstCall!.slice(1) as SqlTemplateValue[];
     expect(values).toContain(7333);
 
     const migrateCallOrder = mockMigrate.mock.invocationCallOrder[0];
@@ -126,12 +132,13 @@ describe('runProductionMigrations', () => {
   });
 
   it('releases the advisory lock and ends both clients on success', async () => {
-    await runProductionMigrations(validUrl);
+    await run(validUrl);
 
     const lock = lockClient();
     const migration = migrationClient();
 
     const unlockCalls = lock.mock.calls.filter((call) => {
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       const strings = call[0] as TemplateStringsArray;
       return String(strings).includes('pg_advisory_unlock');
     });
@@ -144,7 +151,7 @@ describe('runProductionMigrations', () => {
   it('releases the lock and ends clients when migration fails', async () => {
     mockMigrate.mockRejectedValue(new Error('syntax error at or near "BOOM"'));
 
-    await expect(runProductionMigrations(validUrl)).rejects.toThrow('Database migration failed');
+    await expect(run(validUrl)).rejects.toThrow('Database migration failed');
 
     const lock = lockClient();
     const migration = migrationClient();
@@ -155,7 +162,7 @@ describe('runProductionMigrations', () => {
 
   it('ends clients even when the advisory unlock itself fails', async () => {
     const lock = createMockSql();
-    lock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+    lock.mockImplementation((strings: TemplateStringsArray, ..._values: SqlTemplateValue[]) => {
       const text = String(strings);
       if (text.includes('pg_advisory_unlock')) {
         return Promise.reject(new Error('unlock failed'));
@@ -165,29 +172,25 @@ describe('runProductionMigrations', () => {
 
     mockPostgres.mockReturnValue(lock);
 
-    await runProductionMigrations(validUrl);
+    await run(validUrl);
 
     expect(lock.end).toHaveBeenCalledWith({ timeout: 5 });
   });
 
   it('rejects a blank database URL before opening any client', async () => {
-    await expect(runProductionMigrations('')).rejects.toThrow('Invalid database URL');
+    await expect(run('')).rejects.toThrow('Invalid database URL');
     expect(mockPostgres).not.toHaveBeenCalled();
   });
 
   it('rejects a non-postgres database URL before opening any client', async () => {
-    await expect(runProductionMigrations('mysql://user:password@localhost/db')).rejects.toThrow(
-      'Invalid database URL',
-    );
+    await expect(run('mysql://user:password@localhost/db')).rejects.toThrow('Invalid database URL');
     expect(mockPostgres).not.toHaveBeenCalled();
   });
 
   it('rejects a missing migrations folder before opening any client', async () => {
     const missing = path.join(os.tmpdir(), 'does-not-exist-migrate-spec');
 
-    await expect(runProductionMigrations(validUrl, missing)).rejects.toThrow(
-      'Invalid migration folder',
-    );
+    await expect(run(validUrl, missing)).rejects.toThrow('Invalid migration folder');
     expect(mockPostgres).not.toHaveBeenCalled();
   });
 
@@ -197,9 +200,7 @@ describe('runProductionMigrations', () => {
     const nested = path.join(file, 'not-a-folder');
     await fs.writeFile(nested, 'content', 'utf8');
 
-    await expect(runProductionMigrations(validUrl, nested)).rejects.toThrow(
-      'Invalid migration folder',
-    );
+    await expect(run(validUrl, nested)).rejects.toThrow('Invalid migration folder');
     expect(mockPostgres).not.toHaveBeenCalled();
   });
 
@@ -207,9 +208,7 @@ describe('runProductionMigrations', () => {
     const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'migrate-spec-no-journal-'));
     tempFolders.push(folder);
 
-    await expect(runProductionMigrations(validUrl, folder)).rejects.toThrow(
-      'Missing migration journal',
-    );
+    await expect(run(validUrl, folder)).rejects.toThrow('Missing migration journal');
     expect(mockPostgres).not.toHaveBeenCalled();
   });
 
@@ -219,36 +218,38 @@ describe('runProductionMigrations', () => {
     await fs.mkdir(path.join(folder, 'meta'));
     await fs.writeFile(path.join(folder, 'meta', '_journal.json'), 'not json', 'utf8');
 
-    await expect(runProductionMigrations(validUrl, folder)).rejects.toThrow(
-      'Invalid migration journal',
-    );
+    await expect(run(validUrl, folder)).rejects.toThrow('Invalid migration journal');
+    expect(mockPostgres).not.toHaveBeenCalled();
+  });
+  it('rejects a null journal entry before opening any client', async () => {
+    const folder = await createTempFolder([null], {});
+
+    await expect(run(validUrl, folder)).rejects.toThrow('Invalid migration journal');
     expect(mockPostgres).not.toHaveBeenCalled();
   });
 
   it('rejects a journal entry with a missing SQL file before opening any client', async () => {
     const folder = await createTempFolder([{ tag: '0000_missing_migration' }], {});
 
-    await expect(runProductionMigrations(validUrl, folder)).rejects.toThrow(
-      'Missing migration file',
-    );
+    await expect(run(validUrl, folder)).rejects.toThrow('Missing migration file');
     expect(mockPostgres).not.toHaveBeenCalled();
   });
 
   it('sanitizes thrown messages and logs on migration failure', async () => {
     mockMigrate.mockRejectedValue(new Error('relation "users" already exists'));
 
-    await expect(runProductionMigrations(validUrl)).rejects.toThrow('Database migration failed');
+    await expect(run(validUrl)).rejects.toThrow('Database migration failed');
 
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(errorSpy).toHaveBeenCalledWith('Database migration failed', 'Migrate');
 
-    const thrownMessage = String(await runProductionMigrations(validUrl).catch((error) => error));
+    const thrownMessage = String(await run(validUrl).catch((error) => error));
     expect(thrownMessage).not.toContain(validUrl);
     expect(thrownMessage).not.toContain('postgres://');
   });
 
   it('logs only sanitized messages during a successful run', async () => {
-    await runProductionMigrations(validUrl);
+    await run(validUrl);
 
     expect(logSpy).toHaveBeenCalledWith('Applying database migrations', 'Migrate');
     expect(logSpy).toHaveBeenCalledWith('Database migrations complete', 'Migrate');

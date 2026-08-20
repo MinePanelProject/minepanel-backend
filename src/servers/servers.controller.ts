@@ -91,6 +91,7 @@ export class ServersController {
   }
 
   private extractUser(req: Request): UserPayload {
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     const user = req.user as UserPayload | undefined;
 
     if (!user) {

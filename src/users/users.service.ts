@@ -7,6 +7,13 @@ import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
 import { type Role, refreshTokens, type User, type UserStatus, users } from 'src/db/schema';
 import { type PublicUser, toPublicUser } from './public-user';
 
+type UserInsertValues = {
+  email: string;
+  username: string;
+  passwordHash: string;
+  status: UserStatus;
+  role?: Role;
+};
 @Injectable()
 export class UsersService {
   constructor(@Inject(DRIZZLE) private db: DrizzleDB) {}
@@ -18,13 +25,11 @@ export class UsersService {
     status: UserStatus,
     role?: Role,
   ): Promise<boolean> {
-    await this.db.insert(users).values({
-      email,
-      username,
-      passwordHash,
-      status,
-      ...(role ? { role } : {}),
-    });
+    const values: UserInsertValues = { email, username, passwordHash, status };
+    if (role !== undefined) {
+      values.role = role;
+    }
+    await this.db.insert(users).values(values);
     return true;
   }
 

@@ -16,10 +16,11 @@ import {
 } from './server-access';
 
 const MAX_RACE_RETRIES = 1;
+type ServerAccessDatabase = Pick<DrizzleDB, 'select' | 'insert' | 'update' | 'delete'>;
 
 @Injectable()
 export class ServerAccessService {
-  constructor(@Inject(DRIZZLE) private readonly db: DrizzleDB) {}
+  constructor(@Inject(DRIZZLE) private readonly db: ServerAccessDatabase) {}
 
   async requestAccess(
     serverId: string,

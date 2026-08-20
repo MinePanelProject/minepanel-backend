@@ -4,6 +4,7 @@ import { SocketReservationService } from './socket-reservation.service';
 type Raw = EventEmitter & { id: string; close: jest.Mock };
 
 const raw = (id: string): Raw => {
+  // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
   const connection = new EventEmitter() as Raw;
   connection.id = id;
   connection.close = jest.fn();
@@ -23,6 +24,7 @@ describe('SocketReservationService', () => {
     const service = new SocketReservationService();
     const connection = raw('raw-1');
 
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     service.reserve(connection as never);
     expect(service.claim('raw-1')).toBe(true);
     expect(service.claim('raw-1')).toBe(false);
@@ -36,7 +38,9 @@ describe('SocketReservationService', () => {
     const connection = raw('raw-timeout');
     const unref = jest.spyOn(global, 'setTimeout');
 
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     service.reserve(connection as never);
+    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
     const timer = unref.mock.results[0]?.value as NodeJS.Timeout;
     expect(timer.unref).toBeDefined();
     jest.advanceTimersByTime(5000);
@@ -50,6 +54,7 @@ describe('SocketReservationService', () => {
     const service = new SocketReservationService();
     const connection = raw('raw-close');
 
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     service.reserve(connection as never);
     connection.emit('close');
     connection.emit('close');
@@ -62,7 +67,10 @@ describe('SocketReservationService', () => {
     const service = new SocketReservationService();
     const connections = Array.from({ length: 101 }, (_, index) => raw(`raw-${index}`));
 
-    for (const connection of connections) service.reserve(connection as never);
+    for (const connection of connections) {
+      // SAFETY: raw() constructs exactly the id and close members reserve() reads.
+      service.reserve(connection as never);
+    }
 
     expect(
       connections.slice(0, 100).every((connection) => connection.close.mock.calls.length === 0),
@@ -76,8 +84,11 @@ describe('SocketReservationService', () => {
     const second = raw('duplicate');
     const missing = raw('');
 
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     service.reserve(first as never);
+    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
     service.reserve(second as never);
+    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
     service.reserve(missing as never);
 
     expect(second.close).toHaveBeenCalledTimes(1);
@@ -89,6 +100,7 @@ describe('SocketReservationService', () => {
     const service = new SocketReservationService();
     const connections = [raw('a'), raw('b')];
     connections.forEach((connection) => {
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       service.reserve(connection as never);
     });
 

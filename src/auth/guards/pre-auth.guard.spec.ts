@@ -1,14 +1,18 @@
-import { UnauthorizedException } from '@nestjs/common';
-import type { JwtService } from '@nestjs/jwt';
+import { type ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 import { PreAuthGuard } from './pre-auth.guard';
 
+// SAFETY: PreAuthGuard only reads request.headers.authorization; the partial request
+// and context doubles cover exactly that surface.
 const makeContext = (authorization?: string) =>
   ({
     switchToHttp: () => ({
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       getRequest: () => ({ headers: { authorization } }) as Request,
     }),
-  }) as never;
+    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
+  }) as ExecutionContext;
 
 describe('PreAuthGuard', () => {
   let jwtService: Pick<JwtService, 'verifyAsync'>;
@@ -16,7 +20,8 @@ describe('PreAuthGuard', () => {
 
   beforeEach(() => {
     jwtService = { verifyAsync: jest.fn() };
-    guard = new PreAuthGuard(jwtService as JwtService);
+    // SAFETY: this test double provides verifyAsync and adopts JwtService's prototype.
+    guard = new PreAuthGuard(Object.setPrototypeOf(jwtService, JwtService.prototype) as JwtService);
   });
 
   it('rejects a missing Bearer pre-auth token', async () => {

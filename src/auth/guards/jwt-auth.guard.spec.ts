@@ -1,18 +1,40 @@
-import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { type ExecutionContext, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import type { AccessTokenPrincipal, AccessTokenService } from 'src/auth/access-token.service';
+import { type AccessTokenPrincipal, AccessTokenService } from 'src/auth/access-token.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
+type JwtContextFixture = {
+  getHandler: () => void;
+  getClass: () => void;
+  switchToHttp: () => { getRequest: () => FakeRequest };
+  request: FakeRequest;
+};
+// SAFETY: The fixture supplies every execution-context member consumed by JwtAuthGuard.
+const asExecutionContext = (
+  fixture: JwtContextFixture,
+): ExecutionContext & { request: FakeRequest } =>
+  fixture as ExecutionContext & { request: FakeRequest };
+
+type FakeRequest = {
+  cookies: Record<string, string>;
+  path: string;
+  url: string;
+  method: string;
+  user?: { id: string; username: string; role: string; temporaryAuth?: boolean };
+};
+
 const makeContext = (path = '/api/info', cookies: Record<string, string> = {}, method = 'GET') => {
-  const request = { cookies, path, url: path, method };
+  const request: FakeRequest = { cookies, path, url: path, method };
   const handler = () => undefined;
   const targetClass = class {};
-  return {
+  // SAFETY: JwtAuthGuard only calls getHandler, getClass, and switchToHttp().getRequest();
+  // request is exposed so tests can assert on the attached principal.
+  return asExecutionContext({
     getHandler: () => handler,
     getClass: () => targetClass,
     switchToHttp: () => ({ getRequest: () => request }),
     request,
-  } as never;
+  });
 };
 
 const principal = (overrides: Partial<AccessTokenPrincipal> = {}): AccessTokenPrincipal => ({
@@ -31,19 +53,30 @@ describe('JwtAuthGuard', () => {
 
   beforeEach(() => {
     verify = jest.fn().mockResolvedValue(principal());
+    // SAFETY: JwtAuthGuard only calls reflector.getAllAndOverride and
+    // accessTokenService.verify; the doubles implement exactly those members.
     const reflector = {
       getAllAndOverride: jest.fn().mockReturnValue(false),
-    } as unknown as Reflector;
-    guard = new JwtAuthGuard({ verify } as unknown as AccessTokenService, reflector);
+    } satisfies Pick<Reflector, 'getAllAndOverride'>;
+    guard = new JwtAuthGuard(
+      // SAFETY: the mock method is attached to AccessTokenService's concrete prototype.
+      Object.assign(Object.create(AccessTokenService.prototype), { verify }),
+      // SAFETY: the mock method is attached to Reflector's concrete prototype.
+      Object.assign(new Reflector(), reflector),
+    );
   });
 
   it('bypasses public routes without reading cookies', async () => {
     const context = makeContext('/health');
-    (guard as unknown as { reflector: Reflector }).reflector = {
-      getAllAndOverride: jest.fn().mockReturnValue(true),
-    } as unknown as Reflector;
+    // SAFETY: same minimal collaborators as in beforeEach, with the public-route metadata on.
+    const publicGuard = new JwtAuthGuard(
+      // SAFETY: the mock method is attached to AccessTokenService's concrete prototype.
+      Object.assign(Object.create(AccessTokenService.prototype), { verify }),
+      // SAFETY: the mock method is attached to Reflector's concrete prototype.
+      Object.assign(new Reflector(), { getAllAndOverride: jest.fn().mockReturnValue(true) }),
+    );
 
-    await expect(guard.canActivate(context)).resolves.toBe(true);
+    await expect(publicGuard.canActivate(context)).resolves.toBe(true);
     expect(verify).not.toHaveBeenCalled();
   });
 
@@ -57,7 +90,7 @@ describe('JwtAuthGuard', () => {
 
     await expect(guard.canActivate(context)).resolves.toBe(true);
     expect(verify).toHaveBeenCalledWith('signed-token');
-    expect((context as unknown as { request: Record<string, unknown> }).request.user).toEqual({
+    expect(context.request.user).toEqual({
       id: 'user-1',
       username: 'player',
       role: 'ADMIN',
@@ -95,7 +128,7 @@ describe('JwtAuthGuard', () => {
     const context = makeContext('/api/auth/password', { access_token: 'token' }, 'PATCH');
 
     await expect(guard.canActivate(context)).resolves.toBe(true);
-    expect((context as unknown as { request: Record<string, unknown> }).request.user).toEqual({
+    expect(context.request.user).toEqual({
       id: 'user-1',
       username: 'player',
       role: 'ADMIN',
@@ -123,8 +156,6 @@ describe('JwtAuthGuard', () => {
     const context = makeContext('/api/info', { access_token: 'token' });
     await guard.canActivate(context);
 
-    expect(
-      (context as unknown as { request: Record<string, unknown> }).request.user,
-    ).not.toHaveProperty('temporaryAuth');
+    expect(context.request.user).not.toHaveProperty('temporaryAuth');
   });
 });

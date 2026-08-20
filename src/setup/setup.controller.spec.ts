@@ -2,12 +2,14 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { SetupController } from './setup.controller';
 import { SetupService, type SetupStatus } from './setup.service';
 
+type SetupServiceDouble = {
+  getSetupState: jest.Mock;
+  initAdminRegister: jest.Mock;
+};
+
 describe('SetupController', () => {
   let controller: SetupController;
-  let setupService: {
-    getSetupState: jest.Mock;
-    initAdminRegister: jest.Mock;
-  };
+  let setupService: SetupServiceDouble;
 
   beforeEach(async () => {
     setupService = {

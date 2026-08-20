@@ -2,29 +2,35 @@ import { Logger } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { DOCKER_REQUEST_TIMEOUT_MS } from './docker.constants';
-import { DockerModule } from './docker.module';
+import {
+  DOCKER_CLIENT_FACTORY,
+  type DockerClientFactory,
+  type DockerClientOptions,
+  DockerModule,
+} from './docker.module';
 import { DockerService } from './docker.service';
 
 const mockPing = jest.fn();
-const mockDockerodeOptions: unknown[] = [];
+const mockDockerodeOptions: DockerClientOptions[] = [];
 const mockDockerodeEnvAtConstruction: Array<{ dockerHost: string | undefined }> = [];
-
-jest.mock('dockerode', () =>
-  jest.fn().mockImplementation((opts: unknown) => {
-    mockDockerodeOptions.push(opts);
-    // the factory must have suppressed ambient DOCKER_HOST before construction
-    mockDockerodeEnvAtConstruction.push({ dockerHost: process.env.DOCKER_HOST });
-    return { ping: mockPing };
-  }),
-);
+// SAFETY: this mock is injected through DockerModule's explicit factory seam and only
+// implements the DockerClient contract exercised by the module factory.
+// SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
+const mockDockerodeFactory = jest.fn() as jest.MockedFunction<DockerClientFactory>;
+const isStringLogValue = (value: string | undefined): value is string => typeof value === 'string';
 
 const originalDockerHost = process.env.DOCKER_HOST;
 
 describe('DockerModule', () => {
   let exitSpy: jest.SpyInstance;
-
   beforeEach(() => {
     delete process.env.DOCKER_HOST;
+    mockDockerodeFactory.mockImplementation((options) => {
+      mockDockerodeOptions.push(options);
+      // the factory must have suppressed ambient DOCKER_HOST before construction
+      mockDockerodeEnvAtConstruction.push({ dockerHost: process.env.DOCKER_HOST });
+      return { ping: mockPing };
+    });
     exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => {
       throw new Error('process.exit called');
     });
@@ -33,6 +39,7 @@ describe('DockerModule', () => {
   afterEach(() => {
     exitSpy.mockRestore();
     mockPing.mockReset();
+    mockDockerodeFactory.mockReset();
     mockDockerodeOptions.length = 0;
     mockDockerodeEnvAtConstruction.length = 0;
     if (originalDockerHost === undefined) {
@@ -41,13 +48,17 @@ describe('DockerModule', () => {
       process.env.DOCKER_HOST = originalDockerHost;
     }
   });
+  const createModule = () =>
+    Test.createTestingModule({
+      imports: [DockerModule, ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true })],
+    })
+      .overrideProvider(DOCKER_CLIENT_FACTORY)
+      .useValue(mockDockerodeFactory);
 
   it('compiles when the daemon is unreachable and does not call process.exit', async () => {
     mockPing.mockRejectedValue(new Error('connect ENOENT /nonexistent.sock'));
 
-    const module: TestingModule = await Test.createTestingModule({
-      imports: [DockerModule, ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true })],
-    }).compile();
+    const module: TestingModule = await createModule().compile();
 
     expect(module.get(DockerService)).toBeDefined();
     expect(exitSpy).not.toHaveBeenCalled();
@@ -57,9 +68,7 @@ describe('DockerModule', () => {
   it('compiles when the daemon is reachable and DockerService.ping() returns true', async () => {
     mockPing.mockResolvedValue(undefined);
 
-    const module: TestingModule = await Test.createTestingModule({
-      imports: [DockerModule, ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true })],
-    }).compile();
+    const module: TestingModule = await createModule().compile();
 
     const service = module.get(DockerService);
 
@@ -71,9 +80,7 @@ describe('DockerModule', () => {
     process.env.DOCKER_HOST = '::bad::';
     mockPing.mockRejectedValue(new Error('connect ENOENT /nonexistent.sock'));
 
-    const module: TestingModule = await Test.createTestingModule({
-      imports: [DockerModule, ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true })],
-    }).compile();
+    const module: TestingModule = await createModule().compile();
 
     expect(module.get(DockerService)).toBeDefined();
     expect(exitSpy).not.toHaveBeenCalled();
@@ -89,9 +96,7 @@ describe('DockerModule', () => {
     process.env.DOCKER_HOST = 'tcp://1.2.3.4:2375';
     mockPing.mockRejectedValue(new Error('connect ENOENT /nonexistent.sock'));
 
-    const module: TestingModule = await Test.createTestingModule({
-      imports: [DockerModule, ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true })],
-    }).compile();
+    const module: TestingModule = await createModule().compile();
 
     expect(module.get(DockerService)).toBeDefined();
     expect(exitSpy).not.toHaveBeenCalled();
@@ -108,12 +113,10 @@ describe('DockerModule', () => {
     process.env.DOCKER_HOST = '::bad::';
     mockPing.mockRejectedValue(new Error('connect ENOENT /nonexistent.sock'));
 
-    await Test.createTestingModule({
-      imports: [DockerModule, ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true })],
-    }).compile();
+    await createModule().compile();
 
     const dockerHostCall = warnSpy.mock.calls.find(
-      (call) => typeof call[0] === 'string' && call[0].includes('DOCKER_HOST'),
+      (call) => isStringLogValue(call[0]) && call[0].includes('DOCKER_HOST'),
     );
     expect(dockerHostCall).toBeDefined();
     expect(dockerHostCall![0]).not.toContain('::bad::');
@@ -124,9 +127,7 @@ describe('DockerModule', () => {
     delete process.env.DOCKER_HOST;
     mockPing.mockRejectedValue(new Error('connect ENOENT /nonexistent.sock'));
 
-    const module: TestingModule = await Test.createTestingModule({
-      imports: [DockerModule, ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true })],
-    }).compile();
+    const module: TestingModule = await createModule().compile();
 
     expect(module.get(DockerService)).toBeDefined();
     expect(process.env.DOCKER_HOST).toBeUndefined();

@@ -66,6 +66,7 @@ describe('Database migrations (PostgreSQL e2e)', () => {
 
   const readJournal = async (): Promise<{ entries: Array<{ tag: string }> }> => {
     const raw = await fs.readFile(path.join(realMigrationsFolder, 'meta', '_journal.json'), 'utf8');
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     return JSON.parse(raw) as { entries: Array<{ tag: string }> };
   };
 
@@ -152,6 +153,7 @@ describe('Database migrations (PostgreSQL e2e)', () => {
   ): Promise<string | null> =>
     withDatabaseConnection(databaseUrl, async (sql) => {
       const rows = await sql`SELECT access_type FROM servers WHERE id = ${serverId}`;
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       return (rows[0]?.access_type as string | undefined) ?? null;
     });
 

@@ -42,7 +42,7 @@ export class AppController {
   @ApiResponse({ status: 200, description: 'Protocol-1 panel info with capability flags' })
   @HttpCode(HttpStatus.OK)
   @Get('info')
-  getInfo(@Res({ passthrough: true }) res: Response): PanelInfo {
+  getInfo(@Res({ passthrough: true }) res: Pick<Response, 'setHeader'>): PanelInfo {
     res.setHeader('Cache-Control', 'no-store');
 
     return {
@@ -64,7 +64,7 @@ export class AppController {
   @Public()
   @ApiOperation({ summary: 'Liveness check (db + docker status)' })
   @Get('health')
-  async getHealth(@Res({ passthrough: true }) res: Response) {
+  async getHealth(@Res({ passthrough: true }) res: Pick<Response, 'status'>) {
     const db = this.db
       .execute(sql`SELECT 1`)
       .then(() => 'ok' as const)

@@ -1,4 +1,4 @@
-import type { DiskInfo, DockerService, HostInfo } from 'src/docker/docker.service';
+import { type DiskInfo, DockerService, type HostInfo } from 'src/docker/docker.service';
 import { SystemMetricsService } from './system-metrics.service';
 
 const makeService = () => {
@@ -8,7 +8,10 @@ const makeService = () => {
     getHostFreeMemoryMb: jest.fn<number | null, []>(),
   };
   return {
-    service: new SystemMetricsService(docker as unknown as DockerService),
+    // SAFETY: the mock methods are attached to DockerService's concrete prototype.
+    service: new SystemMetricsService(
+      Object.assign(Object.create(DockerService.prototype), docker),
+    ),
     docker,
   };
 };
@@ -41,11 +44,22 @@ describe('SystemMetricsService', () => {
     docker.getHostInfo.mockResolvedValue({ totalRamMb: 4096, cpuCount: 8 });
     docker.getHostDiskInfo.mockResolvedValue({ totalDiskMb: 10000, freeDiskMb: 7000 });
     docker.getHostFreeMemoryMb.mockReturnValue(1024);
-    if (_label.startsWith('host')) docker.getHostInfo.mockResolvedValue(mutation() as HostInfo);
-    if (_label.startsWith('disk')) docker.getHostDiskInfo.mockResolvedValue(mutation() as DiskInfo);
-    if (_label.startsWith('free')) docker.getHostFreeMemoryMb.mockReturnValue(mutation() as number);
-    if (_label === 'free exceeds total')
+    if (_label.startsWith('host')) {
+      // SAFETY: The table's malformed case is deliberately passed through DockerService's typed mock.
+      docker.getHostInfo.mockResolvedValue(mutation() as HostInfo);
+    }
+    if (_label.startsWith('disk')) {
+      // SAFETY: The table's malformed case is deliberately passed through DockerService's typed mock.
+      docker.getHostDiskInfo.mockResolvedValue(mutation() as DiskInfo);
+    }
+    if (_label.startsWith('free')) {
+      // SAFETY: The table's malformed case is deliberately passed through DockerService's typed mock.
       docker.getHostFreeMemoryMb.mockReturnValue(mutation() as number);
+    }
+    if (_label === 'free exceeds total') {
+      // SAFETY: The table's malformed case is deliberately passed through DockerService's typed mock.
+      docker.getHostFreeMemoryMb.mockReturnValue(mutation() as number);
+    }
 
     await expect(service.collectSnapshot()).resolves.toBeNull();
   });

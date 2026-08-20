@@ -11,9 +11,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import * as bcrypt from 'bcrypt';
 import { and, eq, getTableColumns, gt } from 'drizzle-orm';
-import { generateSecret, generateURI, verifySync } from 'otplib';
 import { decrypt, encrypt } from 'src/common/crypto.util';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
 import { RefreshToken, refreshTokens, type User, users } from 'src/db/schema';
@@ -23,13 +21,24 @@ import { EditUserDto } from './dto/editUser.dto';
 import { LoginUserDto } from './dto/login.dto';
 import { CreateUserDto } from './dto/register.dto';
 import { UpdatePasswordDTO } from './dto/updatePw.dto';
+import * as bcrypt from './password';
+import { generateSecret, generateURI, verifySync } from './totp';
 
+type AuthDatabase = Pick<DrizzleDB, 'insert' | 'update' | 'select' | 'delete'>;
 const REFRESH_TOKEN_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const TWO_FACTOR_FAILURE_LIMIT = 5;
 const TWO_FACTOR_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
 const TWO_FACTOR_LOCKOUT_MS = 15 * 60 * 1000;
 const DUMMY_PASSWORD_HASH = '$2b$10$ImDussfxY6I73mT10z0lU.DyrhBuXdRh7CBiLNf0nJM3yNj1asche';
 const TOTP_WINDOW_SECONDS = 30;
+
+type JsonScalar = string | number | boolean | null | undefined;
+type BackupCodeArrayCandidate = JsonScalar[];
+
+const isStringScalar = (value: JsonScalar): value is string => typeof value === 'string';
+
+const isStringArray = (value: BackupCodeArrayCandidate): value is string[] =>
+  Array.isArray(value) && value.every(isStringScalar);
 
 export interface AuthTokens {
   user: PublicUser;
@@ -42,6 +51,14 @@ export type LoginResponse = AuthTokens | TwoFactorChallenge;
 
 type TwoFactorFailure = { failures: number; firstFailureAt: number; lockedUntil?: number };
 type PasswordUpdateResult = { user: PublicUser; session?: AuthTokens };
+type AccessTokenClaims = {
+  sub: string;
+  type: 'access';
+  username: string;
+  role: string;
+  temporaryAuth?: boolean;
+};
+type RefreshTokenClaims = { sub: string; type: 'refresh'; temporaryAuth?: boolean };
 
 @Injectable()
 export class AuthService {
@@ -51,7 +68,7 @@ export class AuthService {
   constructor(
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
-    @Inject(DRIZZLE) private readonly db: DrizzleDB,
+    @Inject(DRIZZLE) private readonly db: AuthDatabase,
     private readonly configService: ConfigService,
   ) {
     const encryptionKey = this.configService.get<string>('ENCRYPTION_KEY');
@@ -267,20 +284,22 @@ export class AuthService {
       }
 
       const temporaryAuth = decoded.temporaryAuth === true;
-      const newAccessToken = await this.jwtService.signAsync({
+      const accessClaims: AccessTokenClaims = {
         sub: user.id,
         type: 'access',
         username: user.username,
         role: user.role,
-        ...(temporaryAuth ? { temporaryAuth: true } : {}),
-      });
+      };
+      const refreshClaims: RefreshTokenClaims = { sub: user.id, type: 'refresh' };
+      if (temporaryAuth) {
+        accessClaims.temporaryAuth = true;
+        refreshClaims.temporaryAuth = true;
+      }
+      const newAccessToken = await this.jwtService.signAsync(accessClaims);
 
       await this.db.delete(refreshTokens).where(eq(refreshTokens.id, tokenEntry.id));
 
-      const newRefreshToken = await this.jwtService.signAsync(
-        { sub: user.id, type: 'refresh', ...(temporaryAuth ? { temporaryAuth: true } : {}) },
-        { expiresIn: '7d' },
-      );
+      const newRefreshToken = await this.jwtService.signAsync(refreshClaims, { expiresIn: '7d' });
       const hashedNew = await bcrypt.hash(newRefreshToken, 10);
       await this.storeRefreshToken(user.id, hashedNew);
 
@@ -407,17 +426,19 @@ export class AuthService {
   }
 
   private async issueSession(user: User, temporaryAuth = false): Promise<AuthTokens> {
-    const accessToken = await this.jwtService.signAsync({
+    const accessClaims: AccessTokenClaims = {
       sub: user.id,
       type: 'access',
       username: user.username,
       role: user.role,
-      ...(temporaryAuth ? { temporaryAuth: true } : {}),
-    });
-    const refreshToken = await this.jwtService.signAsync(
-      { sub: user.id, type: 'refresh', ...(temporaryAuth ? { temporaryAuth: true } : {}) },
-      { expiresIn: '7d' },
-    );
+    };
+    const refreshClaims: RefreshTokenClaims = { sub: user.id, type: 'refresh' };
+    if (temporaryAuth) {
+      accessClaims.temporaryAuth = true;
+      refreshClaims.temporaryAuth = true;
+    }
+    const accessToken = await this.jwtService.signAsync(accessClaims);
+    const refreshToken = await this.jwtService.signAsync(refreshClaims, { expiresIn: '7d' });
 
     await this.storeRefreshToken(user.id, await bcrypt.hash(refreshToken, 10));
 
@@ -509,8 +530,8 @@ export class AuthService {
 
     let codes: string[];
     try {
-      const parsed: unknown = JSON.parse(user.totpBackupCodes);
-      if (!Array.isArray(parsed) || !parsed.every((code) => typeof code === 'string')) {
+      const parsed: BackupCodeArrayCandidate = JSON.parse(user.totpBackupCodes);
+      if (!isStringArray(parsed)) {
         return false;
       }
       codes = parsed;

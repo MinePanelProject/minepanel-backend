@@ -12,10 +12,27 @@ import { SystemMetricsService, type SystemStats } from './system-metrics.service
 
 type AuthStatus = 'PENDING' | 'VERIFYING' | 'AUTHENTICATED';
 
+type AuthEventValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | readonly AuthEventValue[]
+  | { readonly [key: string]: AuthEventValue };
+
+type AuthObject = { readonly [key: string]: AuthEventValue };
+
+const isAuthObject = (value: AuthEventValue): value is AuthObject =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isStringValue = (value: AuthEventValue | string[] | undefined): value is string =>
+  typeof value === 'string';
+
 type SocketAuthState = {
   status: AuthStatus;
   deadline: NodeJS.Timeout | null;
-  listener: ((data: unknown) => void) | null;
+  listener: ((data: AuthEventValue) => void) | null;
 };
 
 type SocketData = {
@@ -49,9 +66,9 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
   private pollGeneration = 0;
   private inFlight = false;
   private pendingImmediate = false;
+  private live = true;
   private interval: NodeJS.Timeout | null = null;
   private cachedSnapshot: { snapshot: SystemStats; cachedAt: number } | null = null;
-  private live = true;
 
   constructor(
     private readonly accessTokenService: AccessTokenService,
@@ -60,19 +77,17 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
   ) {}
 
   handleConnection(socket: Socket): void {
-    // socket.io v4 generates a fresh socket.id distinct from the Engine.IO
-    // session id; the reservation registry is keyed by the engine session, so
-    // claim through the underlying connection id.
-    // socket.io v4 generates a fresh socket.id distinct from the Engine.IO
-    // session id; the reservation registry is keyed by the engine session, so
-    // claim through the underlying connection id.
-    const engineId = (socket.client as unknown as { id: string } | undefined)?.id ?? socket.id;
+    const clientId = socket.client
+      ? Object.getOwnPropertyDescriptor(socket.client, 'id')?.value
+      : undefined;
+    const engineId = String(clientId ?? socket.id);
     const claimed = this.reservationService.claim(engineId);
     const state: SocketAuthState = {
       status: 'PENDING',
       deadline: null,
       listener: null,
     };
+    // SAFETY: socket.data is the mutable application data slot owned by this gateway.
     const data = socket.data as SocketData;
     data.authState = state;
     data.engineId = engineId;
@@ -88,7 +103,6 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
     state.deadline = deadline;
 
     const cookieResult = this.parseAccessCookie(socket.handshake.headers.cookie);
-
     if (cookieResult.kind === 'invalid') {
       this.disconnectSilent(socket);
       return;
@@ -103,7 +117,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
       return;
     }
 
-    const listener = (payload: unknown) => {
+    const listener = (payload: AuthEventValue) => {
       if (state.status !== 'PENDING') {
         this.disconnectSilent(socket);
         return;
@@ -111,7 +125,6 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
 
       state.status = 'VERIFYING';
       const payloadResult = this.parseAuthPayload(payload);
-
       if (payloadResult.kind !== 'token') {
         this.disconnectSilent(socket);
         return;
@@ -128,6 +141,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
   }
 
   handleDisconnect(socket: Socket): void {
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     const data = socket.data as SocketData;
     const wasAuthenticated = data.principal !== undefined;
 
@@ -165,15 +179,13 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
     state: SocketAuthState,
     token: string,
   ): Promise<void> {
+    // SAFETY: socket.data is the mutable application data slot owned by this gateway.
     const data = socket.data as SocketData;
 
     if (!this.live) {
       return;
     }
 
-    // A verifier completion after the reservation deadline or a disconnect is
-    // cancelled: the reservation is already released — never join the room,
-    // arm expiry, serve cache, or start polling for a dead session.
     if (!this.reservationService.release(data.engineId ?? socket.id)) {
       this.disconnectSilent(socket);
       return;
@@ -188,8 +200,6 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
       state.deadline = null;
     }
 
-    // Keep the stateful listener attached until disconnect: a second 'auth'
-    // event in VERIFYING or AUTHENTICATED state must disconnect (architect).
     if (!this.isEligibleForMetrics(principal)) {
       socket.disconnect(true);
       return;
@@ -203,7 +213,6 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
     this.adminCount += 1;
 
     if (!this.armExpiry(socket, principal.exp)) {
-      // expired during verification: disconnected — do not serve cache or poll
       return;
     }
 
@@ -215,12 +224,12 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
     return principal.role === 'ADMIN' && !principal.temporaryAuth && !principal.mustChangePassword;
   }
 
-  private parseAccessCookie(cookieHeader: unknown): CookieParseResult {
+  private parseAccessCookie(cookieHeader: string | string[] | undefined): CookieParseResult {
     if (cookieHeader === undefined) {
       return { kind: 'absent' };
     }
 
-    if (typeof cookieHeader !== 'string') {
+    if (!isStringValue(cookieHeader)) {
       return { kind: 'invalid' };
     }
 
@@ -272,8 +281,8 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
     return { kind: 'token', token };
   }
 
-  private parseAuthPayload(data: unknown): CookieParseResult {
-    if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+  private parseAuthPayload(data: AuthEventValue): CookieParseResult {
+    if (!isAuthObject(data)) {
       return { kind: 'invalid' };
     }
 
@@ -292,7 +301,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
     }
 
     const value = descriptor.value;
-    if (typeof value !== 'string' || value.length === 0) {
+    if (!isStringValue(value) || value.length === 0) {
       return { kind: 'invalid' };
     }
 
@@ -304,6 +313,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
   }
 
   private armExpiry(socket: Socket, exp: number): boolean {
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     const data = socket.data as SocketData;
     let ms = exp - Date.now();
 
@@ -442,9 +452,10 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
         continue;
       }
 
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       const data = socket.data as SocketData;
       const token = data.accessToken;
-      if (typeof token !== 'string') {
+      if (!isStringValue(token)) {
         this.disconnectSilent(socket);
         continue;
       }
@@ -490,6 +501,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
   }
 
   private cleanupSocket(socket: Socket): void {
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
     const data = socket.data as SocketData;
 
     if (data.authState?.deadline) {

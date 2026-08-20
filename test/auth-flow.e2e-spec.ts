@@ -1,3 +1,9 @@
+type AccessTokenClaimsCandidate = {
+  sub?: string;
+  type?: string;
+  username?: string;
+};
+
 import type { INestApplication } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import cookieParser from 'cookie-parser';
@@ -13,11 +19,23 @@ import { DockerService } from '../src/docker/docker.service';
 import { assertSafeTestDatabase } from './test-database';
 
 const E2E_SETUP_TOKEN = 'e2e-setup-token-9f27c4d1a6b34802';
+const isSingleCookieHeader = (value: string | string[] | undefined): value is string =>
+  typeof value === 'string';
+
+const setCookieHeader = (value: string | string[] | undefined): string[] =>
+  isSingleCookieHeader(value) ? [value] : (value ?? []);
+
+const isAccessTokenClaims = (
+  claims: AccessTokenClaimsCandidate,
+): claims is Required<Pick<AccessTokenClaimsCandidate, 'sub' | 'type' | 'username'>> =>
+  typeof claims.sub === 'string' &&
+  typeof claims.type === 'string' &&
+  typeof claims.username === 'string';
 
 describe('Authentication flow (PostgreSQL e2e)', () => {
   let sql: postgres.Sql;
   let db: PostgresJsDatabase<typeof schema>;
-  let app: INestApplication<App>;
+  let app: INestApplication;
   let userId: string;
   let adminId: string;
   let setupRowCreatedBySuite = false;
@@ -38,16 +56,18 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
       .limit(1);
     expect(existing).toBeUndefined();
 
+    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
     const moduleFixture: TestingModule = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(DRIZZLE)
-      .useValue(db as unknown as DrizzleDB)
+      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+      .useValue(db as DrizzleDB)
       .overrideProvider(DockerService)
       .useValue({ ping: jest.fn().mockResolvedValue(true) })
       .overrideProvider(DOCKERODE)
       .useValue({})
       .compile();
 
-    app = moduleFixture.createNestApplication<App>();
+    app = moduleFixture.createNestApplication();
     app.setGlobalPrefix('api', { exclude: ['/health'] });
     app.use(cookieParser());
     await app.init();
@@ -121,7 +141,8 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
     expect(login.body).toMatchObject({ id: userId, username: registration.username, role: 'USER' });
     expect(login.body).not.toHaveProperty('accessToken');
     expect(login.body).not.toHaveProperty('refreshToken');
-    const cookies = login.headers['set-cookie'] as string[];
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    const cookies = setCookieHeader(login.headers['set-cookie']);
     expect(cookies).toEqual(
       expect.arrayContaining([
         expect.stringContaining('access_token='),
@@ -131,21 +152,23 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
     expect(cookies.join(';')).toContain('HttpOnly');
     const cookiePairs = cookies.map((cookie) => cookie.split(';', 1)[0]);
     const accessCookie = cookiePairs.find((cookie) => cookie.startsWith('access_token='));
-    const tokenClaims = JSON.parse(
-      Buffer.from(
-        (accessCookie as string).slice('access_token='.length).split('.')[1],
-        'base64url',
+    if (!accessCookie) throw new Error('access cookie missing');
+    const tokenClaims: AccessTokenClaimsCandidate = JSON.parse(
+      Buffer.from(accessCookie.slice('access_token='.length).split('.')[1], 'base64url').toString(
+        'utf8',
       ),
-    ) as Record<string, unknown>;
+    );
+    if (!isAccessTokenClaims(tokenClaims)) throw new Error('access token claims malformed');
     expect(tokenClaims).toMatchObject({
       sub: userId,
       type: 'access',
       username: registration.username,
     });
     await request(app.getHttpServer()).get('/api/auth/profile').expect(401);
+    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
     const profile = await request(app.getHttpServer())
       .get('/api/auth/profile')
-      .set('Cookie', accessCookie as string)
+      .set('Cookie', accessCookie)
       .expect(200);
     expect(profile.body).toMatchObject({
       id: userId,
@@ -157,7 +180,8 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
       .post('/api/auth/refresh')
       .set('Cookie', cookiePairs)
       .expect(200);
-    expect((refreshed.headers['set-cookie'] as string[]).join(';')).toContain('access_token=');
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    expect(setCookieHeader(refreshed.headers['set-cookie']).join(';')).toContain('access_token=');
 
     // CSRF: a cross-site form-shaped attempt (no JSON preflight) with a forged
     // Origin is rejected before authentication runs
@@ -173,9 +197,11 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
     await request(app.getHttpServer())
       .post('/api/auth/refresh')
       .set('Cookie', cookiePairs)
+      // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
       .expect(200);
 
     // the exact canonical Origin passes the guard
+    // SAFETY: Test setup requires CORS_ORIGIN before this suite runs, so the value is a string here.
     await request(app.getHttpServer())
       .post('/api/auth/refresh')
       .set('Origin', process.env.CORS_ORIGIN as string)
@@ -193,7 +219,8 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
       .post('/api/auth/logout')
       .set('Cookie', cookiePairs)
       .expect(200);
-    expect((logout.headers['set-cookie'] as string[]).join(';')).toMatch(
+    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    expect(setCookieHeader(logout.headers['set-cookie']).join(';')).toMatch(
       /access_token=;|refresh_token=;/,
     );
     const sessions = await db

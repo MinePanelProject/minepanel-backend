@@ -22,6 +22,8 @@ export interface SetupStatus {
 // serializes first-admin bootstrap across concurrent requests (§8.1)
 const SETUP_LOCK_KEY = 7330;
 
+const isNonEmptyString = (value: string | undefined): value is string =>
+  typeof value === 'string' && value.length > 0;
 @Injectable()
 export class SetupService implements OnModuleInit {
   private readonly logger = new Logger(SetupService.name);
@@ -81,8 +83,7 @@ export class SetupService implements OnModuleInit {
     // token that passes this gate and then loses the locked state re-read.
     if (
       expectedToken === null ||
-      typeof setupToken !== 'string' ||
-      setupToken.length === 0 ||
+      !isNonEmptyString(setupToken) ||
       !this.setupTokenMatches(setupToken, expectedToken)
     ) {
       throw new UnauthorizedException({ error: 'SetupTokenInvalid' });
@@ -131,7 +132,7 @@ export class SetupService implements OnModuleInit {
   private configuredSetupToken(): string | null {
     const configured = this.configService.get<string>('SETUP_TOKEN');
     // a configured secret is used verbatim: never trimmed, never logged
-    return typeof configured === 'string' && configured.length > 0 ? configured : null;
+    return isNonEmptyString(configured) ? configured : null;
   }
 
   private async expectedSetupToken(): Promise<string | null> {

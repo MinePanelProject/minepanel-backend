@@ -1,32 +1,33 @@
 import { createHash } from 'node:crypto';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
-import type { ConfigService } from '@nestjs/config';
-import type { JwtService } from '@nestjs/jwt';
-import * as bcrypt from 'bcrypt';
-import { verifySync } from 'otplib';
+import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
+import * as cryptoUtil from 'src/common/crypto.util';
 import type { User } from 'src/db/schema';
-import type { UsersService } from 'src/users/users.service';
+import { UsersService } from 'src/users/users.service';
 import { AuthService } from './auth.service';
+import * as bcrypt from './password';
+import * as totp from './totp';
 
-jest.mock('otplib', () => ({
-  verifySync: jest.fn(),
-}));
+type VerifyPayload = { sub: string; type?: string; temporaryAuth?: boolean };
+type UserUpdateValues = {
+  totpEnabled?: boolean;
+  totpSecret?: string | null;
+  totpBackupCodes?: string | null;
+  tempPasswordExpiresAt?: Date | null;
+};
+type RefreshTokenRow = { id: string; token: string; expiresAt: Date };
+type MockDb = {
+  insert: jest.Mock;
+  update: jest.Mock;
+  select: jest.Mock;
+  delete: jest.Mock;
+};
 
-// keep real bcrypt behavior but make compare countable across module copies
-jest.mock('bcrypt', () => {
-  const actual = jest.requireActual('bcrypt');
-  return {
-    ...actual,
-    compare: jest.fn((data: string, hash: string) => actual.compare(data, hash)),
-    hash: jest.fn((data: string, rounds?: number) => actual.hash(data, rounds)),
-  };
-});
-
-jest.mock('src/common/crypto.util', () => ({
-  decrypt: jest.fn().mockReturnValue('secret'),
-  encrypt: jest.fn(),
-}));
-const mockedVerifySync = jest.mocked(verifySync);
+const makeRefreshTokenChain = (rows: RefreshTokenRow[], limitedUsers: User[]) =>
+  Object.assign(Promise.resolve(rows), {
+    limit: jest.fn(async () => limitedUsers),
+  });
 
 const makeUser = (overrides: Partial<User> = {}): User => ({
   id: 'user-1',
@@ -49,21 +50,24 @@ const makeUser = (overrides: Partial<User> = {}): User => ({
 });
 
 describe('AuthService', () => {
-  let db: {
-    insert: jest.Mock;
-    update: jest.Mock;
-    select: jest.Mock;
-    delete: jest.Mock;
-  };
+  let db: MockDb;
   let jwtService: Pick<JwtService, 'signAsync' | 'verifyAsync'>;
-  let usersService: Pick<UsersService, 'findById' | 'findByIdentifier'>;
+  let usersService: Pick<
+    UsersService,
+    'createUser' | 'findById' | 'findByIdentifier' | 'updateProfile' | 'updatePassword'
+  >;
   let service: AuthService;
   let storedBackupCodes: string | null;
-  let updatedValues: Record<string, unknown>[];
+  let updatedValues: UserUpdateValues[];
   let tempCredentialConsumed: boolean;
   let userRows: User[];
-  let refreshTokenRows: { id: string; token: string; expiresAt: Date }[];
-  let verifyPayload: { sub: string; type?: string; temporaryAuth?: boolean };
+  let refreshTokenRows: RefreshTokenRow[];
+  let verifyPayload: VerifyPayload;
+  let verifySpy: jest.SpyInstance;
+  let compareSpy: jest.SpyInstance;
+  let hashSpy: jest.SpyInstance;
+  let decryptSpy: jest.SpyInstance;
+  let encryptSpy: jest.SpyInstance;
 
   const createService = (user: User) => {
     storedBackupCodes = user.totpBackupCodes;
@@ -75,10 +79,10 @@ describe('AuthService', () => {
     db = {
       insert: jest.fn(() => ({ values: jest.fn().mockResolvedValue(undefined) })),
       update: jest.fn(() => ({
-        set: jest.fn((values: Record<string, unknown>) => {
+        set: jest.fn((values: UserUpdateValues) => {
           updatedValues.push(values);
           if ('totpBackupCodes' in values) {
-            storedBackupCodes = values.totpBackupCodes as string | null;
+            storedBackupCodes = values.totpBackupCodes ?? null;
           }
           return {
             where: jest.fn(() => ({
@@ -97,46 +101,55 @@ describe('AuthService', () => {
       })),
       select: jest.fn(() => ({
         from: jest.fn(() => ({
-          where: jest.fn(() => {
-            const chain = Promise.resolve(refreshTokenRows) as Promise<
-              { id: string; token: string; expiresAt: Date }[]
-            > & { limit: jest.Mock };
-            chain.limit = jest.fn(async () => userRows.slice(0, 1));
-            return chain;
-          }),
+          where: jest.fn(() => makeRefreshTokenChain(refreshTokenRows, userRows.slice(0, 1))),
         })),
       })),
       delete: jest.fn(() => ({ where: jest.fn().mockResolvedValue(undefined) })),
     };
+    // SAFETY: The JWT double implements exactly the signing and verification calls exercised here.
     jwtService = {
-      signAsync: jest.fn(
-        async (payload: {
-          type?: string;
-          sub: string;
-          temporaryAuth?: boolean;
-          temporaryCredentialFingerprint?: string;
-        }) => (payload.type === 'pre-auth' ? `pre-auth-${payload.sub}` : `token-${payload.sub}`),
-      ),
-      verifyAsync: jest.fn(async () => verifyPayload),
-    };
+      signAsync: jest
+        .fn()
+        .mockImplementation(async (payload: VerifyPayload) =>
+          payload.type === 'pre-auth' ? `pre-auth-${payload.sub}` : `token-${payload.sub}`,
+        ),
+      verifyAsync: jest.fn().mockImplementation(async () => verifyPayload),
+    } as Pick<JwtService, 'signAsync' | 'verifyAsync'>;
     usersService = {
+      createUser: jest.fn(),
       findByIdentifier: jest.fn().mockResolvedValue(user),
       findById: jest.fn().mockImplementation(async () => ({
         ...user,
         totpBackupCodes: storedBackupCodes,
       })),
+      updateProfile: jest.fn(),
+      updatePassword: jest.fn(),
     };
+    // SAFETY: the spec drives AuthService through its public methods, so the
+    // doubles only implement the collaborator surface those methods call; the
+    // injected class types are broader than the exercised contract.
     service = new AuthService(
-      usersService as UsersService,
-      jwtService as JwtService,
-      db as unknown as DrizzleDB,
-      { get: jest.fn().mockReturnValue('a'.repeat(64)) } as unknown as ConfigService,
+      // SAFETY: each mock provides the exercised methods and adopts its concrete prototype.
+      Object.setPrototypeOf(usersService, UsersService.prototype) as UsersService,
+      Object.setPrototypeOf(jwtService, JwtService.prototype) as JwtService,
+      db,
+      Object.assign(new ConfigService(), { get: jest.fn().mockReturnValue('a'.repeat(64)) }),
     );
   };
 
+  beforeAll(() => {
+    verifySpy = jest.spyOn(totp, 'verifySync');
+    compareSpy = jest.spyOn(bcrypt, 'compare');
+    hashSpy = jest.spyOn(bcrypt, 'hash');
+    decryptSpy = jest.spyOn(cryptoUtil, 'decrypt');
+    encryptSpy = jest.spyOn(cryptoUtil, 'encrypt');
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
-    mockedVerifySync.mockReturnValue({ valid: false });
+    verifySpy.mockReturnValue({ valid: false });
+    decryptSpy.mockReturnValue('secret');
+    encryptSpy.mockReturnValue('encrypted-secret');
   });
 
   it('creates one session for a non-2FA login and sanitizes the returned user', async () => {
@@ -179,7 +192,7 @@ describe('AuthService', () => {
 
   it('completes a valid TOTP login with exactly one refresh session', async () => {
     createService(makeUser());
-    mockedVerifySync.mockReturnValue({ valid: true });
+    verifySpy.mockReturnValue({ valid: true });
 
     const result = await service.completeTwoFactorLogin('user-1', '123456');
 
@@ -211,9 +224,9 @@ describe('AuthService', () => {
       );
     }
 
-    mockedVerifySync.mockReturnValue({ valid: true });
+    verifySpy.mockReturnValue({ valid: true });
     await service.completeTwoFactorLogin('user-1', '123456');
-    mockedVerifySync.mockReturnValue({ valid: false });
+    verifySpy.mockReturnValue({ valid: false });
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await expect(service.completeTwoFactorLogin('user-1', '000000')).rejects.toBeInstanceOf(
@@ -228,7 +241,7 @@ describe('AuthService', () => {
 
   it('clears all two-factor state when disabling two-factor authentication', async () => {
     createService(makeUser());
-    mockedVerifySync.mockReturnValue({ valid: true });
+    verifySpy.mockReturnValue({ valid: true });
 
     await expect(service.disable2FA('user-1', '123456')).resolves.toBe(true);
     expect(updatedValues).toContainEqual({
@@ -299,7 +312,7 @@ describe('AuthService', () => {
         mustChangePassword: true,
       }),
     );
-    mockedVerifySync.mockReturnValue({ valid: true });
+    verifySpy.mockReturnValue({ valid: true });
 
     await expect(service.completeTwoFactorLogin('user-1', '123456')).rejects.toBeInstanceOf(
       UnauthorizedException,
@@ -458,7 +471,7 @@ describe('AuthService', () => {
     );
 
     await service.loginUser({ identifier: 'player', password: 'TempPass123!' });
-    mockedVerifySync.mockReturnValue({ valid: true });
+    verifySpy.mockReturnValue({ valid: true });
 
     const results = await Promise.allSettled([
       service.completeTwoFactorLogin('user-1', '123456', true, temporaryCredentialFingerprint),
@@ -599,17 +612,25 @@ describe('AuthService', () => {
       );
     }
 
-    expect(bcrypt.compare as jest.Mock).toHaveBeenCalledTimes(2);
+    expect(compareSpy).toHaveBeenCalledTimes(2);
   });
 
   it('rejects invalid encryption key configuration at startup', () => {
     expect(
       () =>
+        // SAFETY: the constructor only reads configService.get before throwing, so empty
+        // collaborators are a faithful seam for this failure path.
         new AuthService(
-          {} as UsersService,
-          {} as JwtService,
-          {} as DrizzleDB,
-          { get: jest.fn().mockReturnValue('not-a-key') } as unknown as ConfigService,
+          Object.assign(Object.create(UsersService.prototype), {
+            createUser: jest.fn(),
+            findById: jest.fn(),
+            findByIdentifier: jest.fn(),
+            updateProfile: jest.fn(),
+            updatePassword: jest.fn(),
+          }),
+          Object.assign(new JwtService(), { signAsync: jest.fn(), verifyAsync: jest.fn() }),
+          { insert: jest.fn(), update: jest.fn(), select: jest.fn(), delete: jest.fn() },
+          Object.assign(new ConfigService(), { get: jest.fn().mockReturnValue('not-a-key') }),
         ),
     ).toThrow('Invalid ENCRYPTION_KEY');
   });
@@ -627,10 +648,10 @@ describe('AuthService', () => {
   });
   it('rejects duplicate username or email before hashing or inserting', async () => {
     createService(makeUser());
-    const hashSpy = bcrypt.hash as jest.Mock;
     hashSpy.mockClear();
     const createUser = jest.fn();
-    usersService = { ...usersService, createUser } as unknown as UsersService;
+    // SAFETY: registerUser only calls findByIdentifier and createUser; the spread keeps the
+    usersService = { ...usersService, createUser };
 
     await expect(
       service.registerUser({

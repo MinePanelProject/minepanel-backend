@@ -13,11 +13,14 @@ import { REQUIRES_PERMISSION_KEY } from 'src/common/decorators/permissions.decor
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
 import { type ModPermission, modPermissions } from 'src/db/schema';
 
+const isNonEmptyString = (value: string | string[] | undefined): value is string =>
+  typeof value === 'string' && value.length > 0;
+
 @Injectable()
 export class PermissionsGuard implements CanActivate {
   constructor(
     private reflector: Reflector,
-    @Inject(DRIZZLE) private readonly db: DrizzleDB,
+    @Inject(DRIZZLE) private readonly db: Pick<DrizzleDB, 'select'>,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -36,10 +39,8 @@ export class PermissionsGuard implements CanActivate {
     const role = request.user.role;
     if (role === 'ADMIN') return true;
 
-    const serverId =
-      typeof request.params?.id === 'string' && request.params.id.length > 0
-        ? request.params.id
-        : undefined;
+    const routeId = request.params?.id;
+    const serverId = isNonEmptyString(routeId) ? routeId : undefined;
 
     if (role !== 'MOD') {
       throw new ForbiddenException();
@@ -53,6 +54,8 @@ export class PermissionsGuard implements CanActivate {
 
       if (serverId) {
         conditions.push(
+          // SAFETY: drizzle's or() only returns undefined for an empty argument list;
+          // both permission operands are always present here.
           or(isNull(modPermissions.serverId), eq(modPermissions.serverId, serverId)) as SQL,
         );
       } else {
