@@ -9,7 +9,19 @@ import { AuthService } from './auth.service';
 import * as bcrypt from './password';
 import * as totp from './totp';
 
-type VerifyPayload = { sub: string; type?: string; temporaryAuth?: boolean };
+type SigningPayload = { sub: string; type?: string; temporaryAuth?: boolean };
+type RefreshVerifierPayload =
+  | {
+      sub?: string | number;
+      type?: string;
+      temporaryAuth?: boolean | string;
+      exp?: number | string;
+    }
+  | null
+  | boolean
+  | number
+  | string
+  | readonly never[];
 type UserUpdateValues = {
   totpEnabled?: boolean;
   totpSecret?: string | null;
@@ -62,7 +74,7 @@ describe('AuthService', () => {
   let tempCredentialConsumed: boolean;
   let userRows: User[];
   let refreshTokenRows: RefreshTokenRow[];
-  let verifyPayload: VerifyPayload;
+  let verifyPayload: RefreshVerifierPayload;
   let verifySpy: jest.SpyInstance;
   let compareSpy: jest.SpyInstance;
   let hashSpy: jest.SpyInstance;
@@ -75,7 +87,11 @@ describe('AuthService', () => {
     tempCredentialConsumed = false;
     userRows = [user];
     refreshTokenRows = [];
-    verifyPayload = { sub: 'user-1', type: 'refresh' };
+    verifyPayload = {
+      sub: 'user-1',
+      type: 'refresh',
+      exp: Math.floor(Date.now() / 1000) + 900,
+    };
     db = {
       insert: jest.fn(() => ({ values: jest.fn().mockResolvedValue(undefined) })),
       update: jest.fn(() => ({
@@ -106,11 +122,12 @@ describe('AuthService', () => {
       })),
       delete: jest.fn(() => ({ where: jest.fn().mockResolvedValue(undefined) })),
     };
-    // SAFETY: The JWT double implements exactly the signing and verification calls exercised here.
+    // SAFETY: The JwtService mock producer supplies signAsync and verifyAsync, the exact
+    // methods AuthService consumes for session issuance and refresh verification.
     jwtService = {
       signAsync: jest
         .fn()
-        .mockImplementation(async (payload: VerifyPayload) =>
+        .mockImplementation(async (payload: SigningPayload) =>
           payload.type === 'pre-auth' ? `pre-auth-${payload.sub}` : `token-${payload.sub}`,
         ),
       verifyAsync: jest.fn().mockImplementation(async () => verifyPayload),
@@ -125,11 +142,9 @@ describe('AuthService', () => {
       updateProfile: jest.fn(),
       updatePassword: jest.fn(),
     };
-    // SAFETY: the spec drives AuthService through its public methods, so the
-    // doubles only implement the collaborator surface those methods call; the
-    // injected class types are broader than the exercised contract.
+    // SAFETY: AuthService consumes only the listed UsersService and JwtService collaborator
+    // methods in these tests; each double adopts its concrete producer prototype.
     service = new AuthService(
-      // SAFETY: each mock provides the exercised methods and adopts its concrete prototype.
       Object.setPrototypeOf(usersService, UsersService.prototype) as UsersService,
       Object.setPrototypeOf(jwtService, JwtService.prototype) as JwtService,
       db,
@@ -212,6 +227,22 @@ describe('AuthService', () => {
       UnauthorizedException,
     );
     expect(db.insert).toHaveBeenCalledTimes(1);
+    expect(storedBackupCodes).toBe('[]');
+  });
+
+  it('routes a backup code around the TOTP verifier before consuming it', async () => {
+    const backupCode = 'a1b2c3d4-e5f6a7b8';
+    createService(
+      makeUser({ totpBackupCodes: JSON.stringify([await bcrypt.hash(backupCode, 4)]) }),
+    );
+    verifySpy.mockImplementation(() => {
+      throw new Error('otplib must not receive backup codes');
+    });
+
+    await expect(service.completeTwoFactorLogin('user-1', backupCode)).resolves.toMatchObject({
+      accessToken: 'token-user-1',
+    });
+    expect(verifySpy).not.toHaveBeenCalled();
     expect(storedBackupCodes).toBe('[]');
   });
 
@@ -503,6 +534,43 @@ describe('AuthService', () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
+  it.each([
+    undefined,
+    ['refresh-token'],
+    1,
+    null,
+  ] as const)('rejects a malformed refresh cookie before verification or database work', async (rawRefreshToken) => {
+    createService(makeUser({ totpEnabled: false }));
+
+    await expect(service.refreshTokens(rawRefreshToken)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(jwtService.verifyAsync).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+    expect(compareSpy).not.toHaveBeenCalled();
+    expect(jwtService.signAsync).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    null,
+    { sub: 'user-1', type: 'refresh' },
+    { sub: 'user-1', type: 'refresh', exp: 1.5 },
+    [],
+    { sub: '', type: 'refresh' },
+    { sub: 'user-1', type: 'access' },
+    { sub: 'user-1', type: 'refresh', temporaryAuth: 'true' },
+  ])('rejects malformed refresh verifier output before database work', async (payload) => {
+    createService(makeUser({ totpEnabled: false }));
+    verifyPayload = payload;
+
+    await expect(service.refreshTokens('refresh-token')).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(db.select).not.toHaveBeenCalled();
+    expect(compareSpy).not.toHaveBeenCalled();
+    expect(jwtService.signAsync).not.toHaveBeenCalled();
+  });
+
   it('rotates a correctly typed refresh token into a new session', async () => {
     const currentRefresh = 'refresh-token-1';
     createService(makeUser({ totpEnabled: false }));
@@ -531,7 +599,11 @@ describe('AuthService', () => {
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       },
     ];
-    verifyPayload = { sub: 'user-1', type: 'refresh' };
+    verifyPayload = {
+      sub: 'user-1',
+      type: 'refresh',
+      exp: Math.floor(Date.now() / 1000) + 900,
+    };
 
     await expect(service.refreshTokens(currentRefresh)).rejects.toBeInstanceOf(
       UnauthorizedException,
@@ -550,12 +622,45 @@ describe('AuthService', () => {
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       },
     ];
-    verifyPayload = { sub: 'user-1', type: 'refresh', temporaryAuth: true };
+    verifyPayload = {
+      sub: 'user-1',
+      type: 'refresh',
+      temporaryAuth: true,
+      exp: Math.floor(Date.now() / 1000) + 900,
+    };
 
     const result = await service.refreshTokens(currentRefresh);
 
     expect(result.accessToken).toBe('token-user-1');
     expect(db.insert).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['BANNED', 'AccountBanned'],
+    ['PENDING', 'AccountPending'],
+  ] as const)('rejects a %s user on refresh with the machine error before rotation', async (status, error) => {
+    const currentRefresh = 'refresh-token-1';
+    createService(makeUser({ totpEnabled: false }));
+    userRows = [makeUser({ totpEnabled: false, status })];
+    refreshTokenRows = [
+      {
+        id: 'tok-1',
+        token: await bcrypt.hash(currentRefresh, 4),
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      },
+    ];
+
+    // clear the arrange-time hash used to build the stored token, so the
+    // assertion below isolates hashes performed by refreshTokens itself
+    hashSpy.mockClear();
+
+    await expect(service.refreshTokens(currentRefresh)).rejects.toMatchObject({
+      response: { error },
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(jwtService.signAsync).not.toHaveBeenCalled();
+    expect(hashSpy).not.toHaveBeenCalled();
   });
 
   it.each([

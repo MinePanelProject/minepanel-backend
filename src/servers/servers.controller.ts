@@ -91,7 +91,7 @@ export class ServersController {
   }
 
   private extractUser(req: Request): UserPayload {
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: JwtAuthGuard sets Express Request.user to UserPayload before this controller reads it.
     const user = req.user as UserPayload | undefined;
 
     if (!user) {

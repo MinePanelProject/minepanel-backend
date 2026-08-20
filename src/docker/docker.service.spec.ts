@@ -794,7 +794,8 @@ describe('DockerService', () => {
 
   describe('getHostDiskInfo', () => {
     it('converts statfs blocks to MB', async () => {
-      // SAFETY: Node's StatsFs type has more fields, but DockerService reads only these three fields.
+      // SAFETY: Node fs.statfs produces the StatsFs contract; this fixture supplies the
+      // bsize, blocks, and bavail members read by DockerService.getHostDiskInfo.
       statfsSpy = jest
         .spyOn(fs, 'statfs')
         .mockResolvedValue({ bsize: 4096, blocks: 1000000, bavail: 500000 } as StatsFs);

@@ -5,7 +5,7 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import type { Server, Socket } from 'socket.io';
+import type { DefaultEventsMap, Server, Socket } from 'socket.io';
 import { type AccessTokenPrincipal, AccessTokenService } from 'src/auth/access-token.service';
 import { SocketReservationService } from './socket-reservation.service';
 import { SystemMetricsService, type SystemStats } from './system-metrics.service';
@@ -43,6 +43,23 @@ type SocketData = {
   expiryTimer?: NodeJS.Timeout;
 };
 
+type SocketIoSocket = Socket<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, SocketData>;
+// SAFETY: Socket.IO creates each namespace socket and populates its `client`
+// member with the Engine.IO transport. This boundary exposes the producer's
+// string `client.id`, the Engine.IO identity consumed for reservation matching.
+type GatewaySocket = Omit<SocketIoSocket, 'client'> & {
+  readonly client: { readonly id: string };
+};
+type GatewayServer = Pick<
+  Server<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, SocketData>,
+  'to'
+> & {
+  sockets: {
+    adapter: { rooms: Map<string, Set<string>> };
+    sockets: Map<string, GatewaySocket>;
+  };
+};
+
 type CookieParseResult =
   | { kind: 'token'; token: string }
   | { kind: 'invalid' }
@@ -59,9 +76,9 @@ const TOKEN_MAX_BYTES = 8192;
 @WebSocketGateway()
 export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy {
   @WebSocketServer()
-  private readonly server!: Server;
+  private readonly server!: GatewayServer;
 
-  private readonly sockets = new Map<string, Socket>();
+  private readonly sockets = new Map<string, GatewaySocket>();
   private adminCount = 0;
   private pollGeneration = 0;
   private inFlight = false;
@@ -76,19 +93,15 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
     private readonly reservationService: SocketReservationService,
   ) {}
 
-  handleConnection(socket: Socket): void {
-    const clientId = socket.client
-      ? Object.getOwnPropertyDescriptor(socket.client, 'id')?.value
-      : undefined;
-    const engineId = String(clientId ?? socket.id);
+  handleConnection(socket: GatewaySocket): void {
+    const engineId = socket.client.id;
     const claimed = this.reservationService.claim(engineId);
     const state: SocketAuthState = {
       status: 'PENDING',
       deadline: null,
       listener: null,
     };
-    // SAFETY: socket.data is the mutable application data slot owned by this gateway.
-    const data = socket.data as SocketData;
+    const data = socket.data;
     data.authState = state;
     data.engineId = engineId;
     this.sockets.set(socket.id, socket);
@@ -140,9 +153,8 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
     socket.on('auth', listener);
   }
 
-  handleDisconnect(socket: Socket): void {
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    const data = socket.data as SocketData;
+  handleDisconnect(socket: GatewaySocket): void {
+    const data = socket.data;
     const wasAuthenticated = data.principal !== undefined;
 
     this.cleanupSocket(socket);
@@ -174,19 +186,18 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
   }
 
   private async onAuthSuccess(
-    socket: Socket,
+    socket: GatewaySocket,
     principal: AccessTokenPrincipal,
     state: SocketAuthState,
     token: string,
   ): Promise<void> {
-    // SAFETY: socket.data is the mutable application data slot owned by this gateway.
-    const data = socket.data as SocketData;
+    const data = socket.data;
 
     if (!this.live) {
       return;
     }
 
-    if (!this.reservationService.release(data.engineId ?? socket.id)) {
+    if (!data.engineId || !this.reservationService.release(data.engineId)) {
       this.disconnectSilent(socket);
       return;
     }
@@ -295,12 +306,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
       return { kind: 'invalid' };
     }
 
-    const descriptor = Object.getOwnPropertyDescriptor(data, 'accessToken');
-    if (!descriptor || !('value' in descriptor)) {
-      return { kind: 'invalid' };
-    }
-
-    const value = descriptor.value;
+    const value = data.accessToken;
     if (!isStringValue(value) || value.length === 0) {
       return { kind: 'invalid' };
     }
@@ -312,9 +318,8 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
     return { kind: 'token', token: value };
   }
 
-  private armExpiry(socket: Socket, exp: number): boolean {
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    const data = socket.data as SocketData;
+  private armExpiry(socket: GatewaySocket, exp: number): boolean {
+    const data = socket.data;
     let ms = exp - Date.now();
 
     if (ms <= 0) {
@@ -347,7 +352,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
     return arm();
   }
 
-  private emitCacheIfFresh(socket: Socket): void {
+  private emitCacheIfFresh(socket: GatewaySocket): void {
     if (!this.cachedSnapshot) {
       return;
     }
@@ -444,7 +449,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
       return false;
     }
 
-    const tokenToSockets = new Map<string, Socket[]>();
+    const tokenToSockets = new Map<string, GatewaySocket[]>();
 
     for (const socketId of room) {
       const socket = this.server.sockets.sockets.get(socketId);
@@ -452,8 +457,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
         continue;
       }
 
-      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-      const data = socket.data as SocketData;
+      const data = socket.data;
       const token = data.accessToken;
       if (!isStringValue(token)) {
         this.disconnectSilent(socket);
@@ -495,14 +499,13 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
     return afterRoom !== undefined && afterRoom.size > 0;
   }
 
-  private disconnectSilent(socket: Socket): void {
+  private disconnectSilent(socket: GatewaySocket): void {
     this.cleanupSocket(socket);
     socket.disconnect(true);
   }
 
-  private cleanupSocket(socket: Socket): void {
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    const data = socket.data as SocketData;
+  private cleanupSocket(socket: GatewaySocket): void {
+    const data = socket.data;
 
     if (data.authState?.deadline) {
       clearTimeout(data.authState.deadline);
@@ -535,6 +538,8 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
       // best-effort room leave
     }
 
-    this.reservationService.release(data.engineId ?? socket.id);
+    if (data.engineId) {
+      this.reservationService.release(data.engineId);
+    }
   }
 }

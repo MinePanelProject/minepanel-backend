@@ -3,8 +3,5 @@
   "editor.formatOnSave": true,
   "editor.codeActionsOnSave": {
     "source.organizeImports.biome": "explicit"
-  },
-  "pendant.context.autoAttach": true,
-  "pendant.context.includeGit": true,
-  "pendant.autoGenerateSessionNames": true
+  }
 }

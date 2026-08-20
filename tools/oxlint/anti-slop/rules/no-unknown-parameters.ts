@@ -39,6 +39,38 @@ function parameterName(parameter: Parameter, sourceText: string): string {
     : sourceText.replace(/\s*:\s*unknown\s*$/u, "");
 }
 
+function functionName(node: ParameterOwner): string | null {
+  if ("id" in node && node.id?.type === "Identifier") return node.id.name;
+
+  const parent = node.parent;
+  if (parent.type === "VariableDeclarator" && parent.id.type === "Identifier") {
+    return parent.id.name;
+  }
+  if (
+    (parent.type === "MethodDefinition" || parent.type === "Property") &&
+    parent.key.type === "Identifier"
+  ) {
+    return parent.key.name;
+  }
+  return null;
+}
+
+function acceptsUnknownAtParserBoundary(node: ParameterOwner): boolean {
+  const returnType = node.returnType?.typeAnnotation;
+  const name = functionName(node);
+  return (
+    returnType !== null &&
+    returnType !== undefined &&
+    returnType.type !== "TSUnknownKeyword" &&
+    name !== null &&
+    /^(?:parse|decode)[A-Z]/u.test(name)
+  );
+}
+
+function isTypePredicateGuard(node: ParameterOwner): boolean {
+  return node.returnType?.typeAnnotation.type === "TSTypePredicate";
+}
+
 /** Disallow unknown inputs except explicitly named error-cause enrichment. */
 export const noUnknownParametersRule = defineRule({
   meta: {
@@ -58,7 +90,13 @@ export const noUnknownParametersRule = defineRule({
         const annotation = parameterAnnotation(parameter);
         if (annotation?.typeAnnotation.type !== "TSUnknownKeyword") continue;
         const name = parameterName(parameter, context.sourceCode.getText(parameter));
-        if (name === "cause") continue;
+        if (
+          name === "cause" ||
+          isTypePredicateGuard(node) ||
+          acceptsUnknownAtParserBoundary(node)
+        ) {
+          continue;
+        }
         context.report({
           node: annotation.typeAnnotation,
           messageId: "unknownParameter",

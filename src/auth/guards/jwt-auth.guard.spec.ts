@@ -9,21 +9,28 @@ type JwtContextFixture = {
   switchToHttp: () => { getRequest: () => FakeRequest };
   request: FakeRequest;
 };
-// SAFETY: The fixture supplies every execution-context member consumed by JwtAuthGuard.
 const asExecutionContext = (
   fixture: JwtContextFixture,
 ): ExecutionContext & { request: FakeRequest } =>
+  /* SAFETY: NestJS execution-context parsing produces getHandler, getClass, and
+  switchToHttp().getRequest(); this fixture supplies those exact members and request. */
   fixture as ExecutionContext & { request: FakeRequest };
 
+type CookieToken = string | number | readonly string[] | undefined;
+type CookieFixture = { access_token?: CookieToken };
 type FakeRequest = {
-  cookies: Record<string, string>;
+  cookies?: CookieFixture;
   path: string;
   url: string;
   method: string;
   user?: { id: string; username: string; role: string; temporaryAuth?: boolean };
 };
 
-const makeContext = (path = '/api/info', cookies: Record<string, string> = {}, method = 'GET') => {
+const makeContext = (
+  path = '/api/info',
+  cookies: CookieFixture | undefined = {},
+  method = 'GET',
+) => {
   const request: FakeRequest = { cookies, path, url: path, method };
   const handler = () => undefined;
   const targetClass = class {};
@@ -53,28 +60,37 @@ describe('JwtAuthGuard', () => {
 
   beforeEach(() => {
     verify = jest.fn().mockResolvedValue(principal());
-    // SAFETY: JwtAuthGuard only calls reflector.getAllAndOverride and
-    // accessTokenService.verify; the doubles implement exactly those members.
+    // SAFETY: JwtAuthGuard consumes reflector.getAllAndOverride and
+    // accessTokenService.verify; these doubles provide those exact members on concrete
+    // Reflector and AccessTokenService prototypes.
     const reflector = {
       getAllAndOverride: jest.fn().mockReturnValue(false),
     } satisfies Pick<Reflector, 'getAllAndOverride'>;
-    guard = new JwtAuthGuard(
-      // SAFETY: the mock method is attached to AccessTokenService's concrete prototype.
-      Object.assign(Object.create(AccessTokenService.prototype), { verify }),
-      // SAFETY: the mock method is attached to Reflector's concrete prototype.
-      Object.assign(new Reflector(), reflector),
-    );
+    // SAFETY: Reflector is the collaborator producer; its contract invariant supplies
+    // getAllAndOverride, the exact member consumed by JwtAuthGuard.
+    const reflectorDouble = Object.assign(new Reflector(), reflector) as never;
+    const rawAccessService = Object.assign(Object.create(AccessTokenService.prototype), { verify });
+    // SAFETY: AccessTokenService.prototype is the collaborator producer; its contract invariant
+    // supplies verify, the exact member consumed by JwtAuthGuard.
+    const accessService = rawAccessService as never;
+    guard = new JwtAuthGuard(accessService, reflectorDouble);
   });
 
   it('bypasses public routes without reading cookies', async () => {
     const context = makeContext('/health');
-    // SAFETY: same minimal collaborators as in beforeEach, with the public-route metadata on.
-    const publicGuard = new JwtAuthGuard(
-      // SAFETY: the mock method is attached to AccessTokenService's concrete prototype.
-      Object.assign(Object.create(AccessTokenService.prototype), { verify }),
-      // SAFETY: the mock method is attached to Reflector's concrete prototype.
-      Object.assign(new Reflector(), { getAllAndOverride: jest.fn().mockReturnValue(true) }),
-    );
+    // SAFETY: JwtAuthGuard consumes reflector.getAllAndOverride and
+    // accessTokenService.verify; these doubles provide those exact members on concrete
+    // Reflector and AccessTokenService prototypes, with public metadata enabled.
+    // SAFETY: Reflector is the collaborator producer; its contract invariant supplies
+    // getAllAndOverride with public metadata enabled for JwtAuthGuard.
+    const reflectorDouble = Object.assign(new Reflector(), {
+      getAllAndOverride: jest.fn().mockReturnValue(true),
+    }) as never;
+    const rawAccessService = Object.assign(Object.create(AccessTokenService.prototype), { verify });
+    // SAFETY: AccessTokenService.prototype is the collaborator producer; its contract invariant
+    // supplies verify, the exact member consumed by JwtAuthGuard.
+    const accessService = rawAccessService as never;
+    const publicGuard = new JwtAuthGuard(accessService, reflectorDouble);
 
     await expect(publicGuard.canActivate(context)).resolves.toBe(true);
     expect(verify).not.toHaveBeenCalled();
@@ -82,6 +98,18 @@ describe('JwtAuthGuard', () => {
 
   it('rejects requests without an access cookie', async () => {
     await expect(guard.canActivate(makeContext())).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    undefined,
+    { access_token: undefined },
+    { access_token: ['token'] },
+    { access_token: 1 },
+  ])('rejects optional or non-string access cookies without verifying', async (cookies) => {
+    await expect(guard.canActivate(makeContext('/api/info', cookies))).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
     expect(verify).not.toHaveBeenCalled();
   });
 

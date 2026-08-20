@@ -682,7 +682,7 @@ export class ServersService implements OnModuleInit {
         ),
       );
 
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: Drizzle's and contract receives non-empty predicates, so its SQL result is defined.
     return and(notCreating, or(eq(servers.accessType, 'OPEN'), exists(approvedAccess))) as SQL;
   }
 

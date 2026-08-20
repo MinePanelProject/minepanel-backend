@@ -201,12 +201,12 @@ export class DockerService {
         abortSignal: abortController.signal,
       });
 
-      // SAFETY: exec.start returns the readable stream consumed by drainExecStream.
+      // SAFETY: Dockerode Exec.start produces the readable stream contract consumed by
+      // drainExecStream: it exposes read data and destroy() for the cleanup path.
       const stream = (await exec.start({
         Detach: false,
         Tty: false,
         abortSignal: abortController.signal,
-        // SAFETY: exec.start returns the readable stream consumed by drainExecStream.
       })) as Readable;
 
       try {
@@ -219,7 +219,8 @@ export class DockerService {
         }
       }
 
-      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+      // SAFETY: Dockerode Exec.inspect produces the terminal-state contract consumed below:
+      // Running must be false and ExitCode must be zero before the operation is accepted.
       const result = (await exec.inspect({ abortSignal: abortController.signal })) as {
         Running?: unknown;
         ExitCode?: unknown;
@@ -308,7 +309,6 @@ export class DockerService {
     try {
       await this.docker.getContainer(containerId).remove({ force: false });
     } catch (error) {
-      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       if (this.isStatusCode(error, 404)) return; // already removed, treat as idempotent success
       this.handleDockerError(error, 'container');
     }
@@ -316,11 +316,11 @@ export class DockerService {
 
   async findManagedContainer(serverId: string): Promise<ManagedContainerLookupResult> {
     try {
-      // SAFETY: listContainers returns entries with the Id and State fields read below.
+      // SAFETY: Dockerode listContainers returns entries with the Id and State fields
+      // consumed below.
       const containers = (await this.docker.listContainers({
         all: true,
         filters: { label: [`minepanel.server-id=${serverId}`, 'minepanel.managed=true'] },
-        // SAFETY: listContainers returns entries with the Id and State fields read below.
       })) as ContainerSummaryCandidate[];
 
       if (containers.length === 0) {
@@ -353,7 +353,8 @@ export class DockerService {
 
   async inspectContainer(containerId: string): Promise<ContainerInspectState> {
     try {
-      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+      // SAFETY: Dockerode Container.inspect produces the container-state contract consumed
+      // below: Id, Name, Config, and State members are read to build the response.
       const info = (await this.docker.getContainer(containerId).inspect()) as {
         Id: string;
         Name: string;
@@ -396,7 +397,8 @@ export class DockerService {
     };
 
     try {
-      // SAFETY: Docker info is an object whose inspected fields are the only values read here.
+      // SAFETY: Dockerode info returns the object whose inspected fields are consumed
+      // by isDockerInfo below.
       const info = (await this.docker.info()) as DockerInfoInput;
       if (!isDockerInfo(info)) {
         return { totalRamMb: null, cpuCount: null };

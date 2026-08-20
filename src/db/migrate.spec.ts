@@ -36,18 +36,23 @@ describe('runProductionMigrations', () => {
   let tempFolders: string[];
 
   const createMockSql = (): MockSql => {
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    const query = jest.fn().mockResolvedValue([]) as MockSql;
+    const query =
+      /* SAFETY: jest.fn().mockResolvedValue is the MockSql producer; runProductionMigrations
+      calls its query function and later reads the attached end member. */
+      jest.fn().mockResolvedValue([]) as MockSql;
     query.end = jest.fn().mockResolvedValue(undefined);
     return query;
   };
 
-  // SAFETY: The injected jest mocks implement the exact dependency functions invoked by
-  // runProductionMigrations; their module-only helper properties are not used by the function.
   const dependencies: MigrationDependencies = {
-    postgres: mockPostgres as never,
-    drizzle: mockDrizzle as never,
-    migrate: mockMigrate as never,
+    postgres:
+      /* SAFETY: mockPostgres is the postgres producer; runProductionMigrations consumes this
+      exact dependency member as its SQL client factory. */ mockPostgres as never,
+    drizzle:
+      /* SAFETY: mockDrizzle is the drizzle producer; runProductionMigrations consumes this exact
+      dependency member to wrap the lock client. */ mockDrizzle as never,
+    migrate: /* SAFETY: mockMigrate is the migration producer; runProductionMigrations consumes this
+      exact dependency member to apply migrations. */ mockMigrate as never,
   };
 
   const run = (databaseUrl = validUrl, migrationsFolder = realMigrationsFolder) =>
@@ -122,8 +127,10 @@ describe('runProductionMigrations', () => {
     const firstCall = lock.mock.calls[0];
     expect(firstCall).toBeDefined();
 
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    const values = firstCall!.slice(1) as SqlTemplateValue[];
+    const rawValues = firstCall!.slice(1);
+    // SAFETY: lockClient() is the database MockSql producer; its template contract invariant
+    // supplies the SQL values after index zero consumed by this assertion.
+    const values = rawValues as SqlTemplateValue[];
     expect(values).toContain(7333);
 
     const migrateCallOrder = mockMigrate.mock.invocationCallOrder[0];
@@ -138,8 +145,10 @@ describe('runProductionMigrations', () => {
     const migration = migrationClient();
 
     const unlockCalls = lock.mock.calls.filter((call) => {
-      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-      const strings = call[0] as TemplateStringsArray;
+      const rawStrings = call[0];
+      // SAFETY: lockClient() is the database MockSql producer; its TemplateStringsArray contract
+      // invariant supplies the SQL text consumed to identify pg_advisory_unlock.
+      const strings = rawStrings as TemplateStringsArray;
       return String(strings).includes('pg_advisory_unlock');
     });
     expect(unlockCalls.length).toBe(1);
@@ -221,8 +230,33 @@ describe('runProductionMigrations', () => {
     await expect(run(validUrl, folder)).rejects.toThrow('Invalid migration journal');
     expect(mockPostgres).not.toHaveBeenCalled();
   });
+
+  it('rejects a JSON journal with a non-object root before opening any client', async () => {
+    const folder = await createTempFolder([], {});
+    await fs.writeFile(path.join(folder, 'meta', '_journal.json'), 'null', 'utf8');
+
+    await expect(run(validUrl, folder)).rejects.toThrow('Invalid migration journal');
+    expect(mockPostgres).not.toHaveBeenCalled();
+  });
+
   it('rejects a null journal entry before opening any client', async () => {
     const folder = await createTempFolder([null], {});
+
+    await expect(run(validUrl, folder)).rejects.toThrow('Invalid migration journal');
+    expect(mockPostgres).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '',
+    '.',
+    '..',
+    '../outside',
+    'nested/migration',
+    '0000;drop',
+    'nested\\migration',
+    path.resolve(os.tmpdir(), 'outside'),
+  ])('rejects unsafe journal tag %j before opening any client', async (tag) => {
+    const folder = await createTempFolder([{ tag }], {});
 
     await expect(run(validUrl, folder)).rejects.toThrow('Invalid migration journal');
     expect(mockPostgres).not.toHaveBeenCalled();

@@ -45,20 +45,32 @@ describe('SystemMetricsService', () => {
     docker.getHostDiskInfo.mockResolvedValue({ totalDiskMb: 10000, freeDiskMb: 7000 });
     docker.getHostFreeMemoryMb.mockReturnValue(1024);
     if (_label.startsWith('host')) {
-      // SAFETY: The table's malformed case is deliberately passed through DockerService's typed mock.
-      docker.getHostInfo.mockResolvedValue(mutation() as HostInfo);
+      docker.getHostInfo.mockResolvedValue(
+        /* SAFETY: DockerService.getHostInfo produces totalRamMb and cpuCount; this malformed
+        fixture exercises those exact fields through the mock return boundary. */
+        mutation() as HostInfo,
+      );
     }
     if (_label.startsWith('disk')) {
-      // SAFETY: The table's malformed case is deliberately passed through DockerService's typed mock.
-      docker.getHostDiskInfo.mockResolvedValue(mutation() as DiskInfo);
+      docker.getHostDiskInfo.mockResolvedValue(
+        /* SAFETY: DockerService.getHostDiskInfo produces totalDiskMb and freeDiskMb; this
+        fixture exercises those exact fields through the mock return boundary. */
+        mutation() as DiskInfo,
+      );
     }
     if (_label.startsWith('free')) {
-      // SAFETY: The table's malformed case is deliberately passed through DockerService's typed mock.
-      docker.getHostFreeMemoryMb.mockReturnValue(mutation() as number);
+      docker.getHostFreeMemoryMb.mockReturnValue(
+        /* SAFETY: DockerService.getHostFreeMemoryMb produces the numeric free-memory value;
+        this malformed fixture exercises that exact return through the mock boundary. */
+        mutation() as number,
+      );
     }
     if (_label === 'free exceeds total') {
-      // SAFETY: The table's malformed case is deliberately passed through DockerService's typed mock.
-      docker.getHostFreeMemoryMb.mockReturnValue(mutation() as number);
+      docker.getHostFreeMemoryMb.mockReturnValue(
+        /* SAFETY: DockerService.getHostFreeMemoryMb produces the numeric free-memory value;
+        this boundary fixture exercises that exact return through the mock contract. */
+        mutation() as number,
+      );
     }
 
     await expect(service.collectSnapshot()).resolves.toBeNull();

@@ -11,7 +11,7 @@
   "packageManager": "bun@1.3.14",
   "scripts": {
     "build": "nest build && bun scripts/postbuild.mjs",
-    "format": "biome format --write .",
+    "smoke:totp": "bun scripts/totp-smoke.mjs",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",

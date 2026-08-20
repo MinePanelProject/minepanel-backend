@@ -12,15 +12,28 @@ const isTrimmedNonEmptyString = (value: string): value is string =>
   typeof value === 'string' && value.length > 0 && value === value.trim();
 
 type JournalEntry = { tag: string };
-type JournalEntryCandidate = { tag?: string } | null;
-type JournalCandidate = { entries?: JournalEntryCandidate[] } | null | undefined;
+type Journal = { entries: JournalEntry[] };
 
-const isJournalEntry = (entry: JournalEntryCandidate): entry is JournalEntry =>
-  entry !== null && typeof entry.tag === 'string';
+const isJournalTag = (tag: string): boolean =>
+  isTrimmedNonEmptyString(tag) &&
+  /^[A-Za-z0-9_-]+$/u.test(tag) &&
+  !path.isAbsolute(tag) &&
+  !tag.includes('/') &&
+  !tag.includes('\\');
 
-const isJournal = (value: JournalCandidate): value is { entries: JournalEntry[] } =>
+const isJournalEntry = (entry: unknown): entry is JournalEntry =>
+  entry !== null &&
+  typeof entry === 'object' &&
+  !Array.isArray(entry) &&
+  'tag' in entry &&
+  typeof entry.tag === 'string' &&
+  isJournalTag(entry.tag);
+
+const isJournal = (value: unknown): value is Journal =>
   value !== null &&
-  value !== undefined &&
+  typeof value === 'object' &&
+  !Array.isArray(value) &&
+  'entries' in value &&
   Array.isArray(value.entries) &&
   value.entries.every(isJournalEntry);
 
@@ -62,7 +75,8 @@ async function validateMigrationsFolder(migrationsFolder: string): Promise<void>
     throw new Error('Invalid migration folder');
   }
 
-  const journalPath = path.join(migrationsFolder, 'meta', '_journal.json');
+  const migrationRoot = path.resolve(migrationsFolder);
+  const journalPath = path.join(migrationRoot, 'meta', '_journal.json');
   let journalRaw: string;
 
   try {
@@ -71,12 +85,10 @@ async function validateMigrationsFolder(migrationsFolder: string): Promise<void>
     throw new Error('Missing migration journal');
   }
 
-  let journal: JournalCandidate;
+  let journal: unknown;
 
   try {
-    // SAFETY: JSON.parse is the only source for this value; isJournal validates every
-    // entry's tag before the migration path is constructed.
-    journal = JSON.parse(journalRaw) as JournalCandidate;
+    journal = JSON.parse(journalRaw);
   } catch {
     throw new Error('Invalid migration journal');
   }
@@ -86,7 +98,15 @@ async function validateMigrationsFolder(migrationsFolder: string): Promise<void>
   }
 
   for (const entry of journal.entries) {
-    const sqlPath = path.join(migrationsFolder, `${entry.tag}.sql`);
+    const sqlPath = path.resolve(migrationRoot, `${entry.tag}.sql`);
+    const relativePath = path.relative(migrationRoot, sqlPath);
+    if (
+      relativePath === '' ||
+      relativePath.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativePath)
+    ) {
+      throw new Error('Invalid migration journal');
+    }
 
     try {
       await fs.access(sqlPath, fs.constants.F_OK);

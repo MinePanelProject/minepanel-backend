@@ -26,6 +26,7 @@ import { generateSecret, generateURI, verifySync } from './totp';
 
 type AuthDatabase = Pick<DrizzleDB, 'insert' | 'update' | 'select' | 'delete'>;
 const REFRESH_TOKEN_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_EXP_SECONDS = Math.floor(Number.MAX_SAFE_INTEGER / 1000);
 const TWO_FACTOR_FAILURE_LIMIT = 5;
 const TWO_FACTOR_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
 const TWO_FACTOR_LOCKOUT_MS = 15 * 60 * 1000;
@@ -58,7 +59,61 @@ type AccessTokenClaims = {
   role: string;
   temporaryAuth?: boolean;
 };
-type RefreshTokenClaims = { sub: string; type: 'refresh'; temporaryAuth?: boolean };
+type RefreshTokenSigningClaims = { sub: string; type: 'refresh'; temporaryAuth?: boolean };
+type RefreshTokenClaims = RefreshTokenSigningClaims & { exp: number };
+
+type RefreshTokenClaimsCandidate = {
+  sub: unknown;
+  type: unknown;
+  temporaryAuth?: unknown;
+  exp: unknown;
+};
+
+const isRefreshToken = (candidate: unknown): candidate is string =>
+  typeof candidate === 'string' && candidate.length > 0;
+
+const isValidRefreshTokenClaims = (candidate: unknown): candidate is RefreshTokenClaims => {
+  try {
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      return false;
+    }
+
+    const prototype = Object.getPrototypeOf(candidate);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return false;
+    }
+
+    const claims =
+      /* SAFETY: JwtService.verifyAsync or JSON decoding is the external refresh-claims
+      producer; null, plain-object prototype, and own-field checks validate this view.
+      The typed object is used only for field validation before constructing the domain value. */
+      candidate as RefreshTokenClaimsCandidate;
+    if (
+      !Object.hasOwn(claims, 'sub') ||
+      !Object.hasOwn(claims, 'type') ||
+      !Object.hasOwn(claims, 'exp')
+    ) {
+      return false;
+    }
+
+    const { sub, type, exp } = claims;
+    const temporaryAuth = Object.hasOwn(claims, 'temporaryAuth') ? claims.temporaryAuth : undefined;
+
+    return (
+      typeof sub === 'string' &&
+      sub.length > 0 &&
+      type === 'refresh' &&
+      (temporaryAuth === undefined || typeof temporaryAuth === 'boolean') &&
+      typeof exp === 'number' &&
+      Number.isFinite(exp) &&
+      Number.isInteger(exp) &&
+      exp > 0 &&
+      exp <= MAX_EXP_SECONDS
+    );
+  } catch {
+    return false;
+  }
+};
 
 @Injectable()
 export class AuthService {
@@ -247,17 +302,25 @@ export class AuthService {
     });
   }
 
-  async refreshTokens(refreshToken: AuthTokens['refreshToken']) {
-    const decoded = await this.jwtService.verifyAsync<{
-      sub: string;
-      type?: string;
-      temporaryAuth?: boolean;
-    }>(refreshToken);
-
-    // the token type pins its purpose: only a refresh token may rotate
-    if (decoded.type !== 'refresh') {
+  async refreshTokens(
+    rawRefreshToken: string | readonly string[] | number | boolean | null | undefined,
+  ) {
+    if (!isRefreshToken(rawRefreshToken)) {
       throw new UnauthorizedException();
     }
+    const refreshToken = rawRefreshToken;
+
+    let verifiedClaims: unknown;
+    try {
+      verifiedClaims = await this.jwtService.verifyAsync(refreshToken);
+    } catch {
+      throw new UnauthorizedException();
+    }
+
+    if (!isValidRefreshTokenClaims(verifiedClaims)) {
+      throw new UnauthorizedException();
+    }
+    const decoded = verifiedClaims;
 
     const userId = decoded.sub;
 
@@ -283,6 +346,8 @@ export class AuthService {
         throw new UnauthorizedException();
       }
 
+      this.assertLoginAllowed(user);
+
       const temporaryAuth = decoded.temporaryAuth === true;
       const accessClaims: AccessTokenClaims = {
         sub: user.id,
@@ -290,7 +355,7 @@ export class AuthService {
         username: user.username,
         role: user.role,
       };
-      const refreshClaims: RefreshTokenClaims = { sub: user.id, type: 'refresh' };
+      const refreshClaims: RefreshTokenSigningClaims = { sub: user.id, type: 'refresh' };
       if (temporaryAuth) {
         accessClaims.temporaryAuth = true;
         refreshClaims.temporaryAuth = true;
@@ -432,7 +497,7 @@ export class AuthService {
       username: user.username,
       role: user.role,
     };
-    const refreshClaims: RefreshTokenClaims = { sub: user.id, type: 'refresh' };
+    const refreshClaims: RefreshTokenSigningClaims = { sub: user.id, type: 'refresh' };
     if (temporaryAuth) {
       accessClaims.temporaryAuth = true;
       refreshClaims.temporaryAuth = true;
@@ -479,6 +544,10 @@ export class AuthService {
   }
 
   private isValidTotp(user: User, token: string): boolean {
+    if (!/^\d{6}$/u.test(token)) {
+      return false;
+    }
+
     return verifySync({
       secret: decrypt(user.totpSecret!, this.encryptionKey),
       token,
@@ -530,7 +599,7 @@ export class AuthService {
 
     let codes: string[];
     try {
-      const parsed: BackupCodeArrayCandidate = JSON.parse(user.totpBackupCodes);
+      const parsed = JSON.parse(user.totpBackupCodes);
       if (!isStringArray(parsed)) {
         return false;
       }

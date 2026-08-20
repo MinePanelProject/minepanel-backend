@@ -56,11 +56,12 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
       .limit(1);
     expect(existing).toBeUndefined();
 
-    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
+    // SAFETY: drizzle(sql, { schema }) is the database producer; the NestJS DRIZZLE contract
+    // invariant is the exact DrizzleDB query/schema surface consumed by useValue.
+    const database = db as DrizzleDB;
     const moduleFixture: TestingModule = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(DRIZZLE)
-      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-      .useValue(db as DrizzleDB)
+      .useValue(database)
       .overrideProvider(DockerService)
       .useValue({ ping: jest.fn().mockResolvedValue(true) })
       .overrideProvider(DOCKERODE)
@@ -141,7 +142,8 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
     expect(login.body).toMatchObject({ id: userId, username: registration.username, role: 'USER' });
     expect(login.body).not.toHaveProperty('accessToken');
     expect(login.body).not.toHaveProperty('refreshToken');
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: Supertest login produces set-cookie headers; setCookieHeader reads the exact
+    // header values to verify access_token and refresh_token cookies.
     const cookies = setCookieHeader(login.headers['set-cookie']);
     expect(cookies).toEqual(
       expect.arrayContaining([
@@ -165,7 +167,8 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
       username: registration.username,
     });
     await request(app.getHttpServer()).get('/api/auth/profile').expect(401);
-    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
+    // SAFETY: Supertest profile produces the response body after the access_token cookie is
+    // consumed by JwtAuthGuard; this assertion reads that authenticated response.
     const profile = await request(app.getHttpServer())
       .get('/api/auth/profile')
       .set('Cookie', accessCookie)
@@ -180,7 +183,8 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
       .post('/api/auth/refresh')
       .set('Cookie', cookiePairs)
       .expect(200);
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: Supertest refresh produces set-cookie headers; setCookieHeader reads the exact
+    // access_token header emitted after refresh.
     expect(setCookieHeader(refreshed.headers['set-cookie']).join(';')).toContain('access_token=');
 
     // CSRF: a cross-site form-shaped attempt (no JSON preflight) with a forged
@@ -197,14 +201,17 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
     await request(app.getHttpServer())
       .post('/api/auth/refresh')
       .set('Cookie', cookiePairs)
-      // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
+      // SAFETY: Supertest consumes the cookiePairs request header and produces the 200 response;
+      // this assertion verifies the blocked logout did not revoke the refresh session.
       .expect(200);
 
-    // the exact canonical Origin passes the guard
-    // SAFETY: Test setup requires CORS_ORIGIN before this suite runs, so the value is a string here.
+    const rawCorsOrigin = process.env.CORS_ORIGIN;
+    // SAFETY: Supertest is the external request producer; its CORS header contract invariant
+    // supplies the exact configured Origin string consumed by the refresh endpoint.
+    const corsOrigin = rawCorsOrigin as string;
     await request(app.getHttpServer())
       .post('/api/auth/refresh')
-      .set('Origin', process.env.CORS_ORIGIN as string)
+      .set('Origin', corsOrigin)
       .set('Cookie', cookiePairs)
       .expect(200);
 
@@ -219,7 +226,8 @@ describe('Authentication flow (PostgreSQL e2e)', () => {
       .post('/api/auth/logout')
       .set('Cookie', cookiePairs)
       .expect(200);
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: Supertest logout produces set-cookie headers; setCookieHeader reads those exact
+    // access_token and refresh_token values to verify both cookies are cleared.
     expect(setCookieHeader(logout.headers['set-cookie']).join(';')).toMatch(
       /access_token=;|refresh_token=;/,
     );

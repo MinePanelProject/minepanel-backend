@@ -4,8 +4,9 @@ import type { Request } from 'express';
 import { ServerAccessController } from './server-access.controller';
 import type { ServerAccessService } from './server-access.service';
 
+// SAFETY: NestJS request parsing produces the request user object; makeRequest provides the
+// exact id, username, and role fields ServerAccessController extracts.
 const makeRequest = (role: string, id = 'user-1'): Request =>
-  // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
   ({ user: { id, username: 'player', role } }) as Request;
 
 describe('ServerAccessController', () => {
@@ -23,7 +24,8 @@ describe('ServerAccessController', () => {
       approveAccess: jest.fn(),
       revokeAccess: jest.fn(),
     };
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: NestJS injection consumes the ServerAccessService collaborator; this double
+    // provides requestAccess, getMyAccessRequest, listAccessRequests, approveAccess, revokeAccess.
     controller = new ServerAccessController(service as ServerAccessService);
   });
 
@@ -35,16 +37,18 @@ describe('ServerAccessController', () => {
     };
     service.requestAccess = jest.fn().mockResolvedValue(projection);
 
+    // SAFETY: NestJS route parsing produces the id field consumed by requestAccess, while
+    // makeRequest produces the user id, username, and role fields consumed from Request.
     await expect(
-      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       controller.requestAccess({ id: 'server-1' } as never, makeRequest('USER')),
     ).resolves.toEqual(projection);
     expect(service.requestAccess).toHaveBeenCalledWith('server-1', { id: 'user-1', role: 'USER' });
   });
 
   it('rejects an unauthenticated request before reaching the service', async () => {
+    // SAFETY: NestJS route parsing produces the id field consumed by requestAccess; this
+    // unauthenticated Request fixture deliberately omits user for the guard rejection branch.
     await expect(
-      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       controller.requestAccess({ id: 'server-1' } as never, {} as Request),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(service.requestAccess).not.toHaveBeenCalled();
@@ -58,8 +62,9 @@ describe('ServerAccessController', () => {
     };
     service.getMyAccessRequest = jest.fn().mockResolvedValue(projection);
 
+    // SAFETY: NestJS route parsing produces the id field consumed by getMyAccessRequest, while
+    // makeRequest produces the user id, username, and role fields consumed from Request.
     await expect(
-      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       controller.getMyAccessRequest({ id: 'server-1' } as never, makeRequest('USER')),
     ).resolves.toEqual(projection);
     expect(service.getMyAccessRequest).toHaveBeenCalledWith('server-1', {
@@ -71,7 +76,7 @@ describe('ServerAccessController', () => {
   it('delegates list-access-requests with only the server id', async () => {
     service.listAccessRequests = jest.fn().mockResolvedValue([]);
 
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: NestJS route parsing produces the id field consumed by listAccessRequests.
     await expect(controller.listAccessRequests({ id: 'server-1' } as never)).resolves.toEqual([]);
     expect(service.listAccessRequests).toHaveBeenCalledWith('server-1');
   });
@@ -87,8 +92,9 @@ describe('ServerAccessController', () => {
     };
     service.approveAccess = jest.fn().mockResolvedValue(projection);
 
+    // SAFETY: NestJS route parsing produces id and userId, the exact fields consumed by
+    // ServerAccessController.approveAccess before calling approveAccess.
     await expect(
-      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
       controller.approveAccess({ id: 'server-1', userId: 'user-2' } as never),
     ).resolves.toEqual(projection);
     expect(service.approveAccess).toHaveBeenCalledWith('server-1', 'user-2');
@@ -97,12 +103,12 @@ describe('ServerAccessController', () => {
   it('delegates revoke-access with both ids and returns no content', async () => {
     service.revokeAccess = jest.fn().mockResolvedValue(undefined);
 
-    // SAFETY: The controller only reads id and userId from this test-owned route-parameter object.
+    // SAFETY: NestJS route parsing produces id and userId, the exact fields consumed by
+    // ServerAccessController.revokeAccess before calling revokeAccess.
     await expect(
       controller.revokeAccess({ id: 'server-1', userId: 'user-2' } as never),
     ).resolves.toBeUndefined();
     expect(service.revokeAccess).toHaveBeenCalledWith('server-1', 'user-2');
-    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
   });
 
   it.each([

@@ -16,14 +16,15 @@ type RawHeaders = {
   cookie?: string | readonly string[];
 };
 const request = (headers: RawHeaders): Pick<IncomingMessage, 'headers'> => {
-  // SAFETY: Node's runtime accepts repeated header values; this fixture preserves
-  // them to exercise SocketIoAdapter's rejection of array origins/cookies.
-  return {
-    headers: {
-      origin: headers.origin,
-      cookie: headers.cookie,
-    },
-  } as Pick<IncomingMessage, 'headers'>;
+  return (
+    /* SAFETY: Node IncomingMessage produces the headers member; this fixture preserves
+    the exact origin and cookie fields consumed by allowRequest. */ {
+      headers: {
+        origin: headers.origin,
+        cookie: headers.cookie,
+      },
+    } as Pick<IncomingMessage, 'headers'>
+  );
 };
 
 describe('SocketIoAdapter', () => {
@@ -32,17 +33,17 @@ describe('SocketIoAdapter', () => {
   let fakeServer: FakeIoServer;
 
   beforeEach(() => {
-    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
-    // SAFETY: The ConfigService double exposes only get(), the sole capability SocketIoAdapter reads.
+    // SAFETY: NestJS ConfigService consumers read only get(); this double provides that
+    // collaborator contract, while IoAdapter creates the Socket.IO server below.
     const config = {
       get: jest.fn().mockReturnValue('http://localhost:5173'),
     } satisfies Pick<ConfigService, 'get'>;
     adapter = new SocketIoAdapter(new SocketReservationService(), config, createServer());
     fakeServer = { opts: {}, engine: { on: jest.fn() }, close: jest.fn() };
-    // SAFETY: The private Socket.IO return type is represented by this fixture's reachable members.
-    createServerSpy = jest
-      .spyOn(IoAdapter.prototype, 'createIOServer')
-      .mockReturnValue(fakeServer as never);
+    createServerSpy = jest.spyOn(IoAdapter.prototype, 'createIOServer').mockReturnValue(
+      /* SAFETY: IoAdapter.createIOServer produces the Socket.IO surface; fakeServer provides
+        opts, engine.on, and close, the exact members consumed below. */ fakeServer as never,
+    );
   });
 
   afterEach(() => {
@@ -51,8 +52,10 @@ describe('SocketIoAdapter', () => {
 
   it('forces the hardened Socket.IO options', () => {
     adapter.createIOServer(0);
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    const options = createServerSpy.mock.calls[0]?.[1] as ServerOptions;
+    const rawOptions = createServerSpy.mock.calls[0]?.[1];
+    // SAFETY: Socket.IO framework producer createIOServer supplies ServerOptions; its contract
+    // invariant exposes cors, maxHttpBufferSize, perMessageDeflate, connectTimeout, and recovery.
+    const options = rawOptions as ServerOptions;
 
     expect(options.cors).toEqual({ origin: 'http://localhost:5173', credentials: true });
     expect(options.maxHttpBufferSize).toBe(16 * 1024);
@@ -90,15 +93,22 @@ describe('SocketIoAdapter', () => {
   });
 
   it('merges caller options before forcing security options', () => {
-    // SAFETY: Only caller options overridden by SocketIoAdapter are needed for this test.
-    adapter.createIOServer(0, {
+    // SAFETY: Socket.IO callers produce ServerOptions; this fixture supplies cors,
+    // maxHttpBufferSize, perMessageDeflate, and connectTimeout for the adapter override.
+    const callerOptions = {
       cors: { origin: 'http://evil.test', credentials: false },
       maxHttpBufferSize: 1,
       perMessageDeflate: true,
       connectTimeout: 1,
-    } as ServerOptions);
-    // SAFETY: The spy records the concrete ServerOptions passed to the base adapter.
-    const options = createServerSpy.mock.calls[0]?.[1] as ServerOptions;
+    };
+    // SAFETY: Socket.IO caller configuration is the producer; the ServerOptions contract
+    // invariant supplies cors, maxHttpBufferSize, perMessageDeflate, and connectTimeout.
+    const typedCallerOptions = callerOptions as ServerOptions;
+    adapter.createIOServer(0, typedCallerOptions);
+    const rawOptions = createServerSpy.mock.calls[0]?.[1];
+    // SAFETY: Socket.IO framework producer createIOServer supplies ServerOptions; its contract
+    // invariant exposes cors, maxHttpBufferSize, perMessageDeflate, and connectTimeout.
+    const options = rawOptions as ServerOptions;
 
     expect(options.cors).toEqual({ origin: 'http://localhost:5173', credentials: true });
     expect(options.maxHttpBufferSize).toBe(16 * 1024);

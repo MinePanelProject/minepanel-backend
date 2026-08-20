@@ -6,28 +6,26 @@ import { CsrfOriginGuard } from './csrf-origin.guard';
 const makeConfig = (corsOrigin: string): ConfigService =>
   new ConfigService({ CORS_ORIGIN: corsOrigin });
 
+// SAFETY: makeContext is the HTTP ExecutionContext producer; its contract invariant supplies
+// getType and switchToHttp().getRequest(), the exact members CsrfOriginGuard consumes.
 const makeContext = (
   method: string,
   origin: string | string[] | undefined,
   host = 'minepanel.xyz',
   protocol = 'https',
 ): ExecutionContextLike =>
-  // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
   ({
     getType: () => 'http',
     switchToHttp: () => ({
       getRequest: () =>
-        // SAFETY: CsrfOriginGuard reads only these request fields and get('host');
-        // the partial request double covers that exercised contract.
-        ({
+        /* SAFETY: NestJS request parsing produces method, protocol, headers.origin, headers.host,
+        and get('host'), the exact request members CsrfOriginGuard reads. */ ({
           method,
           protocol,
           headers: { origin, host },
           get: (name: string) => (name === 'host' ? host : undefined),
-          // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
         }) as Request,
     }),
-    // SAFETY: CsrfOriginGuard reads only getType and switchToHttp().getRequest() from this context.
   }) as ExecutionContextLike;
 
 type ExecutionContextLike = ExecutionContext;
@@ -41,18 +39,19 @@ type CsrfContextFixture = {
   switchToRpc?: ExecutionContext['switchToRpc'];
   switchToWs?: ExecutionContext['switchToWs'];
 };
-// SAFETY: The fixture supplies getType and switchToHttp, the only context members read here.
 const asExecutionContext = (fixture: CsrfContextFixture): ExecutionContext =>
-  fixture as ExecutionContext;
+  /* SAFETY: NestJS execution-context parsing produces getType and switchToHttp().getRequest(),
+  the exact members consumed by CsrfOriginGuard. */ fixture as ExecutionContext;
 const assertForbidden = (call: () => boolean): void => {
   try {
     call();
     throw new Error('expected ForbiddenException');
   } catch (error) {
     expect(error).toBeInstanceOf(ForbiddenException);
-    // SAFETY: assertForbidden is called only with guard branches that throw ForbiddenException.
-    const response = (error as ForbiddenException).getResponse();
-    expect(response).toEqual({ error: 'CsrfOriginForbidden' });
+    // SAFETY: CsrfOriginGuard is the NestJS producer of ForbiddenException; its contract
+    // invariant exposes getResponse with the CsrfOriginForbidden payload consumed below.
+    const response = error as ForbiddenException;
+    expect(response.getResponse()).toEqual({ error: 'CsrfOriginForbidden' });
   }
 };
 

@@ -1,14 +1,15 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import type { Socket as EngineSocket } from 'engine.io';
 
-type EngineSocketHandle = {
-  id: string;
-  close: () => void;
-  on: (event: 'close', listener: () => void) => void;
+// SAFETY: Engine.IO emits its `Socket` producer through `Server.engine`'s
+// connection event. Reservation tracking consumes only that producer's string
+// `rawConn.id`; this boundary exposes the declared-private member without coercion.
+export type ReservedEngineSocket = Omit<EngineSocket, 'id'> & {
+  readonly id: string;
 };
 
 type Reservation = {
-  rawConn: EngineSocket;
+  rawConn: ReservedEngineSocket;
   deadline: NodeJS.Timeout;
   claimed: boolean;
 };
@@ -16,43 +17,30 @@ type Reservation = {
 const PENDING_CAP = 100;
 const AUTH_DEADLINE_MS = 5000;
 
+const isNonEmptyConnectionId = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0;
+
 @Injectable()
 export class SocketReservationService implements OnModuleDestroy {
   private readonly reservations = new Map<string, Reservation>();
 
-  reserve(rawConn: EngineSocket): void {
-    const idValue = String(Object.getOwnPropertyDescriptor(rawConn, 'id')?.value ?? '');
-    const handle: EngineSocketHandle = {
-      id: idValue,
-      close: rawConn.close.bind(rawConn),
-      on: rawConn.on.bind(rawConn),
-    };
+  reserve(rawConn: ReservedEngineSocket): void {
+    const id = rawConn.id;
 
-    if (idValue.length === 0) {
+    if (!isNonEmptyConnectionId(id)) {
       try {
-        handle.close();
+        rawConn.close();
       } catch {
-        // best-effort close for an invalid Engine.IO connection
+        // Engine.IO may already have closed a malformed transport before reservation.
       }
       return;
     }
 
-    if (this.reservations.size >= PENDING_CAP) {
+    if (this.reservations.size >= PENDING_CAP || this.reservations.has(id)) {
       try {
-        handle.close();
+        rawConn.close();
       } catch {
-        // best-effort close at capacity
-      }
-      return;
-    }
-
-    const id = handle.id;
-
-    if (!id || this.reservations.has(id)) {
-      try {
-        handle.close();
-      } catch {
-        // duplicate or missing id
+        // Engine.IO can close concurrently while the reservation admission path runs.
       }
       return;
     }
@@ -62,7 +50,7 @@ export class SocketReservationService implements OnModuleDestroy {
     }, AUTH_DEADLINE_MS);
     deadline.unref();
 
-    handle.on('close', () => this.release(id, false));
+    rawConn.on('close', () => this.release(id, false));
     this.reservations.set(id, { rawConn, deadline, claimed: false });
   }
 

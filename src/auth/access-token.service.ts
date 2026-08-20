@@ -19,17 +19,74 @@ type AccessTokenClaims = {
   sub: string;
   username: string;
   type: 'access';
-  temporaryAuth: boolean | undefined;
+  temporaryAuth?: boolean;
   exp: number;
 };
 
 type AccessTokenClaimsCandidate = {
-  sub?: string;
-  username?: string;
-  type?: string;
-  temporaryAuth?: boolean;
-  exp?: number;
+  sub?: unknown;
+  username?: unknown;
+  type?: unknown;
+  temporaryAuth?: unknown;
+  exp?: unknown;
 };
+
+const parseAccessTokenClaims = (candidate: unknown): AccessTokenClaims | null => {
+  try {
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      return null;
+    }
+
+    const prototype = Object.getPrototypeOf(candidate);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return null;
+    }
+
+    const claims =
+      /* SAFETY: JwtService.verifyAsync or JSON decoding is the external producer; null,
+      plain-object prototype, and own-field checks validate this intermediate typed view.
+      The typed object is used only for field validation before constructing the domain value. */
+      candidate as AccessTokenClaimsCandidate;
+    if (
+      !Object.hasOwn(claims, 'sub') ||
+      !Object.hasOwn(claims, 'username') ||
+      !Object.hasOwn(claims, 'type') ||
+      !Object.hasOwn(claims, 'exp')
+    ) {
+      return null;
+    }
+
+    const { sub, username, type, exp } = claims;
+    const temporaryAuth = Object.hasOwn(claims, 'temporaryAuth') ? claims.temporaryAuth : undefined;
+
+    if (
+      typeof sub !== 'string' ||
+      sub.length === 0 ||
+      typeof username !== 'string' ||
+      type !== 'access' ||
+      (temporaryAuth !== undefined && typeof temporaryAuth !== 'boolean') ||
+      typeof exp !== 'number' ||
+      !Number.isFinite(exp) ||
+      !Number.isInteger(exp) ||
+      exp <= 0 ||
+      exp > MAX_EXP_SECONDS
+    ) {
+      return null;
+    }
+
+    const parsedClaims: AccessTokenClaims = {
+      sub,
+      username,
+      type,
+      exp,
+    };
+    if (temporaryAuth !== undefined) parsedClaims.temporaryAuth = temporaryAuth;
+    return parsedClaims;
+  } catch {
+    return null;
+  }
+};
+
 @Injectable()
 export class AccessTokenService {
   constructor(
@@ -37,15 +94,16 @@ export class AccessTokenService {
     @Inject(DRIZZLE) private readonly db: Pick<DrizzleDB, 'select'>,
   ) {}
   async verify(token: string): Promise<AccessTokenPrincipal> {
-    let payload: AccessTokenClaimsCandidate;
+    let verifiedPayload: unknown;
 
     try {
-      payload = await this.jwtService.verifyAsync<AccessTokenClaimsCandidate>(token);
+      verifiedPayload = await this.jwtService.verifyAsync(token);
     } catch {
       throw new UnauthorizedException();
     }
 
-    if (!this.isValidPayload(payload)) {
+    const payload = parseAccessTokenClaims(verifiedPayload);
+    if (payload === null) {
       throw new UnauthorizedException();
     }
 
@@ -86,37 +144,5 @@ export class AccessTokenService {
       temporaryAuth: payload.temporaryAuth === true,
       exp: payload.exp * 1000,
     };
-  }
-
-  private isValidPayload(candidate: AccessTokenClaimsCandidate): candidate is AccessTokenClaims {
-    if (typeof candidate.sub !== 'string' || candidate.sub.length === 0) {
-      return false;
-    }
-
-    if (typeof candidate.username !== 'string') {
-      return false;
-    }
-
-    if (candidate.type !== 'access') {
-      return false;
-    }
-
-    if (
-      typeof candidate.exp !== 'number' ||
-      !Number.isFinite(candidate.exp) ||
-      !Number.isInteger(candidate.exp) ||
-      candidate.exp <= 0 ||
-      candidate.exp > MAX_EXP_SECONDS
-    ) {
-      return false;
-    }
-
-    const temporaryAuth = candidate.temporaryAuth;
-
-    if (temporaryAuth !== undefined && typeof temporaryAuth !== 'boolean') {
-      return false;
-    }
-
-    return true;
   }
 }

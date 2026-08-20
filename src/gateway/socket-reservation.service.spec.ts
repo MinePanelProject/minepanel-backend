@@ -1,11 +1,13 @@
 import { EventEmitter } from 'node:events';
 import { SocketReservationService } from './socket-reservation.service';
 
-type Raw = EventEmitter & { id: string; close: jest.Mock };
+type Raw = EventEmitter & { id: string | number; close: jest.Mock };
 
-const raw = (id: string): Raw => {
-  // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-  const connection = new EventEmitter() as Raw;
+const raw = (id: string | number): Raw => {
+  const connection =
+    /* SAFETY: raw() is the Engine.IO test producer; reserve() reads id and close and
+    subscribes through EventEmitter's on member, all supplied by this concrete double. */
+    new EventEmitter() as Raw;
   connection.id = id;
   connection.close = jest.fn();
   return connection;
@@ -23,9 +25,10 @@ describe('SocketReservationService', () => {
   it('reserves, claims, and releases a raw Engine.IO connection idempotently', () => {
     const service = new SocketReservationService();
     const connection = raw('raw-1');
-
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    service.reserve(connection as never);
+    // SAFETY: raw() is the Engine.IO producer; its concrete connection contract provides id,
+    // close, and on members consumed by reserve().
+    const reservedConnection = connection as never;
+    service.reserve(reservedConnection);
     expect(service.claim('raw-1')).toBe(true);
     expect(service.claim('raw-1')).toBe(false);
     expect(service.release('raw-1')).toBe(true);
@@ -38,10 +41,14 @@ describe('SocketReservationService', () => {
     const connection = raw('raw-timeout');
     const unref = jest.spyOn(global, 'setTimeout');
 
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    service.reserve(connection as never);
-    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
-    const timer = unref.mock.results[0]?.value as NodeJS.Timeout;
+    service.reserve(
+      /* SAFETY: raw() produces the Engine.IO connection id and close/on members consumed by
+      reserve(); setTimeout produces the timer whose unref member this test reads. */ connection as never,
+    );
+    const timer =
+      /* SAFETY: setTimeout is the timer producer; this test reads its unref member and advances
+      the Jest-controlled deadline to verify close is called. */ unref.mock.results[0]
+        ?.value as NodeJS.Timeout;
     expect(timer.unref).toBeDefined();
     jest.advanceTimersByTime(5000);
 
@@ -54,8 +61,10 @@ describe('SocketReservationService', () => {
     const service = new SocketReservationService();
     const connection = raw('raw-close');
 
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    service.reserve(connection as never);
+    // SAFETY: raw() is the Engine.IO producer; its concrete connection contract supplies id,
+    // close, and on members consumed by reserve().
+    const reservedConnection = connection as never;
+    service.reserve(reservedConnection);
     connection.emit('close');
     connection.emit('close');
 
@@ -68,8 +77,10 @@ describe('SocketReservationService', () => {
     const connections = Array.from({ length: 101 }, (_, index) => raw(`raw-${index}`));
 
     for (const connection of connections) {
-      // SAFETY: raw() constructs exactly the id and close members reserve() reads.
-      service.reserve(connection as never);
+      service.reserve(
+        /* SAFETY: raw() is the Engine.IO producer; reserve() consumes each double's exact id,
+        close, and EventEmitter on members to enforce the admission contract. */ connection as never,
+      );
     }
 
     expect(
@@ -78,21 +89,32 @@ describe('SocketReservationService', () => {
     expect(connections[100].close).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects duplicate and missing raw ids', () => {
+  it('rejects duplicate, empty, and non-string raw ids', () => {
     const service = new SocketReservationService();
     const first = raw('duplicate');
     const second = raw('duplicate');
-    const missing = raw('');
-
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-    service.reserve(first as never);
-    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
-    service.reserve(second as never);
-    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
-    service.reserve(missing as never);
+    const empty = raw('');
+    const malformed = raw(1);
+    service.reserve(
+      /* SAFETY: raw() produces the Engine.IO double's exact id, close, and EventEmitter on
+      members consumed by reserve() for duplicate-id validation. */ first as never,
+    );
+    service.reserve(
+      /* SAFETY: raw() produces the Engine.IO double's exact id, close, and EventEmitter on
+      members consumed by reserve() for duplicate-id rejection. */ second as never,
+    );
+    service.reserve(
+      /* SAFETY: raw() produces the Engine.IO double's exact id, close, and EventEmitter on
+      members consumed by reserve() for empty-id rejection. */ empty as never,
+    );
+    service.reserve(
+      /* SAFETY: raw() produces the Engine.IO double's exact id, close, and EventEmitter on
+      members consumed by reserve() for non-string-id rejection. */ malformed as never,
+    );
 
     expect(second.close).toHaveBeenCalledTimes(1);
-    expect(missing.close).toHaveBeenCalledTimes(1);
+    expect(empty.close).toHaveBeenCalledTimes(1);
+    expect(malformed.close).toHaveBeenCalledTimes(1);
     expect(service.claim('duplicate')).toBe(true);
   });
 
@@ -100,8 +122,10 @@ describe('SocketReservationService', () => {
     const service = new SocketReservationService();
     const connections = [raw('a'), raw('b')];
     connections.forEach((connection) => {
-      // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
-      service.reserve(connection as never);
+      // SAFETY: raw() is the Engine.IO producer; its concrete connection contract supplies id,
+      // close, and on members consumed by reserve().
+      const reservedConnection = connection as never;
+      service.reserve(reservedConnection);
     });
 
     service.onModuleDestroy();

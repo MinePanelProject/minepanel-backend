@@ -110,8 +110,8 @@ async function bootstrap() {
   // the only inbound path is the Caddy reverse proxy on the app network:
   // honor X-Forwarded-* from it so protocol/host detection (CSRF same-origin
   // check) and per-client throttling see the real client
-  // SAFETY: Nest's HTTP adapter exposes Express's set(setting, value) method;
-  // bootstrap only uses it to configure trust proxy.
+  // SAFETY: Nest's HTTP adapter producer exposes Express's set(setting, value) contract;
+  // bootstrap consumes that exact method to configure trust proxy.
   const httpAdapter = app.getHttpAdapter().getInstance() as HttpAdapterInstance;
   httpAdapter.set('trust proxy', 1);
 

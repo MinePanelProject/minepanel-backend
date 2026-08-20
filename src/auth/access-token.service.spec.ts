@@ -4,8 +4,15 @@ import type { DrizzleDB } from 'src/db/db.module';
 import { AccessTokenService } from './access-token.service';
 
 type UserRow = { status: string; role: string; mustChangePassword: boolean };
-type ClaimValue = string | number | boolean | null | undefined;
-type ClaimsCandidate = { [key: string]: ClaimValue };
+type ValidPayload = {
+  sub: string | number;
+  username: string | number | undefined;
+  type: string | undefined;
+  exp: number | undefined;
+  temporaryAuth?: boolean | string;
+  role?: string;
+};
+type VerifyPayload = Partial<ValidPayload> | null | boolean | number | string | readonly never[];
 type AccessDbFixture = Pick<DrizzleDB, 'select'> & { select: jest.Mock };
 const makeDb = (row: UserRow | undefined): AccessDbFixture => {
   const selectMock = jest.fn();
@@ -17,7 +24,7 @@ const makeDb = (row: UserRow | undefined): AccessDbFixture => {
   // SAFETY: The mock implements the select method surface required by AccessTokenService.
   return { select: selectMock } as AccessDbFixture;
 };
-const makeService = (payload: ClaimsCandidate, ...rows: [UserRow?]) => {
+const makeService = (payload: VerifyPayload, ...rows: [UserRow?]) => {
   const verifyAsync = jest.fn().mockResolvedValue(payload);
   const row =
     rows.length === 0
@@ -37,8 +44,7 @@ const makeService = (payload: ClaimsCandidate, ...rows: [UserRow?]) => {
     db,
   };
 };
-
-const validPayload = (overrides: ClaimsCandidate = {}) => ({
+const validPayload = (overrides: Partial<ValidPayload> = {}): ValidPayload => ({
   sub: 'user-1',
   username: 'player',
   type: 'access',
@@ -63,6 +69,19 @@ describe('AccessTokenService', () => {
     ['unsafe exp', validPayload({ exp: Math.floor(Number.MAX_SAFE_INTEGER / 1000) + 1 })],
     ['wrong temporaryAuth type', validPayload({ temporaryAuth: 'true' })],
   ] as const)('rejects %s before querying the database', async (_label, payload) => {
+    const { service, db } = makeService(payload);
+
+    await expect(service.verify('token')).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['null', null],
+    ['a boolean', true],
+    ['a number', 1],
+    ['a string', 'access'],
+    ['an array', []],
+  ] as const)('rejects verifier output that is %s before querying the database', async (_label, payload) => {
     const { service, db } = makeService(payload);
 
     await expect(service.verify('token')).rejects.toBeInstanceOf(UnauthorizedException);

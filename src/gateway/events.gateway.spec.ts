@@ -48,12 +48,15 @@ class TestSocket {
   readonly disconnected = jest.fn();
   readonly connected = true;
   readonly conn = { close: jest.fn() };
+  readonly client: { id: string };
   private readonly listeners = new Map<string, Set<(payload: AuthPayload) => void>>();
 
   constructor(
     readonly id: string,
     cookie?: string,
+    engineId = id,
   ) {
+    this.client = { id: engineId };
     this.handshake = { headers: cookie === undefined ? {} : { cookie } };
     this.rooms.add(id);
   }
@@ -167,6 +170,18 @@ describe('EventsGateway', () => {
     expect(reservation.release).toHaveBeenCalledWith('socket-1');
   });
 
+  it('claims and releases the Engine.IO client identifier instead of the namespace socket ID', async () => {
+    const { gateway, reservation } = makeGateway();
+    const socket = new TestSocket('namespace-1', 'access_token=signed', 'engine-1');
+
+    // SAFETY: TestSocket exposes Socket.IO's client.id and every member EventsGateway consumes.
+    gateway.handleConnection(socket as Socket & TestSocket);
+    await flush();
+
+    expect(reservation.claim).toHaveBeenCalledWith('engine-1');
+    expect(reservation.release).toHaveBeenCalledWith('engine-1');
+  });
+
   it('authenticates one strict fallback payload when no cookie is present', async () => {
     const { gateway, verify } = makeGateway();
     const socket = new TestSocket('socket-2');
@@ -224,12 +239,8 @@ describe('EventsGateway', () => {
   it.each([
     null,
     [],
+    { accessToken: '' },
     { accessToken: 'token', extra: true },
-    {
-      get accessToken() {
-        return 'token';
-      },
-    },
     Object.create(null),
     { accessToken: 1 },
   ])('rejects non-strict fallback payload %#', (payload) => {

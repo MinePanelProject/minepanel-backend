@@ -71,7 +71,8 @@ export class ServerAccessController {
   }
 
   private extractPrincipal(req: Request): ServerPrincipal {
-    // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
+    // SAFETY: JwtAuthGuard sets Express Request.user; this controller consumes
+    // only the id and role members.
     const user = req.user as { id: string; role: string } | undefined;
 
     if (!user) {

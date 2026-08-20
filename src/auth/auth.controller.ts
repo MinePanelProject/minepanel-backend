@@ -33,9 +33,12 @@ import { UpdatePasswordDTO } from './dto/updatePw.dto';
 import { PreAuthGuard, type PreAuthRequest } from './guards/pre-auth.guard';
 
 type JwtPayload = { id: string; username: string; role: string; temporaryAuth?: boolean };
-type AuthCookieJar = { refresh_token?: string };
+type AuthCookieJar = { refresh_token?: unknown };
 type AuthenticatedRequest = Request & { user: JwtPayload; cookies: AuthCookieJar };
 type RefreshRequest = Request & { cookies: AuthCookieJar };
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0;
 
 @ApiTags('auth')
 @Controller('auth')
@@ -91,10 +94,12 @@ export class AuthController {
     const user = req.user;
 
     // find token in cookies
-    const refreshToken = req.cookies.refresh_token!;
+    const refreshToken = req.cookies.refresh_token;
 
-    // find and delete refresh token db record for the user
-    await this.authService.logoutUser(user.id, refreshToken);
+    if (isNonEmptyString(refreshToken)) {
+      // cookie-parser is the external producer; only a string may reach bcrypt comparison.
+      await this.authService.logoutUser(user.id, refreshToken);
+    }
 
     // set both tokens as invalid in cookies
     clearAuthCookies(res);
@@ -109,19 +114,22 @@ export class AuthController {
     @Req() req: RefreshRequest,
     @Res({ passthrough: true }) res: Pick<Response, 'cookie'>,
   ) {
-    const fetchedRefreshToken = req.cookies.refresh_token!;
-    const newTokens = await this.authService.refreshTokens(fetchedRefreshToken);
+    const rawRefreshToken = req.cookies.refresh_token;
+    if (!isNonEmptyString(rawRefreshToken)) {
+      throw new UnauthorizedException();
+    }
+    const newTokens = await this.authService.refreshTokens(rawRefreshToken);
 
     if (!newTokens) {
       throw new UnauthorizedException('Something went wrong when generating new tokens');
     }
 
-    const { accessToken, refreshToken } = newTokens;
+    const { accessToken, refreshToken: rotatedRefreshToken } = newTokens;
 
     setAccessTokenCookie(res, accessToken);
 
-    if (refreshToken) {
-      setRefreshTokenCookie(res, refreshToken);
+    if (rotatedRefreshToken) {
+      setRefreshTokenCookie(res, rotatedRefreshToken);
     }
   }
 
@@ -177,8 +185,10 @@ export class AuthController {
     @Res({ passthrough: true }) res: Pick<Response, 'cookie'>,
   ) {
     const user = req.user;
-
-    const refreshToken = req.cookies.refresh_token!;
+    const refreshToken = req.cookies.refresh_token;
+    if (!isNonEmptyString(refreshToken)) {
+      throw new UnauthorizedException();
+    }
     const result = await this.authService.updateUserPassword(
       user.id,
       updatePw,

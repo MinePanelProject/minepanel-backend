@@ -12,9 +12,12 @@ import { IS_PUBLIC_KEY } from 'src/common/decorators/public.decorator';
 
 type GuardedUser = { id: string; username: string; role: string; temporaryAuth?: boolean };
 type GuardedRequest = Request & {
-  cookies: { access_token?: string };
+  cookies?: { access_token?: unknown };
   user?: GuardedUser;
 };
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0;
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -32,9 +35,9 @@ export class JwtAuthGuard implements CanActivate {
     if (isPublic) return true;
 
     const request = context.switchToHttp().getRequest<GuardedRequest>();
-    const token = request.cookies.access_token;
+    const token = request.cookies?.access_token;
 
-    if (!token) throw new UnauthorizedException();
+    if (!isNonEmptyString(token)) throw new UnauthorizedException();
 
     try {
       const principal = await this.accessTokenService.verify(token);
