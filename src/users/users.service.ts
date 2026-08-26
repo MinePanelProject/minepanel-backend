@@ -3,6 +3,7 @@ import * as bcrypt from 'bcrypt';
 import { and, eq, isNull, ne, or } from 'drizzle-orm';
 import { EditUserDto } from 'src/auth/dto/editUser.dto';
 import { UpdatePasswordDTO } from 'src/auth/dto/updatePw.dto';
+import { hashRefreshTokenId } from 'src/auth/refresh-token-id';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
 import { type Role, refreshTokens, type User, type UserStatus, users } from 'src/db/schema';
 import { type PublicUser, toPublicUser } from './public-user';
@@ -10,7 +11,7 @@ import { type PublicUser, toPublicUser } from './public-user';
 type UserInsertValues = {
   email: string;
   username: string;
-  passwordHash: string;
+  passwordHash: string | null;
   status: UserStatus;
   role?: Role;
 };
@@ -21,7 +22,7 @@ export class UsersService {
   async createUser(
     email: string,
     username: string,
-    passwordHash: string,
+    passwordHash: string | null,
     status: UserStatus,
     role?: Role,
   ): Promise<boolean> {
@@ -74,7 +75,7 @@ export class UsersService {
   async updatePassword(
     userId: string,
     dto: UpdatePasswordDTO,
-    refreshToken: string,
+    refreshTokenId: string | undefined,
     temporaryAuth = false,
   ): Promise<PublicUser> {
     const userData = await this.findById(userId);
@@ -139,6 +140,10 @@ export class UsersService {
       throw new BadRequestException('Wrong credentials');
     }
 
+    if (!userData.passwordHash) {
+      throw new BadRequestException('Wrong credentials');
+    }
+
     const passwordMatch = await bcrypt.compare(dto.oldPassword, userData.passwordHash);
     if (!passwordMatch) {
       throw new BadRequestException('Wrong credentials');
@@ -153,24 +158,18 @@ export class UsersService {
       .returning();
 
     const userNoPw = toPublicUser(updateResult);
-    const storedTokens = await this.db
-      .select()
-      .from(refreshTokens)
-      .where(eq(refreshTokens.userId, userId));
-
-    let currentTokenId: string | null = null;
-    for (const t of storedTokens) {
-      if (await bcrypt.compare(refreshToken, t.token)) {
-        currentTokenId = t.id;
-        break;
-      }
-    }
-
-    if (currentTokenId) {
+    if (refreshTokenId) {
       await this.db
         .delete(refreshTokens)
-        .where(and(eq(refreshTokens.userId, userId), ne(refreshTokens.id, currentTokenId)));
+        .where(
+          and(
+            eq(refreshTokens.userId, userId),
+            ne(refreshTokens.tokenIdHash, hashRefreshTokenId(refreshTokenId)),
+          ),
+        );
     } else {
+      // no verifiable current session: revoke every refresh session so the
+      // new password leaves no stale live session behind
       await this.db.delete(refreshTokens).where(eq(refreshTokens.userId, userId));
     }
 

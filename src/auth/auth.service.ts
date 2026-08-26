@@ -11,10 +11,16 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { and, eq, getTableColumns, gt } from 'drizzle-orm';
+import { and, eq, getTableColumns, gt, lte } from 'drizzle-orm';
 import { decrypt, encrypt } from 'src/common/crypto.util';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
-import { RefreshToken, refreshTokens, type User, users } from 'src/db/schema';
+import {
+  type NewRefreshToken,
+  type RefreshToken,
+  refreshTokens,
+  type User,
+  users,
+} from 'src/db/schema';
 import { type PublicUser, toPublicUser } from 'src/users/public-user';
 import { UsersService } from 'src/users/users.service';
 import { EditUserDto } from './dto/editUser.dto';
@@ -22,10 +28,11 @@ import { LoginUserDto } from './dto/login.dto';
 import { CreateUserDto } from './dto/register.dto';
 import { UpdatePasswordDTO } from './dto/updatePw.dto';
 import * as bcrypt from './password';
+import { createRefreshTokenId, hashRefreshTokenId } from './refresh-token-id';
+import { REFRESH_TOKEN_TTL, type RefreshTokenTtl } from './refresh-token-ttl';
 import { generateSecret, generateURI, verifySync } from './totp';
 
-type AuthDatabase = Pick<DrizzleDB, 'insert' | 'update' | 'select' | 'delete'>;
-const REFRESH_TOKEN_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+type AuthDatabase = Pick<DrizzleDB, 'insert' | 'update' | 'select' | 'delete' | 'transaction'>;
 const MAX_EXP_SECONDS = Math.floor(Number.MAX_SAFE_INTEGER / 1000);
 const TWO_FACTOR_FAILURE_LIMIT = 5;
 const TWO_FACTOR_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
@@ -59,60 +66,125 @@ type AccessTokenClaims = {
   role: string;
   temporaryAuth?: boolean;
 };
-type RefreshTokenSigningClaims = { sub: string; type: 'refresh'; temporaryAuth?: boolean };
+type RefreshTokenSigningClaims = {
+  sub: string;
+  type: 'refresh';
+  jti: string;
+  temporaryAuth?: boolean;
+};
 type RefreshTokenClaims = RefreshTokenSigningClaims & { exp: number };
 
 type RefreshTokenClaimsCandidate = {
-  sub: unknown;
-  type: unknown;
+  sub?: unknown;
+  type?: unknown;
+  jti?: unknown;
   temporaryAuth?: unknown;
-  exp: unknown;
+  exp?: unknown;
+};
+type RefreshTokenErrorCode =
+  | 'RefreshTokenMissing'
+  | 'RefreshTokenMalformed'
+  | 'RefreshTokenExpired'
+  | 'TokenWrongPurpose'
+  | 'RefreshTokenInvalid';
+type IssuedRefreshToken = {
+  refreshToken: string;
+  row: NewRefreshToken;
 };
 
 const isRefreshToken = (candidate: unknown): candidate is string =>
   typeof candidate === 'string' && candidate.length > 0;
 
-const isValidRefreshTokenClaims = (candidate: unknown): candidate is RefreshTokenClaims => {
+export const refreshTokenUnauthorized = (code: RefreshTokenErrorCode): UnauthorizedException =>
+  new UnauthorizedException({ error: code });
+
+export const requireRefreshToken = (value: string | undefined): string => {
+  if (value === undefined) {
+    throw refreshTokenUnauthorized('RefreshTokenMissing');
+  }
+
+  if (!isRefreshToken(value)) {
+    throw refreshTokenUnauthorized('RefreshTokenMalformed');
+  }
+
+  return value;
+};
+
+export const readRefreshTokenId = (refreshToken: string): string => {
+  const segment = refreshToken.split('.')[1];
+  if (!segment) {
+    throw refreshTokenUnauthorized('RefreshTokenMalformed');
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
+  } catch {
+    throw refreshTokenUnauthorized('RefreshTokenMalformed');
+  }
+
+  if (!isValidRefreshTokenClaims(payload)) {
+    throw refreshTokenUnauthorized('RefreshTokenInvalid');
+  }
+
+  return payload.jti;
+};
+
+const isExpiredJwtError = (error: unknown): error is { name: string } => {
+  if (typeof error !== 'object' || error === null || !('name' in error)) {
+    return false;
+  }
+
+  return error.name === 'TokenExpiredError';
+};
+
+const isRefreshTypedPayload = (payload: unknown): payload is { type: unknown } =>
+  typeof payload === 'object' && payload !== null && 'type' in payload;
+const isRefreshTokenClaimsCandidate = (
+  candidate: unknown,
+): candidate is RefreshTokenClaimsCandidate => {
   try {
     if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
       return false;
     }
 
     const prototype = Object.getPrototypeOf(candidate);
-    if (prototype !== Object.prototype && prototype !== null) {
-      return false;
-    }
-
-    const claims =
-      /* SAFETY: JwtService.verifyAsync or JSON decoding is the external refresh-claims
-      producer; null, plain-object prototype, and own-field checks validate this view.
-      The typed object is used only for field validation before constructing the domain value. */
-      candidate as RefreshTokenClaimsCandidate;
-    if (
-      !Object.hasOwn(claims, 'sub') ||
-      !Object.hasOwn(claims, 'type') ||
-      !Object.hasOwn(claims, 'exp')
-    ) {
-      return false;
-    }
-
-    const { sub, type, exp } = claims;
-    const temporaryAuth = Object.hasOwn(claims, 'temporaryAuth') ? claims.temporaryAuth : undefined;
-
-    return (
-      typeof sub === 'string' &&
-      sub.length > 0 &&
-      type === 'refresh' &&
-      (temporaryAuth === undefined || typeof temporaryAuth === 'boolean') &&
-      typeof exp === 'number' &&
-      Number.isFinite(exp) &&
-      Number.isInteger(exp) &&
-      exp > 0 &&
-      exp <= MAX_EXP_SECONDS
-    );
+    return prototype === Object.prototype || prototype === null;
   } catch {
     return false;
   }
+};
+
+const isValidRefreshTokenClaims = (candidate: unknown): candidate is RefreshTokenClaims => {
+  if (!isRefreshTokenClaimsCandidate(candidate)) {
+    return false;
+  }
+
+  const claims = candidate;
+  if (
+    !Object.hasOwn(claims, 'sub') ||
+    !Object.hasOwn(claims, 'type') ||
+    !Object.hasOwn(claims, 'jti') ||
+    !Object.hasOwn(claims, 'exp')
+  ) {
+    return false;
+  }
+
+  const { sub, type, jti, exp } = claims;
+  const temporaryAuth = Object.hasOwn(claims, 'temporaryAuth') ? claims.temporaryAuth : undefined;
+
+  return (
+    typeof sub === 'string' &&
+    sub.length > 0 &&
+    type === 'refresh' &&
+    typeof jti === 'string' &&
+    jti.length > 0 &&
+    (temporaryAuth === undefined || typeof temporaryAuth === 'boolean') &&
+    typeof exp === 'number' &&
+    Number.isFinite(exp) &&
+    exp > 0 &&
+    exp <= MAX_EXP_SECONDS
+  );
 };
 
 @Injectable()
@@ -125,6 +197,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     @Inject(DRIZZLE) private readonly db: AuthDatabase,
     private readonly configService: ConfigService,
+    @Inject(REFRESH_TOKEN_TTL) private readonly refreshTokenTtl: RefreshTokenTtl,
   ) {
     const encryptionKey = this.configService.get<string>('ENCRYPTION_KEY');
     if (!encryptionKey || !/^[\da-f]{64}$/i.test(encryptionKey)) {
@@ -223,6 +296,20 @@ export class AuthService {
     throw new UnauthorizedException('Wrong credentials');
   }
 
+  async issueProviderSession(user: User): Promise<AuthTokens> {
+    this.assertLoginAllowed(user);
+
+    if (user.mustChangePassword) {
+      throw new ForbiddenException({ error: 'PasswordRecoveryRequired' });
+    }
+
+    if (user.totpEnabled) {
+      throw new ForbiddenException({ error: 'TwoFactorAuthenticationRequired' });
+    }
+
+    return this.issueSession(user);
+  }
+
   async completeTwoFactorLogin(
     userId: string,
     token: string,
@@ -276,74 +363,63 @@ export class AuthService {
   }
 
   async logoutUser(userId: string, refreshToken: AuthTokens['refreshToken']) {
-    const storedTokens = await this.db
-      .select({ id: refreshTokens.id, token: refreshTokens.token })
-      .from(refreshTokens)
-      .where(eq(refreshTokens.userId, userId));
-
-    for (const tokenEntry of storedTokens) {
-      const matches = await bcrypt.compare(refreshToken, tokenEntry.token);
-      if (matches) {
-        await this.db.delete(refreshTokens).where(eq(refreshTokens.id, tokenEntry.id));
-        break;
-      }
-    }
+    const tokenId = readRefreshTokenId(refreshToken);
+    await this.db
+      .delete(refreshTokens)
+      .where(
+        and(
+          eq(refreshTokens.userId, userId),
+          eq(refreshTokens.tokenIdHash, hashRefreshTokenId(tokenId)),
+        ),
+      );
   }
 
   async logoutAll(userId: string) {
     await this.db.delete(refreshTokens).where(eq(refreshTokens.userId, userId));
   }
 
-  async storeRefreshToken(userId: string, hashedRefreshToken: string) {
-    await this.db.insert(refreshTokens).values({
-      token: hashedRefreshToken,
-      userId,
-      expiresAt: new Date(Date.now() + REFRESH_TOKEN_MAX_AGE_MS),
-    });
-  }
-
-  async refreshTokens(
-    rawRefreshToken: string | readonly string[] | number | boolean | null | undefined,
-  ) {
-    if (!isRefreshToken(rawRefreshToken)) {
-      throw new UnauthorizedException();
-    }
-    const refreshToken = rawRefreshToken;
-
+  async refreshTokens(rawRefreshToken: string) {
     let verifiedClaims: unknown;
     try {
-      verifiedClaims = await this.jwtService.verifyAsync(refreshToken);
-    } catch {
-      throw new UnauthorizedException();
+      verifiedClaims = await this.jwtService.verifyAsync(rawRefreshToken);
+    } catch (error) {
+      if (isExpiredJwtError(error)) {
+        throw refreshTokenUnauthorized('RefreshTokenExpired');
+      }
+      throw refreshTokenUnauthorized('RefreshTokenInvalid');
     }
 
     if (!isValidRefreshTokenClaims(verifiedClaims)) {
-      throw new UnauthorizedException();
+      throw refreshTokenUnauthorized(
+        isRefreshTypedPayload(verifiedClaims) && verifiedClaims.type !== 'refresh'
+          ? 'TokenWrongPurpose'
+          : 'RefreshTokenMalformed',
+      );
     }
     const decoded = verifiedClaims;
-
     const userId = decoded.sub;
 
-    const storedTokens = await this.db
-      .select({
-        id: refreshTokens.id,
-        token: refreshTokens.token,
-        expiresAt: refreshTokens.expiresAt,
-      })
-      .from(refreshTokens)
-      .where(eq(refreshTokens.userId, userId));
+    return await this.db.transaction(async (tx) => {
+      const [stored] = await tx
+        .select({ id: refreshTokens.id, expiresAt: refreshTokens.expiresAt })
+        .from(refreshTokens)
+        .where(eq(refreshTokens.tokenIdHash, hashRefreshTokenId(decoded.jti)))
+        .limit(1);
 
-    for (const tokenEntry of storedTokens) {
-      const matches = await bcrypt.compare(refreshToken, tokenEntry.token);
-      if (!matches) {
-        continue;
+      if (!stored || stored.expiresAt.getTime() <= Date.now()) {
+        throw refreshTokenUnauthorized('RefreshTokenExpired');
       }
 
-      const [user] = await this.db.select().from(users).where(eq(users.id, userId)).limit(1);
+      const [user] = await tx
+        .select()
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1)
+        .for('update');
       // the token origin must match the account's current recovery state even
       // when a stale matching refresh row still exists in the database
       if (!user || user.mustChangePassword !== (decoded.temporaryAuth === true)) {
-        throw new UnauthorizedException();
+        throw refreshTokenUnauthorized('RefreshTokenInvalid');
       }
 
       this.assertLoginAllowed(user);
@@ -355,32 +431,47 @@ export class AuthService {
         username: user.username,
         role: user.role,
       };
-      const refreshClaims: RefreshTokenSigningClaims = { sub: user.id, type: 'refresh' };
+      const refreshClaims: RefreshTokenSigningClaims = {
+        sub: user.id,
+        type: 'refresh',
+        jti: createRefreshTokenId(),
+      };
       if (temporaryAuth) {
         accessClaims.temporaryAuth = true;
         refreshClaims.temporaryAuth = true;
       }
-      const newAccessToken = await this.jwtService.signAsync(accessClaims);
+      const accessToken = await this.jwtService.signAsync(accessClaims);
 
-      await this.db.delete(refreshTokens).where(eq(refreshTokens.id, tokenEntry.id));
+      const [consumed] = await tx
+        .delete(refreshTokens)
+        .where(eq(refreshTokens.id, stored.id))
+        .returning({ id: refreshTokens.id });
 
-      const newRefreshToken = await this.jwtService.signAsync(refreshClaims, { expiresIn: '7d' });
-      const hashedNew = await bcrypt.hash(newRefreshToken, 10);
-      await this.storeRefreshToken(user.id, hashedNew);
+      if (!consumed) {
+        throw refreshTokenUnauthorized('RefreshTokenInvalid');
+      }
 
-      return { accessToken: newAccessToken, refreshToken: newRefreshToken };
-    }
+      const issued = await this.buildIssuedRefreshToken(user.id, refreshClaims);
+      await tx.insert(refreshTokens).values(issued.row);
 
-    throw new UnauthorizedException();
+      // lazy per-user sweep: the expired rows cost nothing to remove inside
+      // the rotation transaction and keep GET /sessions and future lookups lean
+      await tx
+        .delete(refreshTokens)
+        .where(and(eq(refreshTokens.userId, userId), lte(refreshTokens.expiresAt, new Date())));
+
+      return { accessToken, refreshToken: issued.refreshToken };
+    });
   }
 
-  async getSessions(userId: string): Promise<Omit<RefreshToken, 'token'>[]> {
-    const { token: _token, ...tableWithoutToken } = getTableColumns(refreshTokens);
+  async getSessions(userId: string): Promise<Omit<RefreshToken, 'token' | 'tokenIdHash'>[]> {
+    // tokenIdHash is a credential-bound value: never project it to the client
+    const { tokenIdHash: _tokenIdHash, ...sessionColumns } = getTableColumns(refreshTokens);
 
     return this.db
-      .select(tableWithoutToken)
+      .select(sessionColumns)
       .from(refreshTokens)
-      .where(eq(refreshTokens.userId, userId));
+      .where(and(eq(refreshTokens.userId, userId), gt(refreshTokens.expiresAt, new Date())));
   }
 
   async deleteSingleSession(userId: string, tokenId: string) {
@@ -399,7 +490,13 @@ export class AuthService {
     refreshToken: AuthTokens['refreshToken'],
     temporaryAuth = false,
   ): Promise<PasswordUpdateResult> {
-    const user = await this.usersService.updatePassword(userId, dto, refreshToken, temporaryAuth);
+    const refreshTokenId = readRefreshTokenId(refreshToken);
+    const user = await this.usersService.updatePassword(
+      userId,
+      dto,
+      temporaryAuth ? undefined : refreshTokenId,
+      temporaryAuth,
+    );
 
     if (!temporaryAuth) {
       return { user };
@@ -497,17 +594,38 @@ export class AuthService {
       username: user.username,
       role: user.role,
     };
-    const refreshClaims: RefreshTokenSigningClaims = { sub: user.id, type: 'refresh' };
+    const refreshClaims: RefreshTokenSigningClaims = {
+      sub: user.id,
+      type: 'refresh',
+      jti: createRefreshTokenId(),
+    };
     if (temporaryAuth) {
       accessClaims.temporaryAuth = true;
       refreshClaims.temporaryAuth = true;
     }
     const accessToken = await this.jwtService.signAsync(accessClaims);
-    const refreshToken = await this.jwtService.signAsync(refreshClaims, { expiresIn: '7d' });
+    const issued = await this.buildIssuedRefreshToken(user.id, refreshClaims);
+    await this.db.insert(refreshTokens).values(issued.row);
 
-    await this.storeRefreshToken(user.id, await bcrypt.hash(refreshToken, 10));
+    return { user: toPublicUser(user), accessToken, refreshToken: issued.refreshToken };
+  }
 
-    return { user: toPublicUser(user), accessToken, refreshToken };
+  private async buildIssuedRefreshToken(
+    userId: string,
+    refreshClaims: RefreshTokenSigningClaims,
+  ): Promise<IssuedRefreshToken> {
+    const refreshToken = await this.jwtService.signAsync(refreshClaims, {
+      expiresIn: this.refreshTokenTtl.expiresIn,
+    });
+
+    return {
+      refreshToken,
+      row: {
+        tokenIdHash: hashRefreshTokenId(refreshClaims.jti),
+        userId,
+        expiresAt: new Date(Date.now() + this.refreshTokenTtl.milliseconds),
+      },
+    };
   }
 
   private async consumeTempPassword(user: User): Promise<void> {

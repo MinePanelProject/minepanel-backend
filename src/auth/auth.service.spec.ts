@@ -5,8 +5,10 @@ import { JwtService } from '@nestjs/jwt';
 import * as cryptoUtil from 'src/common/crypto.util';
 import type { User } from 'src/db/schema';
 import { UsersService } from 'src/users/users.service';
-import { AuthService } from './auth.service';
+import { AuthService, refreshTokenUnauthorized, requireRefreshToken } from './auth.service';
 import * as bcrypt from './password';
+import { hashRefreshTokenId } from './refresh-token-id';
+import type { RefreshTokenTtl } from './refresh-token-ttl';
 import * as totp from './totp';
 
 type SigningPayload = { sub: string; type?: string; temporaryAuth?: boolean };
@@ -14,6 +16,7 @@ type RefreshVerifierPayload =
   | {
       sub?: string | number;
       type?: string;
+      jti?: string;
       temporaryAuth?: boolean | string;
       exp?: number | string;
     }
@@ -28,17 +31,27 @@ type UserUpdateValues = {
   totpBackupCodes?: string | null;
   tempPasswordExpiresAt?: Date | null;
 };
-type RefreshTokenRow = { id: string; token: string; expiresAt: Date };
+type RefreshTokenRow = { id: string; tokenIdHash: string; expiresAt: Date };
+
+const REFRESH_TTL: RefreshTokenTtl = { expiresIn: '7d', milliseconds: 7 * 24 * 60 * 60 * 1000 };
 type MockDb = {
   insert: jest.Mock;
   update: jest.Mock;
   select: jest.Mock;
   delete: jest.Mock;
+  transaction: jest.Mock;
 };
 
-const makeRefreshTokenChain = (rows: RefreshTokenRow[], limitedUsers: User[]) =>
+type MockDbQuery = {
+  select: jest.Mock;
+  delete: jest.Mock;
+  insert: jest.Mock;
+};
+
+const makeQueryChain = (rows: RefreshTokenRow[], limitedUsers: User[]) =>
   Object.assign(Promise.resolve(rows), {
     limit: jest.fn(async () => limitedUsers),
+    for: jest.fn(async () => limitedUsers),
   });
 
 const makeUser = (overrides: Partial<User> = {}): User => ({
@@ -46,6 +59,8 @@ const makeUser = (overrides: Partial<User> = {}): User => ({
   email: 'user@example.com',
   username: 'player',
   passwordHash: '$2b$04$.hAwu01MXvO.Y2rlKQI93.BGBLL6tcSTyKvOADxkbxFY8QBnt5x86',
+  googleId: null,
+  githubId: null,
   role: 'USER',
   status: 'ACTIVE',
   totpSecret: 'encrypted-secret',
@@ -56,6 +71,7 @@ const makeUser = (overrides: Partial<User> = {}): User => ({
   mustChangePassword: false,
   minecraftUUID: null,
   minecraftName: null,
+  minecraftVerified: false,
   createdAt: new Date(),
   updatedAt: new Date(),
   ...overrides,
@@ -78,8 +94,10 @@ describe('AuthService', () => {
   let verifySpy: jest.SpyInstance;
   let compareSpy: jest.SpyInstance;
   let hashSpy: jest.SpyInstance;
+  let configGet: jest.Mock;
   let decryptSpy: jest.SpyInstance;
   let encryptSpy: jest.SpyInstance;
+  let txInsert: jest.Mock;
 
   const createService = (user: User) => {
     storedBackupCodes = user.totpBackupCodes;
@@ -87,10 +105,56 @@ describe('AuthService', () => {
     tempCredentialConsumed = false;
     userRows = [user];
     refreshTokenRows = [];
+
     verifyPayload = {
       sub: 'user-1',
       type: 'refresh',
+      jti: 'jti-1',
       exp: Math.floor(Date.now() / 1000) + 900,
+    };
+    const consumedRefreshIds = new Set<string>();
+    let whereCalls = 0;
+    txInsert = jest.fn(() => ({ values: jest.fn().mockResolvedValue(undefined) }));
+    const tx: MockDbQuery = {
+      select: jest.fn(() => ({
+        from: jest.fn(() => ({
+          where: jest.fn(() => {
+            if (consumedRefreshIds.has('tok-1')) {
+              const empty: RefreshTokenRow[] = [];
+              return Object.assign(Promise.resolve(empty), {
+                limit: jest.fn(() =>
+                  Object.assign(Promise.resolve(empty), {
+                    for: jest.fn(() => Promise.resolve(empty)),
+                  }),
+                ),
+                for: jest.fn(() => Promise.resolve(empty)),
+              });
+            }
+            whereCalls += 1;
+            const rows = whereCalls === 1 ? refreshTokenRows : userRows;
+            const chain = Object.assign(Promise.resolve(rows), {
+              limit: jest.fn(() =>
+                Object.assign(Promise.resolve(rows), {
+                  for: jest.fn(() => Promise.resolve(rows)),
+                }),
+              ),
+              for: jest.fn(() => Promise.resolve(rows)),
+            });
+            return chain;
+          }),
+        })),
+      })),
+      delete: jest.fn(() => ({
+        where: jest.fn(() => {
+          const target = refreshTokenRows.find((row) => row.id === 'tok-1');
+          if (target && !consumedRefreshIds.has(target.id)) {
+            consumedRefreshIds.add(target.id);
+            return { returning: jest.fn().mockResolvedValue([{ id: target.id }]) };
+          }
+          return { returning: jest.fn().mockResolvedValue([]) };
+        }),
+      })),
+      insert: txInsert,
     };
     db = {
       insert: jest.fn(() => ({ values: jest.fn().mockResolvedValue(undefined) })),
@@ -117,10 +181,13 @@ describe('AuthService', () => {
       })),
       select: jest.fn(() => ({
         from: jest.fn(() => ({
-          where: jest.fn(() => makeRefreshTokenChain(refreshTokenRows, userRows.slice(0, 1))),
+          where: jest.fn(() => makeQueryChain(refreshTokenRows, userRows.slice(0, 1))),
         })),
       })),
       delete: jest.fn(() => ({ where: jest.fn().mockResolvedValue(undefined) })),
+      transaction: jest.fn(async (callback: (client: MockDbQuery) => Promise<void>) =>
+        callback(tx),
+      ),
     };
     // SAFETY: The JwtService mock producer supplies signAsync and verifyAsync, the exact
     // methods AuthService consumes for session issuance and refresh verification.
@@ -151,11 +218,13 @@ describe('AuthService', () => {
     // SAFETY: AuthService consumes these JwtService methods; adopting JwtService.prototype
     // supplies the concrete producer contract for the test double.
     const jwtServiceDouble = Object.setPrototypeOf(jwtService, JwtService.prototype) as JwtService;
+    configGet = jest.fn((key: string) => (key === 'ENCRYPTION_KEY' ? 'a'.repeat(64) : undefined));
     service = new AuthService(
       usersServiceDouble,
       jwtServiceDouble,
       db,
-      Object.assign(new ConfigService(), { get: jest.fn().mockReturnValue('a'.repeat(64)) }),
+      Object.assign(new ConfigService(), { get: configGet }),
+      REFRESH_TTL,
     );
   };
 
@@ -172,6 +241,29 @@ describe('AuthService', () => {
     verifySpy.mockReturnValue({ valid: false });
     decryptSpy.mockReturnValue('secret');
     encryptSpy.mockReturnValue('encrypted-secret');
+  });
+
+  it('creates pending registrations when administrator approval is required', async () => {
+    createService(makeUser());
+    configGet.mockImplementation((key: string) =>
+      key === 'ENCRYPTION_KEY' ? 'a'.repeat(64) : 'true',
+    );
+    usersService.findByIdentifier = jest.fn().mockResolvedValue(null);
+
+    await expect(
+      service.registerUser({
+        email: 'new@example.com',
+        username: 'newuser',
+        password: 'Password123!',
+      }),
+    ).resolves.toBe(true);
+
+    expect(usersService.createUser).toHaveBeenCalledWith(
+      'new@example.com',
+      'newuser',
+      expect.any(String),
+      'PENDING',
+    );
   });
 
   it('creates one session for a non-2FA login and sanitizes the returned user', async () => {
@@ -303,6 +395,34 @@ describe('AuthService', () => {
     await expect(service.completeTwoFactorLogin('user-1', '123456')).rejects.toBeInstanceOf(
       ForbiddenException,
     );
+  });
+
+  it.each([
+    ['PENDING', 'AccountPending'],
+    ['BANNED', 'AccountBanned'],
+  ] as const)('rejects a %s provider login before session issuance', async (status, error) => {
+    createService(makeUser({ status, totpEnabled: false }));
+
+    await expect(
+      service.issueProviderSession(makeUser({ status, totpEnabled: false })),
+    ).rejects.toMatchObject({
+      response: { error },
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('does not bypass forced password recovery or two-factor authentication for provider login', async () => {
+    createService(makeUser({ mustChangePassword: true, totpEnabled: false }));
+    await expect(
+      service.issueProviderSession(makeUser({ mustChangePassword: true, totpEnabled: false })),
+    ).rejects.toMatchObject({ response: { error: 'PasswordRecoveryRequired' } });
+
+    await expect(
+      service.issueProviderSession(makeUser({ totpEnabled: true })),
+    ).rejects.toMatchObject({
+      response: { error: 'TwoFactorAuthenticationRequired' },
+    });
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it('rejects the primary password while forced recovery is active', async () => {
@@ -543,19 +663,23 @@ describe('AuthService', () => {
 
   it.each([
     undefined,
-    ['refresh-token'],
-    1,
-    null,
-  ] as const)('rejects a malformed refresh cookie before verification or database work', async (rawRefreshToken) => {
-    createService(makeUser({ totpEnabled: false }));
+    '',
+  ] as const)('maps a missing/empty refresh cookie to the stable machine codes', (rawRefreshToken) => {
+    expect(() => requireRefreshToken(rawRefreshToken)).toThrow(UnauthorizedException);
+  });
 
-    await expect(service.refreshTokens(rawRefreshToken)).rejects.toBeInstanceOf(
-      UnauthorizedException,
+  it('maps a missing refresh cookie to RefreshTokenMissing', () => {
+    expect(() => requireRefreshToken(undefined)).toThrow(
+      refreshTokenUnauthorized('RefreshTokenMissing'),
     );
-    expect(jwtService.verifyAsync).not.toHaveBeenCalled();
-    expect(db.select).not.toHaveBeenCalled();
-    expect(compareSpy).not.toHaveBeenCalled();
-    expect(jwtService.signAsync).not.toHaveBeenCalled();
+  });
+
+  it('maps a non-string refresh cookie to RefreshTokenMalformed at the controller boundary', () => {
+    // the controller narrows the cookie before requireRefreshToken; the
+    // malformed path is rejected there with a stable machine code
+    expect(() => requireRefreshToken('')).toThrow(
+      refreshTokenUnauthorized('RefreshTokenMalformed'),
+    );
   });
 
   it.each([
@@ -584,15 +708,39 @@ describe('AuthService', () => {
     refreshTokenRows = [
       {
         id: 'tok-1',
-        token: await bcrypt.hash(currentRefresh, 4),
+        tokenIdHash: hashRefreshTokenId('jti-1'),
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       },
     ];
 
-    const result = await service.refreshTokens(currentRefresh);
+    await expect(service.refreshTokens(currentRefresh)).resolves.toMatchObject({
+      accessToken: 'token-user-1',
+    });
+    // the consumed row is gone; a second rotation must not mint a successor
+    refreshTokenRows = [];
+    await expect(service.refreshTokens(currentRefresh)).rejects.toMatchObject({
+      response: { error: 'RefreshTokenExpired' },
+    });
+  });
 
-    expect(result.accessToken).toBe('token-user-1');
-    expect(db.insert).toHaveBeenCalledTimes(1);
+  it('rejects a sequential replay of the same refresh cookie with 401', async () => {
+    const currentRefresh = 'refresh-token-1';
+    createService(makeUser({ totpEnabled: false }));
+    refreshTokenRows = [
+      {
+        id: 'tok-1',
+        tokenIdHash: hashRefreshTokenId('jti-1'),
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      },
+    ];
+
+    await expect(service.refreshTokens(currentRefresh)).resolves.toMatchObject({
+      accessToken: 'token-user-1',
+    });
+    refreshTokenRows = [];
+    await expect(service.refreshTokens(currentRefresh)).rejects.toMatchObject({
+      response: { error: 'RefreshTokenExpired' },
+    });
   });
 
   it('rejects an ordinary refresh token during forced recovery even with a matching row', async () => {
@@ -602,19 +750,20 @@ describe('AuthService', () => {
     refreshTokenRows = [
       {
         id: 'tok-1',
-        token: await bcrypt.hash(currentRefresh, 4),
+        tokenIdHash: hashRefreshTokenId('jti-1'),
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       },
     ];
     verifyPayload = {
       sub: 'user-1',
       type: 'refresh',
+      jti: 'jti-1',
       exp: Math.floor(Date.now() / 1000) + 900,
     };
 
-    await expect(service.refreshTokens(currentRefresh)).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
+    await expect(service.refreshTokens(currentRefresh)).rejects.toMatchObject({
+      response: { error: 'RefreshTokenInvalid' },
+    });
     expect(db.insert).not.toHaveBeenCalled();
   });
 
@@ -625,13 +774,14 @@ describe('AuthService', () => {
     refreshTokenRows = [
       {
         id: 'tok-1',
-        token: await bcrypt.hash(currentRefresh, 4),
+        tokenIdHash: hashRefreshTokenId('jti-1'),
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       },
     ];
     verifyPayload = {
       sub: 'user-1',
       type: 'refresh',
+      jti: 'jti-1',
       temporaryAuth: true,
       exp: Math.floor(Date.now() / 1000) + 900,
     };
@@ -639,7 +789,7 @@ describe('AuthService', () => {
     const result = await service.refreshTokens(currentRefresh);
 
     expect(result.accessToken).toBe('token-user-1');
-    expect(db.insert).toHaveBeenCalledTimes(1);
+    expect(txInsert).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -652,7 +802,7 @@ describe('AuthService', () => {
     refreshTokenRows = [
       {
         id: 'tok-1',
-        token: await bcrypt.hash(currentRefresh, 4),
+        tokenIdHash: hashRefreshTokenId('jti-1'),
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       },
     ];
@@ -671,13 +821,13 @@ describe('AuthService', () => {
   });
 
   it.each([
-    ['a missing user', 'missing', 'whatever', 'reject'],
-    ['a user without a temporary reset', 'none', 'whatever', 'reject'],
-    ['a user with an active temporary reset', 'active', 'whatever', 'reject'],
-    ['a user with an expired temporary reset', 'expired', 'whatever', 'reject'],
-    ['a user with the correct primary password', 'primary', 'password', 'allow'],
-    ['a forced user with the correct primary password', 'forced-primary', 'password', 'reject'],
-  ] as const)('performs the same number of bcrypt comparisons for %s', async (_label, state, password, outcome) => {
+    ['a missing user', 'missing', 'whatever'],
+    ['a user without a temporary reset', 'none', 'whatever'],
+    ['a user with an active temporary reset', 'active', 'whatever'],
+    ['a user with an expired temporary reset', 'expired', 'whatever'],
+    ['a provider-only user', 'provider-only', 'whatever'],
+    ['a forced user with the correct primary password', 'forced-primary', 'password'],
+  ] as const)('performs the same number of bcrypt comparisons for %s', async (_label, state, password) => {
     const tempHash = await bcrypt.hash('TempPass123!', 4);
     let user: User | null;
     switch (state) {
@@ -699,6 +849,13 @@ describe('AuthService', () => {
           tempPasswordExpiresAt: new Date(Date.now() - 60 * 1000),
         });
         break;
+      case 'provider-only':
+        user = makeUser({
+          passwordHash: null,
+          tempPasswordHash: null,
+          tempPasswordExpiresAt: null,
+        });
+        break;
       case 'forced-primary':
         user = makeUser({
           totpEnabled: false,
@@ -716,15 +873,15 @@ describe('AuthService', () => {
       usersService.findByIdentifier = jest.fn().mockResolvedValue(null);
     }
 
-    if (outcome === 'allow') {
-      await service.loginUser({ identifier: 'player', password });
-    } else {
-      await expect(service.loginUser({ identifier: 'player', password })).rejects.toBeInstanceOf(
-        UnauthorizedException,
-      );
-    }
+    // every case in this table is a rejection (missing/none/active/expired/
+    // provider-only/forced-primary all fail generically with 401)
+    await expect(service.loginUser({ identifier: 'player', password })).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
 
     expect(compareSpy).toHaveBeenCalledTimes(2);
+    expect(compareSpy).not.toHaveBeenCalledWith(password, null);
+    expect(compareSpy).not.toHaveBeenCalledWith(password, undefined);
   });
 
   it('rejects invalid encryption key configuration at startup', () => {
@@ -741,8 +898,15 @@ describe('AuthService', () => {
             updatePassword: jest.fn(),
           }),
           Object.assign(new JwtService(), { signAsync: jest.fn(), verifyAsync: jest.fn() }),
-          { insert: jest.fn(), update: jest.fn(), select: jest.fn(), delete: jest.fn() },
+          {
+            insert: jest.fn(),
+            update: jest.fn(),
+            select: jest.fn(),
+            delete: jest.fn(),
+            transaction: jest.fn(),
+          },
           Object.assign(new ConfigService(), { get: jest.fn().mockReturnValue('not-a-key') }),
+          REFRESH_TTL,
         ),
     ).toThrow('Invalid ENCRYPTION_KEY');
   });

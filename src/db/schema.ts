@@ -59,7 +59,9 @@ export const users = pgTable('users', {
     .$defaultFn(() => crypto.randomUUID()),
   email: varchar('email', { length: 254 }).notNull().unique(),
   username: varchar('username', { length: 32 }).notNull().unique(),
-  passwordHash: text('password_hash').notNull(),
+  passwordHash: text('password_hash'),
+  googleId: text('google_id').unique(),
+  githubId: text('github_id').unique(),
   role: roleEnum('role').default('USER').notNull(),
   status: userStatusEnum('status').default('ACTIVE').notNull(),
   totpSecret: text('totp_secret'),
@@ -70,6 +72,7 @@ export const users = pgTable('users', {
   mustChangePassword: boolean('must_change_password').default(false).notNull(),
   minecraftUUID: text('minecraft_uuid').unique(),
   minecraftName: text('minecraft_name'),
+  minecraftVerified: boolean('minecraft_verified').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at')
     .defaultNow()
@@ -77,17 +80,43 @@ export const users = pgTable('users', {
     .$onUpdateFn(() => new Date()),
 });
 
-export const refreshTokens = pgTable('refresh_tokens', {
-  id: text('id')
-    .primaryKey()
-    .$defaultFn(() => crypto.randomUUID()),
-  token: text('token').notNull().unique(),
-  userId: text('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  expiresAt: timestamp('expires_at').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+export const refreshTokens = pgTable(
+  'refresh_tokens',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    tokenIdHash: text('token_id_hash').notNull(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [
+    unique('refresh_tokens_token_id_hash_unique').on(table.tokenIdHash),
+    index('refresh_tokens_user_id_idx').on(table.userId),
+    index('refresh_tokens_expires_at_idx').on(table.expiresAt),
+  ],
+);
+
+export const oauthChallenges = pgTable(
+  'oauth_challenges',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    provider: text('provider').notNull(),
+    challengeHash: text('challenge_hash').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique('oauth_challenges_challenge_hash_unique').on(table.challengeHash),
+    index('oauth_challenges_expires_at_idx').on(table.expiresAt),
+    check('oauth_challenges_provider_check', sql`${table.provider} = 'google'`),
+  ],
+);
 
 export const setupState = pgTable('setup_state', {
   id: text('id').primaryKey().default('singleton'),
@@ -200,6 +229,9 @@ export const modPermissions = pgTable(
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type RefreshToken = typeof refreshTokens.$inferSelect;
+export type NewRefreshToken = typeof refreshTokens.$inferInsert;
+export type OAuthChallenge = typeof oauthChallenges.$inferSelect;
+export type NewOAuthChallenge = typeof oauthChallenges.$inferInsert;
 export type Server = typeof servers.$inferSelect;
 export type NewServer = typeof servers.$inferInsert;
 export type ServerAccess = typeof serverAccess.$inferSelect;

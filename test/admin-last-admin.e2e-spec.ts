@@ -124,11 +124,11 @@ describe('AdminService last-admin protection (PostgreSQL integration)', () => {
     const victim = await createUser({ role: 'MOD', status: 'ACTIVE' });
 
     await db.insert(schema.refreshTokens).values([
-      { token: 'hash-1', userId: victim.id, expiresAt: new Date(Date.now() + 60_000) },
-      { token: 'hash-2', userId: victim.id, expiresAt: new Date(Date.now() + 60_000) },
+      { tokenIdHash: 'hash-1', userId: victim.id, expiresAt: new Date(Date.now() + 60_000) },
+      { tokenIdHash: 'hash-2', userId: victim.id, expiresAt: new Date(Date.now() + 60_000) },
     ]);
     await db.insert(schema.refreshTokens).values({
-      token: 'hash-admin',
+      tokenIdHash: 'hash-admin',
       userId: admin.id,
       expiresAt: new Date(Date.now() + 60_000),
     });
