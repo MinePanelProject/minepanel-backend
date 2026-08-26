@@ -25,7 +25,7 @@ import { DockerService } from 'src/docker/docker.service';
 import { CreateServerDto } from './dto/create-server.dto';
 import { ListServersQueryDto } from './dto/list-servers-query.dto';
 import { type PublicServer, toPublicServer } from './public-server';
-import { type ServerPrincipal } from './server-access';
+import { type RequestableServerProjection, type ServerPrincipal } from './server-access';
 
 type Tx = Parameters<Parameters<DrizzleDB['transaction']>[0]>[0];
 
@@ -227,6 +227,58 @@ export class ServersService implements OnModuleInit {
     }
 
     return toPublicServer(running);
+  }
+
+  async listRequestableServers(
+    query: ListServersQueryDto,
+    principal: ServerPrincipal,
+  ): Promise<{ data: RequestableServerProjection[]; total: number }> {
+    // REQUEST servers the caller may discover purely to request access:
+    // PRIVATE is never disclosed here (absent from the predicate), OPEN does
+    // not belong (no request flow), CREATING is excluded like the normal list,
+    // and servers the caller already has APPROVED access on are omitted because
+    // they already appear in the normal GET /servers collection. A caller's own
+    // PENDING row is surfaced as requestStatus so the UI can show "Pending".
+    const hasAccessState = (status: 'PENDING' | 'APPROVED') =>
+      sql`EXISTS (SELECT 1 FROM server_access WHERE server_access.server_id = ${servers.id} AND server_access.user_id = ${principal.id} AND server_access.status = ${status})`;
+
+    // SAFETY: and() is called with three non-empty operands, so drizzle's AND
+    // result is defined; the cast satisfies the typed predicate contract.
+    const where = and(
+      eq(servers.accessType, 'REQUEST'),
+      ne(servers.status, 'CREATING'),
+      sql`NOT ${hasAccessState('APPROVED')}`,
+    ) as SQL;
+
+    const [rows, [{ total }]] = await Promise.all([
+      this.db
+        .select({
+          id: servers.id,
+          name: servers.name,
+          accessType: servers.accessType,
+          requestStatus: sql<
+            RequestableServerProjection['requestStatus']
+          >`CASE WHEN ${hasAccessState('PENDING')} THEN 'PENDING' END`,
+        })
+        .from(servers)
+        .where(where)
+        .orderBy(asc(servers.createdAt), asc(servers.id))
+        .limit(query.limit)
+        .offset(query.offset),
+      this.db.select({ total: count() }).from(servers).where(where),
+    ]);
+
+    const data = rows.map(
+      (row): RequestableServerProjection => ({
+        id: row.id,
+        name: row.name,
+        // SAFETY: the SQL predicate restricts this projection exclusively to REQUEST servers.
+        accessType: 'REQUEST',
+        requestStatus: row.requestStatus,
+      }),
+    );
+
+    return { data, total: Number(total) };
   }
 
   async listServers(
