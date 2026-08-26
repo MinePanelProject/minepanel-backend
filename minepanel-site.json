@@ -81,10 +81,10 @@
       "name": "Access Control & OAuth",
       "status": "wip",
       "description": "Fine-grained access control, social login, Minecraft account linking, and per-server visibility modes.",
-      "progress": 40,
-      "progressLabel": "40% — authorization spine complete",
+      "progress": 50,
+      "progressLabel": "50% — authorization spine + Google OAuth complete",
       "items": [
-        { "text": "Google OAuth (frontend-initiated token flow)", "done": false },
+        { "text": "Google OAuth (frontend-initiated token flow)", "done": true },
         { "text": "GitHub OAuth (frontend-initiated token flow)", "done": false },
         { "text": "Minecraft account linking (Microsoft OAuth premium flow)", "done": false },
         { "text": "Offline player UUID linking", "done": false },
