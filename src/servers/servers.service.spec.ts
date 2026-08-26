@@ -6,6 +6,14 @@ type ServerCountRow = { total: number };
 
 type ServerQueryRow = Server | ServerResourceRow | ServerCountRow;
 
+/** Minimal projection returned by listRequestableServers (requestable discovery). */
+type RequestableRow = {
+  id: string;
+  name: string;
+  accessType: 'REQUEST';
+  requestStatus: 'PENDING' | null;
+};
+
 type TestConfig = {
   get: jest.Mock;
 };
@@ -133,14 +141,14 @@ describe('ServersService', () => {
     | 'getHostDiskInfo'
   >;
   let config: TestConfig;
-  let selectResults: ServerQueryRow[][];
+  let selectResults: (ServerQueryRow | RequestableRow)[][];
   let insertResults: Server[];
   let updateResults: Server[][];
   let updatedValues: ServerMutation[];
   let insertedValues: ServerMutation[];
   let successfulUpdatedValues: ServerMutation[];
   let deletedRows: boolean[];
-  let queryChains: QueryChain<ServerQueryRow[]>[];
+  let queryChains: QueryChain<(ServerQueryRow | RequestableRow)[]>[];
   let calls: string[];
   let configValues: TestConfigValues;
 
@@ -1355,6 +1363,79 @@ describe('ServersService', () => {
     });
   });
 
+  describe('requestable discovery (owner-approved slice)', () => {
+    it('returns only the minimal REQUEST projection with request status and never sensitive fields', async () => {
+      selectResults.push(
+        [
+          {
+            id: 'req-1',
+            name: 'Requestable',
+            accessType: 'REQUEST',
+            requestStatus: 'PENDING' as const,
+          },
+          { id: 'req-2', name: 'Another', accessType: 'REQUEST', requestStatus: null },
+        ],
+        [{ total: 2 }],
+      );
+
+      const result = await service.listRequestableServers(new ListServersQueryDto(), {
+        id: 'user-1',
+        role: 'USER',
+      });
+
+      expect(result.total).toBe(2);
+      expect(result.data).toEqual([
+        { id: 'req-1', name: 'Requestable', accessType: 'REQUEST', requestStatus: 'PENDING' },
+        { id: 'req-2', name: 'Another', accessType: 'REQUEST', requestStatus: null },
+      ]);
+      for (const row of result.data) {
+        expect(row).not.toHaveProperty('port');
+        expect(row).not.toHaveProperty('levelSeed');
+        expect(row).not.toHaveProperty('memoryLimitMb');
+        expect(row).not.toHaveProperty('containerId');
+        expect(row).not.toHaveProperty('rconPassword');
+        expect(row).not.toHaveProperty('worldPath');
+        expect(row).not.toHaveProperty('ownerId');
+      }
+    });
+
+    it('applies pagination bounds to the rows query', async () => {
+      selectResults.push([], [{ total: 0 }]);
+
+      await service.listRequestableServers(
+        { limit: 7, offset: 14 },
+        { id: 'user-1', role: 'USER' },
+      );
+
+      const rowsQuery = queryChains[queryChains.length - 2];
+      expect(rowsQuery.limit).toHaveBeenCalledWith(7);
+      expect(rowsQuery.offset).toHaveBeenCalledWith(14);
+      expect(db.select).toHaveBeenCalledTimes(2);
+    });
+
+    it('applies the same REQUEST-only predicate for USER and ADMIN callers and always sends a where clause', async () => {
+      selectResults.push([], [{ total: 0 }]);
+      await service.listRequestableServers(new ListServersQueryDto(), {
+        id: 'user-1',
+        role: 'USER',
+      });
+      selectResults.push([], [{ total: 0 }]);
+      await service.listRequestableServers(new ListServersQueryDto(), {
+        id: 'admin-1',
+        role: 'ADMIN',
+      });
+
+      const userRowsQuery = queryChains[0];
+      const adminRowsQuery = queryChains[2];
+      const userWhere = userRowsQuery.where.mock.calls[0]?.[0];
+      const adminWhere = adminRowsQuery.where.mock.calls[0]?.[0];
+      expect(userWhere).toBeDefined();
+      expect(adminWhere).toBeDefined();
+      // Both roles run the identical discovery predicate (no role branching).
+      expect(String(userWhere)).toBe(String(adminWhere));
+      expect(db.select).toHaveBeenCalledTimes(4);
+    });
+  });
   describe('concurrency claims', () => {
     it('allows only one same-server start claimant and one Docker start', async () => {
       selectResults.push([makeServer()], [makeServer()]);

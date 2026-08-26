@@ -18,6 +18,9 @@ export interface PanelCapabilities {
   realtime: {
     websocketTicket: boolean;
   };
+  servers: {
+    requestableDiscovery: boolean;
+  };
 }
 
 export interface PanelInfo {
@@ -58,6 +61,9 @@ export class AppController {
         },
         realtime: {
           websocketTicket: false,
+        },
+        servers: {
+          requestableDiscovery: true,
         },
       },
     };

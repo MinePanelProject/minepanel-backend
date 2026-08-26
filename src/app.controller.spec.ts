@@ -51,6 +51,9 @@ describe('AppController', () => {
         realtime: {
           websocketTicket: false,
         },
+        servers: {
+          requestableDiscovery: true,
+        },
       },
     });
     expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');

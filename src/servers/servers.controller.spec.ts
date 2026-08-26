@@ -191,3 +191,37 @@ describe('ServersController', () => {
     }
   });
 });
+
+describe('ServersController requestable discovery', () => {
+  let service: Pick<ServersService, 'listRequestableServers'>;
+  let controller: ServersController;
+
+  beforeEach(() => {
+    service = { listRequestableServers: jest.fn().mockResolvedValue({ data: [], total: 0 }) };
+    // SAFETY: the controller only uses listRequestableServers from its service for this route.
+    controller = new ServersController(service as never);
+  });
+
+  it('delegates to the service with the authenticated principal (no roles metadata => any authenticated user)', async () => {
+    const request = makeRequest({ id: 'user-1', role: 'USER' });
+    const query = { limit: 20, offset: 0 };
+
+    // SAFETY: NestJS validation would produce ListServersQueryDto; the raw literal
+    // satisfies the controller's read-only usage of limit/offset.
+    await expect(controller.listRequestable(query as never, request)).resolves.toEqual({
+      data: [],
+      total: 0,
+    });
+    expect(service.listRequestableServers).toHaveBeenCalledWith(query, {
+      id: 'user-1',
+      role: 'USER',
+    });
+  });
+
+  it('carries no @Public decorator, so JwtAuthGuard rejects unauthenticated callers before the handler', () => {
+    const isPublic = Reflect.getMetadata('isPublic', ServersController.prototype.listRequestable);
+    expect(isPublic).toBeUndefined();
+    const roles = Reflect.getMetadata('roles', ServersController.prototype.listRequestable);
+    expect(roles).toBeUndefined();
+  });
+});

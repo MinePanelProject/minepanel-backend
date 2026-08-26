@@ -25,3 +25,11 @@ export const toMyAccessRequest = (row: ServerAccess): MyAccessRequestProjection 
   requestedAt: row.createdAt,
   approvedAt: row.approvedAt ?? null,
 });
+
+/** Minimal discoverable REQUEST-server projection (requestable discovery API). */
+export type RequestableServerProjection = {
+  id: string;
+  name: string;
+  accessType: 'REQUEST';
+  requestStatus: 'PENDING' | null;
+};

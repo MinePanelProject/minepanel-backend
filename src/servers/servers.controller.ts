@@ -19,7 +19,7 @@ import { CreateServerDto } from './dto/create-server.dto';
 import { ListServersQueryDto } from './dto/list-servers-query.dto';
 import { ServerParamDto } from './dto/server-param.dto';
 import { type PublicServer } from './public-server';
-import { type ServerPrincipal } from './server-access';
+import { type RequestableServerProjection, type ServerPrincipal } from './server-access';
 import { ServersService } from './servers.service';
 
 type UserPayload = { id: string; username: string; role: string; temporaryAuth?: boolean };
@@ -46,6 +46,21 @@ export class ServersController {
     @Req() req: Request,
   ): Promise<{ data: PublicServer[]; total: number }> {
     return this.serversService.listServers(query, this.toPrincipal(this.extractUser(req)));
+  }
+
+  @ApiOperation({
+    summary: 'List REQUEST servers discoverable for access requests (requestable discovery)',
+  })
+  @HttpCode(HttpStatus.OK)
+  @Get('requestable')
+  async listRequestable(
+    @Query() query: ListServersQueryDto,
+    @Req() req: Request,
+  ): Promise<{ data: RequestableServerProjection[]; total: number }> {
+    return this.serversService.listRequestableServers(
+      query,
+      this.toPrincipal(this.extractUser(req)),
+    );
   }
 
   @ApiOperation({ summary: 'Get a single visible server' })

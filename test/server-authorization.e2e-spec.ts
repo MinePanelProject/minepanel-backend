@@ -36,6 +36,14 @@ type TestServer = schema.Server;
 type Role = 'ADMIN' | 'MOD' | 'USER';
 type TestAgent = ReturnType<typeof request.agent>;
 
+/** HTTP response projection for GET /api/servers/requestable (owner-approved slice). */
+type RequestableResponseRow = {
+  id: string;
+  name: string;
+  accessType: 'REQUEST';
+  requestStatus: 'PENDING' | null;
+};
+
 type DockerMock = {
   ping: jest.Mock;
   createContainer: jest.Mock;
@@ -797,6 +805,127 @@ describe('Server authorization (PostgreSQL e2e)', () => {
       // supertest does not send an Origin header by default
       const response = await userAgent.post(`/api/servers/${server.id}/request-access`).expect(201);
       expect(response.body.status).toBe('PENDING');
+    });
+  });
+  describe('requestable server discovery (owner-approved slice, real PostgreSQL)', () => {
+    const assertMinimalRow = (
+      row: RequestableResponseRow,
+      serverId: string,
+      requestStatus: 'PENDING' | null,
+    ): void => {
+      expect(row.id).toBe(serverId);
+      expect(row.name.length).toBeGreaterThan(0);
+      expect(row.accessType).toBe('REQUEST');
+      expect(row.requestStatus).toBe(requestStatus);
+      // response minimization: no sensitive or internal fields may appear
+      for (const forbidden of [
+        'port',
+        'memoryLimitMb',
+        'levelSeed',
+        'ownerId',
+        'containerId',
+        'rconPassword',
+        'worldPath',
+        'maxPlayers',
+        'status',
+        'provider',
+        'version',
+        'pvp',
+        'onlineMode',
+      ]) {
+        expect(row).not.toHaveProperty(forbidden);
+      }
+    };
+
+    it('returns 401 for an unauthenticated caller', async () => {
+      await request(app.getHttpServer()).get('/api/servers/requestable').expect(401);
+    });
+
+    it('returns a minimal REQUEST row with requestStatus null when the user has no access', async () => {
+      const server = await createServer('REQUEST');
+      const response = await userAgent.get('/api/servers/requestable').expect(200);
+
+      expect(response.body.total).toBe(1);
+      expect(response.body.data).toHaveLength(1);
+      assertMinimalRow(response.body.data[0], server.id, null);
+    });
+
+    it('returns the same REQUEST server with requestStatus PENDING while a request is pending', async () => {
+      const server = await createServer('REQUEST');
+      await createPendingRequest(server.id, user.id);
+
+      const response = await userAgent.get('/api/servers/requestable').expect(200);
+
+      expect(response.body.total).toBe(1);
+      assertMinimalRow(response.body.data[0], server.id, 'PENDING');
+    });
+
+    it('omits an APPROVED REQUEST server from requestable while it appears in the normal list', async () => {
+      const server = await createServer('REQUEST');
+      await approveAccess(server.id, user.id);
+
+      const requestable = await userAgent.get('/api/servers/requestable').expect(200);
+      expect(requestable.body.total).toBe(0);
+      expect(requestable.body.data).toHaveLength(0);
+
+      const normal = await userAgent.get('/api/servers').expect(200);
+      expect(normal.body.total).toBe(1);
+      expect(normal.body.data[0].id).toBe(server.id);
+    });
+
+    it('never returns PRIVATE or OPEN servers', async () => {
+      await createServer('PRIVATE');
+      await createServer('OPEN');
+      await createServer('REQUEST');
+
+      const response = await userAgent.get('/api/servers/requestable').expect(200);
+
+      expect(response.body.total).toBe(1);
+      const ids = response.body.data.map((row: { id: string }) => row.id);
+      const privateRow = await db
+        .select({ id: schema.servers.id })
+        .from(schema.servers)
+        .where(eq(schema.servers.accessType, 'PRIVATE'));
+      const openRow = await db
+        .select({ id: schema.servers.id })
+        .from(schema.servers)
+        .where(eq(schema.servers.accessType, 'OPEN'));
+      expect(ids).not.toContain(privateRow[0]?.id);
+      expect(ids).not.toContain(openRow[0]?.id);
+    });
+
+    it('excludes CREATING REQUEST servers from discovery', async () => {
+      await createServer('REQUEST', 'CREATING');
+      const created = await createServer('REQUEST');
+      await createPendingRequest(created.id, user.id);
+
+      const response = await userAgent.get('/api/servers/requestable').expect(200);
+
+      expect(response.body.total).toBe(1);
+      expect(response.body.data[0].id).toBe(created.id);
+    });
+
+    it('paginates against PostgreSQL and reports the true matching total', async () => {
+      const serverA = await createServer('REQUEST');
+      const serverB = await createServer('REQUEST');
+      await createServer('REQUEST');
+
+      const page1 = await userAgent.get('/api/servers/requestable?limit=2&offset=0').expect(200);
+      const page2 = await userAgent.get('/api/servers/requestable?limit=2&offset=2').expect(200);
+
+      expect(page1.body.total).toBe(3);
+      expect(page1.body.data).toHaveLength(2);
+      expect(page2.body.total).toBe(3);
+      expect(page2.body.data).toHaveLength(1);
+
+      const pageOneIds = page1.body.data.map((row: { id: string }) => row.id);
+      const pageTwoIds = page2.body.data.map((row: { id: string }) => row.id);
+      expect(pageOneIds).toContain(serverA.id);
+      expect(pageOneIds).toContain(serverB.id);
+      expect([...pageOneIds, ...pageTwoIds]).toHaveLength(3);
+      expect([...pageOneIds, ...pageTwoIds]).toEqual(
+        expect.arrayContaining([serverA.id, serverB.id]),
+      );
     });
   });
 });
