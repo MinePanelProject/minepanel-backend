@@ -25,6 +25,9 @@ const publicUser: PublicUser = {
   mustChangePassword: false,
   minecraftUUID: null,
   minecraftName: null,
+  googleId: null,
+  githubId: null,
+  minecraftVerified: false,
   createdAt: new Date(),
   updatedAt: new Date(),
 };

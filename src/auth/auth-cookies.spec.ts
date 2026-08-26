@@ -1,11 +1,18 @@
 import express, { type Express } from 'express';
 import request from 'supertest';
 import { clearAuthCookies, setAuthCookies } from './auth-cookies';
+import type { RefreshTokenTtl } from './refresh-token-ttl';
+
+const REFRESH_TTL: RefreshTokenTtl = { expiresIn: '7d', milliseconds: 7 * 24 * 60 * 60 * 1000 };
 
 const makeApp = (): Express => {
   const app = express();
   app.get('/set', (_req, res) => {
-    setAuthCookies(res, { accessToken: 'access-value', refreshToken: 'refresh-value' });
+    setAuthCookies(
+      res,
+      { accessToken: 'access-value', refreshToken: 'refresh-value' },
+      REFRESH_TTL,
+    );
     res.end();
   });
   app.get('/clear', (_req, res) => {

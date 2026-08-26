@@ -5,12 +5,12 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Inject,
   Param,
   Patch,
   Post,
   Req,
   Res,
-  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -18,7 +18,7 @@ import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { Public } from 'src/common/decorators/public.decorator';
 import { type PublicUser } from 'src/users/public-user';
-import { AuthService, type TwoFactorChallenge } from './auth.service';
+import { AuthService, requireRefreshToken, type TwoFactorChallenge } from './auth.service';
 import {
   clearAuthCookies,
   setAccessTokenCookie,
@@ -28,23 +28,29 @@ import {
 import { TwoFactorTokenDto } from './dto/2fa.dto';
 import { EditUserDto } from './dto/editUser.dto';
 import { LoginUserDto } from './dto/login.dto';
+import { CreateOAuthChallengeDto, GoogleCredentialDto } from './dto/oauth.dto';
 import { CreateUserDto } from './dto/register.dto';
 import { UpdatePasswordDTO } from './dto/updatePw.dto';
+import { GoogleOAuthService } from './google-oauth.service';
 import { PreAuthGuard, type PreAuthRequest } from './guards/pre-auth.guard';
+import { OAuthChallengeService } from './oauth-challenge.service';
+import { REFRESH_TOKEN_TTL, type RefreshTokenTtl } from './refresh-token-ttl';
 
 type JwtPayload = { id: string; username: string; role: string; temporaryAuth?: boolean };
-type AuthCookieJar = { refresh_token?: unknown };
+type AuthCookieJar = { refresh_token?: string };
+
 type AuthenticatedRequest = Request & { user: JwtPayload; cookies: AuthCookieJar };
 type RefreshRequest = Request & { cookies: AuthCookieJar };
-
-const isNonEmptyString = (value: unknown): value is string =>
-  typeof value === 'string' && value.length > 0;
 
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private authService: AuthService) {}
-
+  constructor(
+    private readonly authService: AuthService,
+    private readonly googleOAuthService: GoogleOAuthService,
+    private readonly oauthChallengeService: OAuthChallengeService,
+    @Inject(REFRESH_TOKEN_TTL) private readonly refreshTokenTtl: RefreshTokenTtl,
+  ) {}
   @Public()
   @Throttle({ default: { limit: 5, ttl: 10000 } })
   @ApiOperation({ summary: 'Register a new user' })
@@ -73,8 +79,48 @@ export class AuthController {
       return loginResult;
     }
 
-    setAuthCookies(res, loginResult);
+    setAuthCookies(res, loginResult, this.refreshTokenTtl);
     return loginResult.user;
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 10000 } })
+  @ApiOperation({ summary: 'Create a single-use Google OAuth challenge' })
+  @HttpCode(HttpStatus.OK)
+  @Post('oauth/challenge')
+  async createOAuthChallenge(
+    @Body() body: CreateOAuthChallengeDto,
+  ): Promise<{ challenge: string }> {
+    return { challenge: await this.oauthChallengeService.createChallenge(body.provider) };
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 10000 } })
+  @ApiOperation({ summary: 'Sign in with a Google ID token' })
+  @HttpCode(HttpStatus.OK)
+  @Post('oauth/google/login')
+  async loginWithGoogle(
+    @Body() body: GoogleCredentialDto,
+    @Res({ passthrough: true }) res: Pick<Response, 'cookie'>,
+  ): Promise<PublicUser | { status: 'LinkConfirmationRequired' }> {
+    const result = await this.googleOAuthService.login(body.credential);
+    if (result.status === 'LinkConfirmationRequired') {
+      return result;
+    }
+
+    setAuthCookies(res, result.session, this.refreshTokenTtl);
+    return result.session.user;
+  }
+
+  @Throttle({ default: { limit: 5, ttl: 10000 } })
+  @ApiOperation({ summary: 'Link a Google account to the authenticated user' })
+  @HttpCode(HttpStatus.OK)
+  @Post('oauth/google/link')
+  async linkGoogleAccount(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: GoogleCredentialDto,
+  ): Promise<PublicUser> {
+    return this.googleOAuthService.linkAuthenticatedUser(req.user.id, body.credential);
   }
 
   @ApiOperation({ summary: 'Get profile data' })
@@ -93,13 +139,9 @@ export class AuthController {
   ) {
     const user = req.user;
 
-    // find token in cookies
-    const refreshToken = req.cookies.refresh_token;
-
-    if (isNonEmptyString(refreshToken)) {
-      // cookie-parser is the external producer; only a string may reach bcrypt comparison.
-      await this.authService.logoutUser(user.id, refreshToken);
-    }
+    // find token in cookies; only a string may reach the logout lookup
+    const refreshToken = requireRefreshToken(req.cookies.refresh_token);
+    await this.authService.logoutUser(user.id, refreshToken);
 
     // set both tokens as invalid in cookies
     clearAuthCookies(res);
@@ -114,23 +156,13 @@ export class AuthController {
     @Req() req: RefreshRequest,
     @Res({ passthrough: true }) res: Pick<Response, 'cookie'>,
   ) {
-    const rawRefreshToken = req.cookies.refresh_token;
-    if (!isNonEmptyString(rawRefreshToken)) {
-      throw new UnauthorizedException();
-    }
+    const rawRefreshToken = requireRefreshToken(req.cookies.refresh_token);
     const newTokens = await this.authService.refreshTokens(rawRefreshToken);
-
-    if (!newTokens) {
-      throw new UnauthorizedException('Something went wrong when generating new tokens');
-    }
 
     const { accessToken, refreshToken: rotatedRefreshToken } = newTokens;
 
     setAccessTokenCookie(res, accessToken);
-
-    if (rotatedRefreshToken) {
-      setRefreshTokenCookie(res, rotatedRefreshToken);
-    }
+    setRefreshTokenCookie(res, rotatedRefreshToken, this.refreshTokenTtl);
   }
 
   @ApiOperation({ summary: 'Invalidate all user sessions' })
@@ -185,10 +217,7 @@ export class AuthController {
     @Res({ passthrough: true }) res: Pick<Response, 'cookie'>,
   ) {
     const user = req.user;
-    const refreshToken = req.cookies.refresh_token;
-    if (!isNonEmptyString(refreshToken)) {
-      throw new UnauthorizedException();
-    }
+    const refreshToken = requireRefreshToken(req.cookies.refresh_token);
     const result = await this.authService.updateUserPassword(
       user.id,
       updatePw,
@@ -197,7 +226,7 @@ export class AuthController {
     );
 
     if (result.session) {
-      setAuthCookies(res, result.session);
+      setAuthCookies(res, result.session, this.refreshTokenTtl);
     }
 
     return result.user;
@@ -241,7 +270,7 @@ export class AuthController {
           preAuth.temporaryCredentialFingerprint,
         )
       : await this.authService.completeTwoFactorLogin(preAuth.sub, body.token);
-    setAuthCookies(res, session);
+    setAuthCookies(res, session, this.refreshTokenTtl);
     return session.user;
   }
 

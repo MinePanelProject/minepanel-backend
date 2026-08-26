@@ -11,7 +11,7 @@ export class CreateUserDto {
   email: string;
 
   @ApiProperty()
-  @Transform(({ value }) => value?.trim())
+  @Transform(({ value }) => value?.trim().toLowerCase())
   @IsNotEmpty()
   @MinLength(3)
   @MaxLength(32)

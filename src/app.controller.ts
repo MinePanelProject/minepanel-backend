@@ -13,6 +13,7 @@ export interface PanelCapabilities {
   auth: {
     partitionedCookies: boolean;
     pkceAuthorizationCode: boolean;
+    googleOAuth: boolean;
   };
   realtime: {
     websocketTicket: boolean;
@@ -53,6 +54,7 @@ export class AppController {
         auth: {
           partitionedCookies: true,
           pkceAuthorizationCode: false,
+          googleOAuth: Boolean(this.configService.get<string>('GOOGLE_CLIENT_ID')?.trim()),
         },
         realtime: {
           websocketTicket: false,

@@ -13,6 +13,7 @@ import { BadRequestException } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import * as bcrypt from 'bcrypt';
 import type { SQL } from 'drizzle-orm';
+import { hashRefreshTokenId } from 'src/auth/refresh-token-id';
 import { DRIZZLE } from 'src/db/db.module';
 import { type RefreshToken, refreshTokens, type User, users } from 'src/db/schema';
 import { UsersService } from './users.service';
@@ -22,6 +23,8 @@ const makeUser = (overrides: Partial<User> = {}): User => ({
   email: 'user@example.com',
   username: 'player',
   passwordHash: '$2b$10$abcdefghijklmnopqrstuv',
+  googleId: null,
+  githubId: null,
   role: 'USER',
   status: 'ACTIVE',
   totpSecret: null,
@@ -32,6 +35,7 @@ const makeUser = (overrides: Partial<User> = {}): User => ({
   mustChangePassword: false,
   minecraftUUID: null,
   minecraftName: null,
+  minecraftVerified: false,
   createdAt: new Date('2026-01-01T00:00:00Z'),
   updatedAt: new Date('2026-01-01T00:00:00Z'),
   ...overrides,
@@ -46,7 +50,7 @@ describe('UsersService', () => {
   let updatedRows: User[];
   let updatedValues: UserMutation[];
   let deleteCalls: { table: UserTable; where: SQL[] }[];
-  let refreshTokenRows: Pick<RefreshToken, 'id' | 'token'>[];
+  let refreshTokenRows: Pick<RefreshToken, 'id' | 'tokenIdHash'>[];
   let whereSelect: jest.Mock;
 
   beforeEach(async () => {
@@ -64,7 +68,7 @@ describe('UsersService', () => {
           // session listing is awaited directly on where(); user lookups call limit()
           // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
           const chain = Promise.resolve(refreshTokenRows) as Promise<
-            Pick<RefreshToken, 'id' | 'token'>[]
+            Pick<RefreshToken, 'id' | 'tokenIdHash'>[]
           > & { limit: jest.Mock };
           chain.limit = jest.fn(async () => rows.slice(0, 1));
           return chain;
@@ -128,7 +132,7 @@ describe('UsersService', () => {
           mustChangePassword: false,
         }),
       ];
-      refreshTokenRows = [{ id: 'tok-1', token: await bcrypt.hash('current-refresh', 4) }];
+      refreshTokenRows = [{ id: 'tok-1', tokenIdHash: hashRefreshTokenId('current-refresh') }];
     });
 
     it('rejects a password change when neither the current nor a valid temp password matches', async () => {
@@ -139,6 +143,19 @@ describe('UsersService', () => {
           'user-1',
           { oldPassword: 'Nope123!', newPassword: 'NewPass123!' },
           'rt',
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('rejects an OAuth-only account before updating its password', async () => {
+      rows = [makeUser({ passwordHash: null })];
+
+      await expect(
+        service.updatePassword(
+          'user-1',
+          { oldPassword: 'Password123!', newPassword: 'NewPass123!' },
+          'current-refresh',
         ),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(update).not.toHaveBeenCalled();

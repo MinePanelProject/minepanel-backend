@@ -32,6 +32,7 @@ describe('AppController', () => {
     getConfig.mockImplementation((key: string, defaultValue?: string) => {
       if (key === 'PANEL_NAME') return 'MinePanel';
       if (key === 'PANEL_VERSION') return '1.0.0';
+      if (key === 'GOOGLE_CLIENT_ID') return 'google-client-id.apps.googleusercontent.com';
       return defaultValue;
     });
     // SAFETY: The fixture is constructed from the concrete framework contract exercised by this test.
@@ -45,6 +46,7 @@ describe('AppController', () => {
         auth: {
           partitionedCookies: true,
           pkceAuthorizationCode: false,
+          googleOAuth: true,
         },
         realtime: {
           websocketTicket: false,
@@ -63,6 +65,7 @@ describe('AppController', () => {
 
     expect(info.name).toBe('MinePanel');
     expect(info.version).toBe('1.0');
+    expect(info.capabilities.auth.googleOAuth).toBe(false);
     expect(info.api.protocolVersion).toBe(1);
   });
 

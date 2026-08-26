@@ -189,6 +189,12 @@ describe('Database migrations (PostgreSQL e2e)', () => {
       return rows.length > 0;
     });
 
+  const countRefreshTokens = async (databaseUrl: string): Promise<number> =>
+    withDatabaseConnection(databaseUrl, async (sql) => {
+      const rows = await sql`SELECT count(*) AS count FROM refresh_tokens`;
+      return Number(rows[0].count);
+    });
+
   beforeAll(async () => {
     originalDatabaseUrl = process.env.DATABASE_URL;
 
@@ -247,7 +253,7 @@ describe('Database migrations (PostgreSQL e2e)', () => {
 
     await runProductionMigrations(databaseUrl, realMigrationsFolder);
 
-    await expect(journalRowCount(databaseUrl)).resolves.toBe(4);
+    await expect(journalRowCount(databaseUrl)).resolves.toBe(7);
     await expect(serversTableExists(databaseUrl)).resolves.toBe(true);
     await expect(hasCreatingStatus(databaseUrl)).resolves.toBe(true);
     await expect(hasAccessTypeEnum(databaseUrl)).resolves.toBe(true);
@@ -259,7 +265,7 @@ describe('Database migrations (PostgreSQL e2e)', () => {
     await runProductionMigrations(databaseUrl, realMigrationsFolder);
     await runProductionMigrations(databaseUrl, realMigrationsFolder);
 
-    await expect(journalRowCount(databaseUrl)).resolves.toBe(4);
+    await expect(journalRowCount(databaseUrl)).resolves.toBe(7);
     await expect(hasCreatingStatus(databaseUrl)).resolves.toBe(true);
   });
 
@@ -271,7 +277,7 @@ describe('Database migrations (PostgreSQL e2e)', () => {
       runProductionMigrations(databaseUrl, realMigrationsFolder),
     ]);
 
-    await expect(journalRowCount(databaseUrl)).resolves.toBe(4);
+    await expect(journalRowCount(databaseUrl)).resolves.toBe(7);
     await expect(hasCreatingStatus(databaseUrl)).resolves.toBe(true);
   });
 
@@ -286,13 +292,67 @@ describe('Database migrations (PostgreSQL e2e)', () => {
 
     await seedMigrationAdmin(databaseUrl);
     const serverId = await seedPrePhase15Server(databaseUrl);
+    // the pre-0004 schema stores bcrypt hashes of raw tokens; seed one legacy
+    // row so the upgrade demonstrably clears it (documented re-login)
+    await withDatabaseConnection(databaseUrl, async (sql) => {
+      await sql`
+        INSERT INTO refresh_tokens (id, token, user_id, expires_at)
+        VALUES (
+          ${crypto.randomUUID()}, 'legacy-bcrypt-token-hash',
+          (SELECT id FROM users WHERE username = 'migration-admin' LIMIT 1),
+          now() + interval '7 days'
+        )
+      `;
+    });
+    await expect(countRefreshTokens(databaseUrl)).resolves.toBe(1);
 
     await runProductionMigrations(databaseUrl, realMigrationsFolder);
-    await expect(journalRowCount(databaseUrl)).resolves.toBe(4);
+    await expect(journalRowCount(databaseUrl)).resolves.toBe(7);
     await expect(readServerAccessType(databaseUrl, serverId)).resolves.toBe('OPEN');
     await expect(hasAccessTypeEnum(databaseUrl)).resolves.toBe(true);
     await expect(hasServerAccessCheck(databaseUrl)).resolves.toBe(true);
     await expect(hasModPermissionPartialUnique(databaseUrl)).resolves.toBe(true);
+    // 0004 deletes every legacy row: the migrated database holds no sessions
+    await expect(countRefreshTokens(databaseUrl)).resolves.toBe(0);
+  });
+
+  it('0005 fails loudly on username case-collisions instead of merging users (D-10)', async () => {
+    const databaseUrl = await createBlankDatabase('collision');
+    const threeMigrationFolder = await copyThreeMigrationFolder();
+
+    await runProductionMigrations(databaseUrl, threeMigrationFolder);
+    await seedMigrationAdmin(databaseUrl);
+    // `Bob` and `bob` are distinct accounts under the case-sensitive pre-0005
+    // schema; canonical lowercase would merge them, so the migration MUST stop.
+    await withDatabaseConnection(databaseUrl, async (sql) => {
+      await sql`
+        INSERT INTO users (id, email, username, password_hash, role, status)
+        VALUES
+          (${crypto.randomUUID()}, 'bob@example.com', 'Bob', 'not-used', 'USER', 'ACTIVE'),
+          (${crypto.randomUUID()}, 'bob2@example.com', 'bob', 'not-used', 'USER', 'ACTIVE')
+      `;
+    });
+
+    // runProductionMigrations wraps any migration failure in a generic message
+    // (same surface the corrupted-folder test asserts); the collision-specific
+    // Postgres exception is logged, not rethrown. The invariant here is: the
+    // chain FAILS, 0005 does not apply, and neither account is merged or lost.
+    await expect(runProductionMigrations(databaseUrl, realMigrationsFolder)).rejects.toThrow(
+      'Database migration failed',
+    );
+    // The migrator applies all pending migrations in one transaction, so the
+    // 0005 failure rolled back 0003-0005: only the earlier three-migration run
+    // (0000-0002) remains journaled, and no partial 0003-0005 state exists.
+    await expect(journalRowCount(databaseUrl)).resolves.toBe(3);
+    // Both accounts are untouched: no silent merge or data loss.
+    const usernames = await withDatabaseConnection(databaseUrl, async (sql) => {
+      const rows =
+        await sql`SELECT username FROM users WHERE email IN ('bob@example.com', 'bob2@example.com')`;
+      // SAFETY: username is a varchar column in the users schema; the seeded rows
+      // were inserted with exact string literals, so their type is string.
+      return rows.map((row) => row.username as string).sort();
+    });
+    expect(usernames).toEqual(['Bob', 'bob']);
   });
 
   it('rejects a corrupted migrations folder without writing partial journal rows', async () => {

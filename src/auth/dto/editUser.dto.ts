@@ -4,7 +4,7 @@ import { IsNotEmpty, IsOptional, IsString, Matches, MaxLength, MinLength } from 
 
 export class EditUserDto {
   @ApiProperty()
-  @Transform(({ value }) => value?.trim())
+  @Transform(({ value }) => value?.trim().toLowerCase())
   @IsOptional()
   @IsNotEmpty()
   @IsString()

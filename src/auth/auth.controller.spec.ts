@@ -2,9 +2,14 @@ import type { Response } from 'express';
 import type { PublicUser } from 'src/users/public-user';
 import { AuthController } from './auth.controller';
 import type { AuthService } from './auth.service';
+import type { GoogleOAuthService } from './google-oauth.service';
 import type { PreAuthRequest } from './guards/pre-auth.guard';
+import type { OAuthChallengeService } from './oauth-challenge.service';
+import type { RefreshTokenTtl } from './refresh-token-ttl';
 
 type CookieResponse = Pick<Response, 'cookie'>;
+
+const REFRESH_TTL: RefreshTokenTtl = { expiresIn: '7d', milliseconds: 7 * 24 * 60 * 60 * 1000 };
 
 const publicUser: PublicUser = {
   id: 'user-1',
@@ -17,12 +22,17 @@ const publicUser: PublicUser = {
   mustChangePassword: false,
   minecraftUUID: null,
   minecraftName: null,
+  googleId: null,
+  githubId: null,
+  minecraftVerified: false,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
 
 describe('AuthController', () => {
   let authService: Pick<AuthService, 'completeTwoFactorLogin' | 'loginUser'>;
+  let googleOAuthService: Pick<GoogleOAuthService, 'linkAuthenticatedUser' | 'login'>;
+  let oauthChallengeService: Pick<OAuthChallengeService, 'createChallenge'>;
   let controller: AuthController;
   let response: CookieResponse;
 
@@ -39,10 +49,28 @@ describe('AuthController', () => {
         refreshToken: 'refresh-token',
       }),
     };
-    // SAFETY: the controller methods under test call only loginUser and completeTwoFactorLogin;
-    // this Pick is the complete exercised collaborator surface.
-    // SAFETY: The test-controlled value satisfies the concrete framework contract used by this assertion.
-    controller = new AuthController(authService as AuthService);
+    googleOAuthService = {
+      login: jest.fn(),
+      linkAuthenticatedUser: jest.fn(),
+    };
+    oauthChallengeService = {
+      createChallenge: jest.fn().mockResolvedValue('A'.repeat(43)),
+    };
+    // SAFETY: each mock exposes only the collaborator surface AuthController
+    // consumes; the assertion bridges the structural mock to the injected type.
+    const authServiceMock = authService as never;
+    // SAFETY: each mock exposes only the collaborator surface AuthController
+    // consumes; the assertion bridges the structural mock to the injected type.
+    const googleOAuthServiceMock = googleOAuthService as never;
+    // SAFETY: each mock exposes only the collaborator surface AuthController
+    // consumes; the assertion bridges the structural mock to the injected type.
+    const oauthChallengeServiceMock = oauthChallengeService as never;
+    controller = new AuthController(
+      authServiceMock,
+      googleOAuthServiceMock,
+      oauthChallengeServiceMock,
+      REFRESH_TTL,
+    );
     // SAFETY: cookie helpers only call response.cookie, which this test double provides.
     response = { cookie: jest.fn() };
   });
@@ -104,5 +132,12 @@ describe('AuthController', () => {
       controller.login({ identifier: 'player', password: 'password' }, response),
     ).resolves.toEqual({ requiresTwoFactor: true, preAuthToken: 'pre-auth-token' });
     expect(response.cookie).not.toHaveBeenCalled();
+  });
+
+  it('creates a Google-only challenge and returns the raw value once', async () => {
+    await expect(controller.createOAuthChallenge({ provider: 'google' })).resolves.toEqual({
+      challenge: 'A'.repeat(43),
+    });
+    expect(oauthChallengeService.createChallenge).toHaveBeenCalledWith('google');
   });
 });
