@@ -29,7 +29,11 @@ FROM oven/bun:1.3.14-alpine AS final
 
 WORKDIR /app
 
-RUN apk upgrade --no-cache && apk add --no-cache curl
+# Cache-busted apk resolve with explicit openssl guard: the plain `apk upgrade`
+# RUN layer is served from gha build cache and can pin a stale openssl
+# (CVE-2026-14456, fixed 3.5.8-r0). The version constraint fails the build if
+# the mirror lags.
+RUN apk upgrade --no-cache && apk add --no-cache curl 'libcrypto3>=3.5.8' 'libssl3>=3.5.8'
 
 COPY --from=production /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
