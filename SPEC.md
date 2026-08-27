@@ -105,10 +105,18 @@ Compose services (`docker-compose.yml`):
 
 | Service | Image | Notes |
 |---------|-------|-------|
-| `nestjs` | `$MINEPANEL_IMAGE` (default `ghcr.io/minepanelproject/minepanel-backend:latest`) | `expose: 3000` only; `user: root`; `security_opt: no-new-privileges`; healthcheck `curl /health`; depends on healthy postgres and completed `minecraft-image` prefetch |
+| `nestjs` | `$MINEPANEL_IMAGE` (default `ghcr.io/minepanelproject/minepanel-backend:latest`) | `pull_policy: missing`; `expose: 3000` only; `user: root`; `security_opt: no-new-privileges`; healthcheck `curl /health`; depends on healthy postgres and completed `minecraft-image` prefetch |
 | `postgres` | `postgres:16-alpine` | volume `postgres-data`; healthcheck `pg_isready`; no published ports |
 | `caddy` | `caddy:2-alpine` | publishes 80/443 (+443/udp); auto-HTTPS from `$DOMAIN`; proxies to `nestjs:3000`; serves `./Caddyfile` |
 | `minecraft-image` | `itzg/minecraft-server:latest` | one-shot prefetch (`entrypoint: ["/bin/true"]`) so the first server create does not stall on a pull |
+
+The backend image release contract is explicit: pushes to `master` publish
+`edge` and an immutable `sha-<full-40-character-commit-sha>` tag, never
+`latest`. A `vX.Y.Z` tag publishes `X.Y.Z`, `X.Y`, `X`, `latest`, and the
+matching immutable SHA tag. Deployment assets are fetched from versioned raw
+GitHub refs; a stable image and its `docker-compose.yml`, `.env.example`, and
+`Caddyfile` MUST use the same semver tag. There is no stable release at the
+current revision, so `edge` is the supported pre-stable channel.
 
 ### 4.2 Trust boundaries `[IMPLEMENTED]` — MUST be preserved
 
@@ -564,7 +572,6 @@ The audited repository contains 40 colocated Jest suites and 729 passing unit te
 
 The repository contains 13 e2e suites with 91 test cases. They run against a **live loopback PostgreSQL** (`TEST_DATABASE_URL`; CI provisions `postgres:16`) with Docker mocked. No e2e suite creates a real Minecraft container. The CI `e2e` job applies migrations and runs `test:e2e`; the only daemon-touching check is the release-only `publish` smoke.
 
-### 14.3 CI pipeline `[IMPLEMENTED]` (`.github/workflows/ci.yml`)
 
 | Job | Runs | Gate |
 |-----|------|------|
@@ -572,7 +579,7 @@ The repository contains 13 e2e suites with 91 test cases. They run against a **l
 | `migration` | full `db:migrate` chain on a fresh Postgres | PR + master |
 | `e2e` | migrations + e2e on live PG (no daemon) | PR + master |
 | `image` | build amd64, degraded-mode smoke (no socket), migration-before-listen check, image-content assertions, bcrypt load, Trivy CRITICAL + fixed-HIGH | PR + master |
-| `publish` | trusted daemon smoke, multi-arch (amd64/arm64) GHCR push with SBOM/provenance; `latest`+sha+semver tags | master push / `v*` tags |
+| `publish` | trusted daemon smoke, multi-arch (amd64/arm64) GHCR push with SBOM/provenance; master publishes `edge` + full SHA, `vX.Y.Z` publishes exact/minor/major/`latest` + full SHA | master push / `v*` tags |
 
 The audited local unit run passed (40 suites, 729 tests). The repository CI workflow defines the remaining migration, e2e, image, and trusted publish gates; no claim is made that the full CI workflow or a real Docker lifecycle run was executed during this documentation audit.
 

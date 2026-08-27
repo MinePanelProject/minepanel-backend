@@ -2,16 +2,23 @@
 
 ## Requirements
 
-- A Linux or macOS server with Docker installed (Windows uses Docker Desktop)
+- A Linux or macOS server with Docker Engine and the Compose plugin (Windows uses Docker Desktop)
 - A domain name with an A/AAAA record pointing to the server IP
 - Ports 80 and 443 open on the firewall
 - A GitHub account with access to the image registry (only if you pin a private GHCR image)
 
 ## Quick Start
 
+The normal operator does not need a source checkout. Download the three root
+deployment assets at a named backend revision, then configure the environment:
+
 ```bash
-git clone https://github.com/MinePanelProject/minepanel-backend
-cd minepanel-backend
+# Use master for the current pre-stable edge channel.
+BACKEND_REF=master
+BASE_URL="https://raw.githubusercontent.com/MinePanelProject/minepanel-backend/${BACKEND_REF}"
+curl -fsSLo docker-compose.yml "$BASE_URL/docker-compose.yml"
+curl -fsSLo .env.example "$BASE_URL/.env.example"
+curl -fsSLo Caddyfile "$BASE_URL/Caddyfile"
 cp .env.example .env
 ```
 
@@ -27,9 +34,11 @@ Edit `.env` and set the required values:
 | `ENCRYPTION_KEY` | Exactly 32 random bytes encoded as 64 hexadecimal characters. Generate with `openssl rand -hex 32`. |
 | `SETUP_TOKEN` | Required one-time secret for `POST /api/setup/init`; generate a random value and keep it private. If omitted, the backend generates and logs a one-time token once per incomplete process. |
 | `MC_DATA_PATH_HOST` | Absolute host directory for Minecraft data (e.g. `$HOME/.minepanel/mc-data`) — required, mounted read-only into the backend |
-Then deploy:
+
+For today's pre-stable deployment, select the edge image explicitly:
 
 ```bash
+sed -i 's|^MINEPANEL_IMAGE=.*|MINEPANEL_IMAGE=ghcr.io/minepanelproject/minepanel-backend:edge|' .env
 docker compose pull && docker compose up -d
 ```
 
@@ -37,12 +46,37 @@ docker compose pull && docker compose up -d
 
 ## How it works
 
-- `docker compose pull` fetches the configured `MINEPANEL_IMAGE` (default `latest`; pin a release or `sha-<full-40>` tag for reproducible deploys) before any container is recreated.
+- `docker compose pull` fetches the configured `MINEPANEL_IMAGE` before any container is recreated. The shipped Compose file uses `pull_policy: missing`: normal `up` reuses a locally cached image, while this explicit pull command refreshes it.
+- The default Compose image is `ghcr.io/minepanelproject/minepanel-backend:latest`; `latest` is reserved for a tagged stable release and is not published yet. Use `edge` or a pinned release/SHA tag as described below.
 - The `nestjs` container runs as `root` (documented runtime) so it can read the local Docker socket.
 - Database migrations run inside the container **before** the API starts listening on port 3000.
 - The backend only exposes port 3000 internally; Caddy is the only service reachable from the internet on 80/443.
 - Minecraft server containers are attached to a dedicated bridge network (`minepanel_network` by default).
 - The host MC data directory is mounted **read-only** into the backend; the actual Minecraft containers mount the same host path read/write.
+
+## Release channels and deployment assets
+
+There is no stable semver release yet. The `edge` image is built from every
+`master` push and is the current development/cutting-edge channel. Each master
+push also publishes an immutable `sha-<full-40-character-commit-sha>` image.
+
+When a stable `vX.Y.Z` tag is published, CI emits matching `X.Y.Z`, `X.Y`,
+`X`, `latest`, and immutable SHA tags. Download deployment assets from the same
+versioned raw GitHub ref so the Compose, environment template, and Caddyfile
+match the image:
+
+```bash
+BACKEND_REF=vX.Y.Z
+BASE_URL="https://raw.githubusercontent.com/MinePanelProject/minepanel-backend/${BACKEND_REF}"
+curl -fsSLo docker-compose.yml "$BASE_URL/docker-compose.yml"
+curl -fsSLo .env.example "$BASE_URL/.env.example"
+curl -fsSLo Caddyfile "$BASE_URL/Caddyfile"
+cp .env.example .env
+```
+
+Set `MINEPANEL_IMAGE=ghcr.io/minepanelproject/minepanel-backend:X.Y.Z` for a
+stable release, or use the immutable `sha-<full-40>` tag when pinning exactly.
+An edge deployment uses `MINEPANEL_IMAGE=ghcr.io/minepanelproject/minepanel-backend:edge`.
 
 ## Environment Variables Reference
 
@@ -54,7 +88,7 @@ Key variables:
 |----------|---------|-------|
 | `DOMAIN` | — | **Required.** Caddy uses this for HTTPS. |
 | `CORS_ORIGIN` | — | **Required.** Exact frontend origin; not derived from `DOMAIN`. Never `*` in production. |
-| `MINEPANEL_IMAGE` | `ghcr.io/minepanelproject/minepanel-backend:latest` | Image used by the `nestjs` service. Pin to a specific tag for reproducible deploys. |
+| `MINEPANEL_IMAGE` | `ghcr.io/minepanelproject/minepanel-backend:latest` | Image used by the `nestjs` service. `latest` is reserved for a future stable release; use `:edge`, a semver tag, or a full SHA tag explicitly. |
 | `POSTGRES_PASSWORD` | — | **Required.** Used by the Postgres service; embedded in `DATABASE_URL`. |
 | `DATABASE_URL` | — | **Required.** PostgreSQL connection string. In Compose this is injected verbatim; never constructed inside `docker-compose.yml`. |
 | `JWT_SECRET` | — | **Required.** Min 32 chars recommended. |
@@ -116,22 +150,32 @@ On Windows, Docker Desktop exposes the engine socket at `/var/run/docker.sock` i
 
 ## Updating
 
+For a stable release, download the root deployment assets from its matching
+`vX.Y.Z` ref, set `MINEPANEL_IMAGE` to the matching `X.Y.Z` tag, then run:
+
 ```bash
-docker compose pull
-docker compose up -d
+docker compose pull && docker compose up -d
 ```
 
-Database migrations run automatically before the API starts. Migrations are forward-only; to roll back an image, restore a database backup taken before the migration, then deploy the previous image tag.
+This refreshes the image and recreates changed services; migrations run
+automatically before the API starts. An edge deployment follows `:edge` and is
+development/cutting edge, not a stability promise. A semver or SHA-pinned
+deployment stays pinned until `MINEPANEL_IMAGE` is changed deliberately.
+Migrations are forward-only; to roll back an image, restore a database backup
+taken before the migration, then deploy the previous image tag.
+The Compose service uses `pull_policy: missing`, so ordinary `up` reuses an
+image already present locally; use the explicit pull command when updating.
 
 ## Pinning the image
 
-The default `MINEPANEL_IMAGE` uses the `latest` tag. For reproducible deploys, pin a SHA-based or semver tag:
+For reproducible deploys, pin a SHA-based or semver tag:
 
 ```env
 MINEPANEL_IMAGE=ghcr.io/minepanelproject/minepanel-backend:sha-<full-40>
 ```
 
 Published images are multi-platform (`linux/amd64`, `linux/arm64`) and include SBOM + provenance attestations.
+
 
 ## Source-build override
 

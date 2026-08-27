@@ -14,6 +14,7 @@
     "format": "biome format --write .",
     "smoke:totp": "bun scripts/totp-smoke.mjs",
     "check:scripts": "bun scripts/check-package-scripts.mjs",
+    "check:deployment": "bun scripts/check-deployment-contract.mjs",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",

@@ -72,12 +72,18 @@ docker compose pull && docker compose up -d
 
 ## Quick Deploy
 
-**Requirements:** a Linux server with Docker, a domain pointing to it, ports 80 and 443 open.
+**Requirements:** a Linux server with Docker Engine and the Compose plugin, a domain pointing to it, and ports 80 and 443 open.
+
+MinePanel has no published stable semver release yet. The current pre-stable
+channel is `edge`, built from `master`. Download the deployment assets without
+cloning the source repository:
 
 ```bash
-git clone https://github.com/MinePanelProject/minepanel-backend
-cd minepanel-backend
+curl -fsSLo docker-compose.yml https://raw.githubusercontent.com/MinePanelProject/minepanel-backend/master/docker-compose.yml
+curl -fsSLo .env.example https://raw.githubusercontent.com/MinePanelProject/minepanel-backend/master/.env.example
+curl -fsSLo Caddyfile https://raw.githubusercontent.com/MinePanelProject/minepanel-backend/master/Caddyfile
 cp .env.example .env
+sed -i 's|^MINEPANEL_IMAGE=.*|MINEPANEL_IMAGE=ghcr.io/minepanelproject/minepanel-backend:edge|' .env
 ```
 
 Edit `.env` - the required values are:
@@ -99,15 +105,24 @@ MC_DATA_PATH_HOST=/absolute/path/to/mc-data
 docker compose pull && docker compose up -d
 ```
 
-Caddy automatically provisions an HTTPS certificate. The panel is live at `https://your-domain.com`.
+The Compose service keeps `pull_policy: missing`: it reuses a locally cached
+image during `up`; the explicit `docker compose pull` above refreshes it.
 
-→ Full guide: [docs/deployment.md](./docs/deployment.md)
+Caddy automatically provisions an HTTPS certificate. The panel is live at `https://your-domain.com`.
+Stable is not published yet. When a `vX.Y.Z` release exists, download the
+assets from that exact raw GitHub ref and set `MINEPANEL_IMAGE` to the matching
+`X.Y.Z` image tag. See the [full deployment guide](./docs/deployment.md) for
+pinning and updates.
 
 ---
 
 ## Development
 
 ```bash
+# Clone the source repository for development
+git clone https://github.com/MinePanelProject/minepanel-backend
+cd minepanel-backend
+
 # Install dependencies
 bun install
 

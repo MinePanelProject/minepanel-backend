@@ -104,7 +104,7 @@ if [[ $SKIP_ENV -eq 0 ]]; then
 
 DOMAIN=${DOMAIN}
 CORS_ORIGIN=${CORS_ORIGIN}
-MINEPANEL_IMAGE=ghcr.io/minepanelproject/minepanel-backend:latest
+MINEPANEL_IMAGE=ghcr.io/minepanelproject/minepanel-backend:edge
 
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 DATABASE_URL="postgresql://minepanel:${POSTGRES_PASSWORD}@postgres:5432/minepanel"
