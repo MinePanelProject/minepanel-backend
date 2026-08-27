@@ -186,9 +186,14 @@ Full docs at `/docs` (Swagger UI) when the server is running.
 
 ## Roadmap
 
-Live progress at [minepanel.xyz/#roadmap](https://minepanel.xyz/#roadmap).
+Live progress at [minepanel.xyz/#roadmap](https://minepanel.xyz/#roadmap). This repository owns
+[`roadmap.json`](./roadmap.json), which contains backend implementation progress only. It does not
+own website presentation content. The site fetches this file server-side, so roadmap updates do not
+require a minepanel-site deployment.
 
-The current NestJS backend remains the implementation target through feature completion. Backend 2.0 — Elysia 2 is a future, parity-first milestone only after the gates listed in [SPEC.md](./SPEC.md) §17.6; no migration preparation is underway.
+The current NestJS backend remains the implementation target through feature completion. Backend 2.0
+— Elysia 2 is a future, parity-first milestone only after the gates listed in [SPEC.md](./SPEC.md)
+§17.6; no migration preparation is underway.
 
 See [SPEC.md](./SPEC.md) for the canonical architecture and roadmap.
 
