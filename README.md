@@ -18,7 +18,7 @@
 >
 > **Phase 1 - authorization spine shipped.** Per-server visibility (`OPEN`/`REQUEST`/`PRIVATE`), request/approval workflows, requestable-server discovery, and MOD granular permissions (`PermissionsGuard` + `mod_permissions`) are live.
 >
-> **Phase 1.5 - Google OAuth shipped.** Challenge-bound Google login, local JWKS verification, LinkConfirmationRequired linking semantics, and truthful capability discovery (`capabilities.auth.googleOAuth`) are live. GitHub OAuth, Minecraft linking, magic links, and invites are optional or deferred - see the [roadmap](https://minepanel.xyz/#roadmap).
+> **Phase 1.5 - Identity / onboarding core scope complete.** Challenge-bound Google login and account linking, server visibility and access requests, requestable-server discovery, and MOD granular permissions are live. GitHub OAuth, Minecraft linking, magic links, and invites remain optional or deferred follow-ons and do not gate backend feature completion - see the [roadmap](https://minepanel.xyz/#roadmap).
 
 ---
 

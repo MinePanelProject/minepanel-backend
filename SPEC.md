@@ -141,7 +141,7 @@ These invariants are non-negotiable; future work MUST preserve them.
 
 1. **Single authoritative schema.** All tables and enums live in `src/db/schema.ts`; migrations are generated from it and MUST stay in sync (§6).
 2. **Access and refresh session tokens only in HttpOnly cookies for web clients.** `PublicUser` responses carry no session tokens. The 2FA `pre-auth` challenge is the narrow exception: it is a five-minute response-body Bearer credential that MUST authorize only `POST /api/auth/2fa/verify`. Any future bearer/ticket mechanism (§8.5, §8.6) MUST preserve the cookie-only session-token path.
-3. **Refresh tokens are server-revocable and rotated.** Rotation MUST become atomic (see §8.3); replay of a consumed token MUST yield 401.
+3. **Refresh tokens are server-revocable and rotated.** Rotation is atomic: exactly one concurrent rotation of a presented token succeeds, and replay or consumption of an already-used token yields 401 (see §8.3).
 4. **Lifecycle transitions are compare-and-swap on status.** Every server state change runs through a CAS update; concurrent conflicting operations fail with 409 (§11.2).
 5. **Resource admission has operation-specific ordering.** Create and start admission occurs before their state mutation. Restart performs its graceful stop first, then admission; a 422 admission failure leaves the target STOPPED (§11.4).
 6. **Docker unavailability degrades without silent state claims.** Read paths keep working; initial daemon failures return 503. A lifecycle operation whose daemon outcome is uncertain MAY settle its own row as `ERROR` (§10.5, §11.1).
@@ -680,7 +680,9 @@ Creation presets/wizard, mod-loader/mod selection, Velocity/networking, Geyser/B
 
 Only current behavior is normative unless a future item is explicitly marked `[ACCEPTED]`. Unresolved features remain high-level proposals; implementation details require a later product and architecture decision.
 
-### 17.1 Phase 1.5 — Identity / Onboarding `[IMPLEMENTED IN PART]`
+### 17.1 Phase 1.5 — Identity / Onboarding `[IMPLEMENTED — CORE SCOPE]`
+
+The core Phase 1.5 scope is complete. Optional and deferred onboarding follow-ons remain future work and do not gate backend feature completion.
 
 **Implemented:** challenge-bound Google OIDC login and account linking, nullable provider-compatible password storage, server visibility (`OPEN`/`REQUEST`/`PRIVATE`), access requests, requestable discovery, and MOD PBAC.
 
