@@ -26,7 +26,7 @@
 
 MinePanel is a self-hosted Minecraft server management panel. It runs entirely on your own hardware via Docker - no cloud lock-in, no external services.
 
-The backend is a **NestJS REST + WebSocket API** that manages user authentication, spawns Minecraft server containers through the Docker socket, and exposes all panel operations to the web dashboard (`minepanel-pwa` repo exists as a discovery shell; hosted-browser PKCE fallback is reserved and not implemented).
+The backend is a **NestJS REST + WebSocket API** that manages user authentication, spawns Minecraft server containers through the Docker socket, and exposes all panel operations to the hosted protocol-1 management dashboard (`minepanel-pwa`; hosted-browser PKCE fallback is reserved and not implemented).
 
 ---
 

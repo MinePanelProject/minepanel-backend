@@ -33,13 +33,13 @@ MinePanel is a self-hosted Minecraft server management panel. A single `docker c
 
 | Client | Repo | Tech | Status |
 |--------|------|------|--------|
-| Web dashboard (hosted PWA) | `minepanel-pwa` | React 19 + Vite 7 + TypeScript + Tailwind 4 | `[ACCEPTED]` — separate repository exists as a discovery shell; hosted at `app.minepanel.xyz`; not part of this backend's compose file |
+| Web dashboard (hosted PWA) | `minepanel-pwa` | React 19 + Vite 7 + TypeScript + Tailwind 4 | `[IMPLEMENTED]` — hosted React PWA at `app.minepanel.xyz` with multi-backend discovery and a protocol-1 auth/management surface; current hosted auth uses CHIPS cookies + Web Locks where supported; not part of this backend's compose file |
 | Mobile app | `minepanel-mobile` | KMP + Compose Multiplatform (iOS + Android) | `[PROPOSED]` — Phase 6 |
 | Backend API | `minepanel-backend` (this repo) | NestJS 11 + PostgreSQL | `[IMPLEMENTED]` |
 
 The backend is client-agnostic. Role-based guards (`ADMIN` / `MOD` / `USER`) plus per-server access rules and MOD granular permissions enforce access at the API level.
 
-**Hosted multi-backend dashboard (`app.minepanel.xyz`)** — `[ACCEPTED]` discovery shell with a protocol-1 backend contract. The hosted PWA connects to self-hosted backends using cross-origin HttpOnly CHIPS cookies where supported; PKCE authorization-code fallback remains reserved and is not implemented. Until that fallback ships, complete hosted-browser compatibility is not claimed. The supported deployment model remains same-origin (frontend served from the same domain as the backend, or a dev frontend on `localhost:5173` with `CORS_ORIGIN` set).
+**Hosted multi-backend dashboard (`app.minepanel.xyz`)** — `[IMPLEMENTED]` hosted React PWA with multi-backend discovery and the delivered protocol-1 auth/management surface. Current hosted auth uses cross-origin HttpOnly CHIPS cookies plus Web Locks where supported; the PKCE authorization-code fallback remains reserved and is not implemented. Full browser compatibility without that fallback is not claimed, private/LAN target compatibility remains limited, and backend features outside this surface remain unclaimed. Backend guards remain authoritative; PWA authorization checks only shape the interface.
 
 Direct browser access from `https://app.minepanel.xyz` to LAN/private-network instances (RFC1918 addresses, `.local` hostnames, or other browser-untrusted origins) is **not automatically guaranteed** by the generic HTTPS multi-backend architecture: browsers apply stricter mixed-content and certificate rules to such origins. The intended hosted path is browser-trusted public HTTPS backend origins; private-network endpoints are a separate compatibility concern requiring validation.
 
@@ -52,7 +52,7 @@ Direct browser access from `https://app.minepanel.xyz` to LAN/private-network in
 
 **Development phases (canonical numbering — used consistently everywhere):**
 
-- **Foundation / Next:** reconcile SPEC and docs authority; stable API error envelope and request IDs; resolve password semantics; remove dead environment configuration; add Minecraft CPU/PID isolation; make the Minecraft image reproducible; add trusted real-Docker lifecycle CI. `[ACCEPTED]`.
+- **Foundation / Next:** stabilize the API error envelope and request IDs; resolve password semantics; remove dead environment configuration; add Minecraft CPU/PID isolation; make the Minecraft image reproducible; add trusted real-Docker lifecycle CI. `[ACCEPTED]`.
 - **Phase 1.5 — Identity / Onboarding:** Google OAuth, server visibility/access requests, requestable discovery, and MOD PBAC are `[IMPLEMENTED]`. Remaining GitHub OAuth, Minecraft/Microsoft linking, offline UUID linking, invitation/registration modes, and magic links are explicitly classified in §17.1; none is assumed mandatory for backend feature completion.
 - **Phase 2A — Platform foundations:** audit log, framework-neutral system-event model, and a scheduler only when first required by a real feature. `[PROPOSED]`.
 - **Phase 3 — Core operations:** RCON/console broker, real-time server events, backup/restore, scheduled tasks, controlled filesystem writes, file manager, player management, plugins/mods, and notifications. `[PROPOSED]`.
@@ -129,7 +129,7 @@ current revision, so `edge` is the supported pre-stable channel.
 
 ### 4.3 Hardening backlog `[ACCEPTED]`
 
-- **B-NEXT-4:** add `NanoCpus` CPU quota and `PidsLimit` to MC container `HostConfig` (one MC server can currently starve backend/postgres; fork-bomb surface).
+- **B-NEXT-5:** add `NanoCpus` CPU quota and `PidsLimit` to MC container `HostConfig` (one MC server can currently starve backend/postgres; fork-bomb surface).
 - **B-NEXT-6:** pin the itzg image with an explicit tag or digest strategy and record resolved identity where needed.
 - **B-P2-4:** document/restrict inter-container traffic on the `mc` network; per-server networks remain `[PROPOSED]`.
 - **B-P2-5:** run the backend as a non-root user with `group_add` for the Docker group instead of `user: root`.

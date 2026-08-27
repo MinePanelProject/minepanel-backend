@@ -28,7 +28,7 @@
         { "text": "Requestable server discovery", "done": true },
         { "text": "Host metrics via WebSocket", "done": true },
         { "text": "Unit + PostgreSQL e2e tests", "done": true },
-        { "text": "CI/CD pipeline (GitHub Actions → GHCR)", "done": true },
+        { "text": "CI/CD pipeline + GHCR edge/stable release channels", "done": true },
         { "text": "Docker deployment (Compose + Caddy + boot migrations)", "done": true }
       ]
     },
@@ -37,7 +37,7 @@
       "label": "Foundation / Next",
       "name": "Stable-v1 Hardening",
       "status": "planned",
-      "description": "Reconcile documentation authority, stabilize the API protocol, close resource-isolation gaps, and add trusted lifecycle coverage before stable v1.",
+      "description": "With documentation authority reconciled, stabilize the API protocol, close resource-isolation gaps, and add trusted lifecycle coverage before stable v1.",
       "progress": 0,
       "progressLabel": "Next milestone",
       "items": [
