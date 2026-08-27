@@ -163,20 +163,9 @@ Registration defaults to `ACTIVE` unless `REQUIRE_ADMIN_APPROVAL=true`, in which
 
 ## Minecraft Account Linking
 
-Users can link their Minecraft account to their panel profile.
+Minecraft account linking is **not implemented**. The schema contains `minecraftUUID`, `minecraftName`, and `minecraftVerified` fields, but no endpoint or service currently writes them. Microsoft OAuth linking and offline UUID linking remain optional future onboarding work; they are not prerequisites for the current server-access implementation.
 
-Fields already on `User` model:
-- `minecraftUUID` — unique Mojang UUID
-- `minecraftName` — in-game username
-
-Endpoint to add: `PATCH /auth/profile`
-
-```ts
-// body
-{ minecraftUUID: string, minecraftName: string }
-```
-
-Required for whitelist automation (Phase 3): when a user with an approved `ServerAccess` record links their Minecraft account, they can be automatically added to that server's whitelist.
+The future player-management phase may consume linked identities for whitelist automation, but it must define the provider, verification, unlinking, and offline-mode rules before adding an endpoint.
 
 ---
 

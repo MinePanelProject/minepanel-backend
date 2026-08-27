@@ -60,7 +60,7 @@ If Docker or the host filesystem returns malformed/unavailable data, that tick i
 
 ## Local-host invariant
 
-`totalRamMb`, `usedRamMb`, and `freeDiskMb` are valid only because the backend and Docker daemon run on the same host and measure the same filesystem path (`MC_DATA_PATH`). This is enforced by the deployment model (local Docker socket + Compose same-path mounts), not by runtime proof.
+`totalRamMb`, `usedRamMb`, and `freeDiskMb` are valid only because the backend and Docker daemon run on the same host while the backend's `/mc-data` mount and the daemon's `MC_DATA_BIND_SOURCE` expose two views of the same physical data root. Compose enforces that relationship through a read-only backend mount and a host-side bind source; the runtime does not independently prove path identity.
 
 ## Deferred to later phases
 

@@ -74,11 +74,7 @@ Key variables:
 
 ### Minecraft data directory
 
-The default host data root is `$HOME/.minepanel/mc-data`. It is created by Compose under a user-writable parent — no `sudo` is needed on rootless Docker.
-
-Existing installs on `/srv/...` or the old `minepanel-mc-data` named volume keep their location by setting `MC_DATA_PATH_HOST` to their absolute path. This is an **upgrade-only** migration: copy the old volume contents into the chosen host root once, before cutover. Fresh installs do nothing.
-
-Root-docker operators should pre-create and `chown` the root for the Minecraft container runtime user. On SELinux, label the directory per local policy — do NOT put `:Z` inside `MC_DATA_PATH_HOST`.
+The default host data root is `$HOME/.minepanel/mc-data`. Compose passes this host path as the daemon bind source and mounts it read-only at `/mc-data` in the backend. Rootful Docker is the shipped default; rootless Docker remains an optional socket override. Root-docker operators should pre-create and `chown` the root for the Minecraft container runtime user. On SELinux, label the directory per local policy — do NOT put `:Z` inside `MC_DATA_PATH_HOST`.
 
 ## Reverse Proxy
 
@@ -104,10 +100,7 @@ Do not add `tls internal`; Caddy uses public ACME by default.
 
 ### Using nginx or Traefik instead
 
-See SPEC.md (Production Deployment section) for nginx and Traefik examples.
-
-- **Containerized proxy** (nginx/traefik as a Compose service): remove the `caddy` service, join the proxy container to the app network, and proxy to the `nestjs` service on port 3000. The backend stays internal — never publish port 3000 to the host.
-- **Host-level proxy** (nginx or Caddy installed on the host): the app network is not reachable from the host, so bind the backend to loopback only — edit `docker-compose.yml` and add `ports: ["127.0.0.1:3000:3000"]` to the `nestjs` service — then proxy to `http://127.0.0.1:3000`. The proxy terminates TLS; the backend must never be reachable on a host-wide plaintext port.
+Keep the backend private to the Docker app network. A containerized nginx/Traefik proxy may join that network and proxy to `nestjs:3000`; do not publish the backend port. A host-level proxy requires a deliberately designed host-to-container ingress boundary and must not expose an unauthenticated or host-wide plaintext backend port. The shipped Compose topology supports Caddy; alternative proxy wiring is outside the current release contract.
 
 ## Docker Socket
 

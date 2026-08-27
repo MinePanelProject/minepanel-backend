@@ -8,7 +8,7 @@ Every feature statement below carries one of these status markers:
 
 | Marker | Meaning |
 |--------|---------|
-| `[IMPLEMENTED]` | Verified in the current code, schema, migrations and tests in the current working tree/implementation state (or at a future explicitly named verified revision). |
+| `[IMPLEMENTED]` | Verified in the code, schema, migrations and tests at the explicitly named audit revision/date at the top of this document and in Appendix B. |
 | `[ACCEPTED]` | Approved target behavior or architecture that is not yet implemented; tracked in the backlog (§16). |
 | `[PROPOSED]` | Future design that still requires validation or a product/architecture decision; phase-marked (§17). |
 | `[CONTRADICTED]` | A previous specification or configuration claim disproved by current code; the observed current behavior is documented with its correction/backlog item. |
@@ -20,10 +20,10 @@ Normative language, defined once and used consistently:
 - **SHOULD** — a strong recommendation; a valid exception must be justified in the code or docs.
 - **MAY** — optional behavior; no default obligation either way.
 
-- **Status: release candidate, not "production-ready".** Phase 1 and the per-server authorization spine are implemented; this slice also ships the transactional setup bootstrap and protocol-1 capability discovery. Hosted-auth compatibility still requires the reserved PKCE fallback, and open decisions in §19 plus the remaining P0/P1 backlog must be resolved before production-ready status.
-- **Last verified implementation state:** the current working tree on the implementation branch. This document deliberately records no commit hash; no commit is authorized by the implementation task.
-- **Version truth:** `package.json` says `1.0.0`; `PANEL_VERSION` defaults to `"1.0"`; the Swagger fallback is `"N/A"`; CI pins `1.0.0`. This inconsistency is tracked as backlog item B-P2-6.
-- **License:** `package.json` declares `"license": "UNLICENSED"` and `"private": true`; there is **no** LICENSE file and the project must not be described as open-source. Picking a license is owner decision D-11.
+- **Status: release candidate, not "production-ready".** Phase 1, the per-server authorization spine, requestable-server discovery, transactional setup bootstrap, protocol-1 capability discovery, and challenge-bound Google OAuth are implemented. Hosted-auth compatibility still requires the reserved PKCE fallback, and the remaining release gates in §16 must be resolved before production-ready status.
+- **Last verified implementation state:** commit `f638031e737117264455132de0668c0cbb9528c4`, audited 2026-08-27. The audit baseline was clean before this documentation reconciliation.
+- **Version truth:** `package.json` says `1.0.0`; `PANEL_VERSION` defaults to `"1.0"`; the Swagger fallback is `"N/A"`; CI sets `PANEL_VERSION` to `1.0.0` in e2e. This inconsistency is tracked as backlog item B-P2-6.
+- **License:** the repository is MIT-licensed. `package.json` declares `"license": "MIT"` and `LICENSE` is present. `private: true` controls package publication and does not change the license.
 
 ## 3. Product scope and supported clients
 
@@ -52,13 +52,13 @@ Direct browser access from `https://app.minepanel.xyz` to LAN/private-network in
 
 **Development phases (canonical numbering — used consistently everywhere):**
 
-- **Phase 1 — Foundation (v1.0 RC):** auth (JWT cookies, sessions, password change, 2FA, temp-password recovery), rate limiting, server lifecycle, Docker service, health, host metrics over WebSocket, admin user management, server access control (per-server authorization spine), Docker deployment. `[IMPLEMENTED]`.
-- **Phase 1.5 — Access Control + OAuth:** Google/GitHub OAuth, magic links (SMTP optional), invitation flows, MOD permission dashboard refinement. `[PROPOSED]`.
-- **Phase 2 — Developer platform:** audit log, API keys, outbound webhooks, system events, historical metrics. `[PROPOSED]`.
-- **Phase 3 — Operations:** WebSocket real-time server events, console, backups, scheduled tasks, notifications, file manager, player management, plugin management. `[PROPOSED]`.
-- **Phase 4 — Creation wizard & presets:** preset-driven server creation, mod picker, template clone. `[PROPOSED]`.
-- **Phase 5 — Networking:** Velocity proxy, Bedrock support. `[PROPOSED]`.
-- **Phase 6 — Mobile app & player portal.** `[PROPOSED]`.
+- **Foundation / Next:** reconcile SPEC and docs authority; stable API error envelope and request IDs; resolve password semantics; remove dead environment configuration; add Minecraft CPU/PID isolation; make the Minecraft image reproducible; add trusted real-Docker lifecycle CI. `[ACCEPTED]`.
+- **Phase 1.5 — Identity / Onboarding:** Google OAuth, server visibility/access requests, requestable discovery, and MOD PBAC are `[IMPLEMENTED]`. Remaining GitHub OAuth, Minecraft/Microsoft linking, offline UUID linking, invitation/registration modes, and magic links are explicitly classified in §17.1; none is assumed mandatory for backend feature completion.
+- **Phase 2A — Platform foundations:** audit log, framework-neutral system-event model, and a scheduler only when first required by a real feature. `[PROPOSED]`.
+- **Phase 3 — Core operations:** RCON/console broker, real-time server events, backup/restore, scheduled tasks, controlled filesystem writes, file manager, player management, plugins/mods, and notifications. `[PROPOSED]`.
+- **Phase 2B — Integrations:** API keys, outbound webhooks, external integrations, and system-event consumers after the foundations. `[PROPOSED]`.
+- **Later product surfaces:** creation presets/wizard, mod-loader selection, Velocity/networking, Geyser/Bedrock, and other deferred surfaces. `[PROPOSED]`.
+- **Backend 2.0 — Elysia 2:** a future parity-first port after the Nest feature set and migration gates are complete; see §17.6. `[PROPOSED]`.
 
 ## 4. Deployment topology and trust boundaries
 
@@ -121,11 +121,11 @@ Compose services (`docker-compose.yml`):
 
 ### 4.3 Hardening backlog `[ACCEPTED]`
 
-- B-P1-10: add `NanoCpus` CPU quota and `PidsLimit` to MC container `HostConfig` (one MC server can currently starve the backend/postgres; fork-bomb surface).
-- B-P2-4: document/restrict inter-container traffic on the `mc` network; per-server networks `[PROPOSED]`.
-- B-P2-5: run the backend as a non-root user with `group_add` for the docker group instead of `user: root`.
-- B-P2-6: `cap_drop: [ALL]` + `read_only: true` + `tmpfs: /tmp` for the backend container.
-- B-P2-7: pin the itzg image (digest or explicit tag) in compose and record the resolved digest per server.
+- **B-NEXT-4:** add `NanoCpus` CPU quota and `PidsLimit` to MC container `HostConfig` (one MC server can currently starve backend/postgres; fork-bomb surface).
+- **B-NEXT-6:** pin the itzg image with an explicit tag or digest strategy and record resolved identity where needed.
+- **B-P2-4:** document/restrict inter-container traffic on the `mc` network; per-server networks remain `[PROPOSED]`.
+- **B-P2-5:** run the backend as a non-root user with `group_add` for the Docker group instead of `user: root`.
+- **B-P2-6:** consider `cap_drop: [ALL]` + `read_only: true` + `tmpfs: /tmp` for the backend container.
 
 ## 5. Accepted architectural invariants
 
@@ -183,7 +183,7 @@ Seven tables, all defined in `src/db/schema.ts`; migrations `0000`–`0006` in `
 | `expiresAt` | timestamptz | not null |
 | `createdAt` | timestamptz | default now |
 
-> There are **no** `userAgent` / `lastUsedAt` columns; the old SPEC claimed both. Session metadata is an accepted backlog item (§8.3). Indexes exist on `userId` and `expiresAt` (B-P1-3).
+> There are **no** `userAgent` / `lastUsedAt` columns; session metadata remains future work (§8.3). Indexes exist on `userId` and `expiresAt`.
 
 **`setup_state`** — singleton row (`id = 'singleton'`): `initialAdminCreated` boolean, `createdAt`, `updatedAt`.
 
@@ -209,7 +209,7 @@ Seven tables, all defined in `src/db/schema.ts`; migrations `0000`–`0006` in `
 | `viewDistance` | integer | default 10 |
 | `allowFlight` | boolean | default false |
 | `worldPath` | text | null — unused by code |
-| `rconPassword` | text | null — **column exists but is not written** (backlog B-P1-11) |
+| `rconPassword` | text | null — **column exists but is not written**; future credential ownership is undecided |
 | `ownerId` | text | not null, FK → users (creator) |
 | `accessType` | enum `OPEN`\|`REQUEST`\|`PRIVATE` | default `OPEN` |
 | `createdAt` / `updatedAt` | timestamptz | |
@@ -241,10 +241,10 @@ Global prefix `api` (except `/health`); Swagger UI at `/docs` (public — backlo
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Liveness: `{ status: 'ok'\|'degraded', db, docker, version }`; 503 when degraded. Uses `SELECT 1` + `docker.ping()`. |
-| GET | `/api/info` | Protocol-1 capability discovery: `{ name, version, api: { protocolVersion: 1 }, capabilities: { auth: { partitionedCookies: true, pkceAuthorizationCode: false, googleOAuth }, realtime: { websocketTicket: false } } }`; `googleOAuth` is true only when `GOOGLE_CLIENT_ID` is configured; sends `Cache-Control: no-store`. |
+| GET | `/api/info` | Protocol-1 capability discovery: `{ name, version, api: { protocolVersion: 1 }, capabilities: { auth: { partitionedCookies: true, pkceAuthorizationCode: false, googleOAuth }, realtime: { websocketTicket: false }, servers: { requestableDiscovery: true } } }`; `googleOAuth` is true only when `GOOGLE_CLIENT_ID` is configured; sends `Cache-Control: no-store`. |
 | GET | `/docs` | Swagger UI (public in current builds) |
 
-**Capability discovery `[IMPLEMENTED]`** — `GET /api/info` is the version-independent protocol contract for hosted clients. `partitionedCookies: true` means the production auth cookie paths emit CHIPS `Partitioned`; `googleOAuth` truthfully reports whether the trusted `GOOGLE_CLIENT_ID` configuration enables Google ID-token login. PKCE authorization-code fallback and WebSocket tickets remain `false` until their future implementations ship. Clients MUST use these flags rather than infer compatibility from `version`.
+**Capability discovery `[IMPLEMENTED]`** — `GET /api/info` is the version-independent protocol contract for hosted clients. `partitionedCookies: true` means the production auth cookie paths emit CHIPS `Partitioned`; `googleOAuth` truthfully reports whether the trusted `GOOGLE_CLIENT_ID` configuration enables Google ID-token login; `servers.requestableDiscovery` advertises `GET /api/servers/requestable`. PKCE authorization-code fallback and WebSocket tickets remain `false` until their future implementations ship. Clients MUST use these flags rather than infer compatibility from `version`.
 
 ### 7.2 Setup
 
@@ -294,6 +294,7 @@ Global prefix `api` (except `/health`); Swagger UI at `/docs` (public — backlo
 |--------|------|------|-------------|
 | POST | `/api/servers` | ADMIN | **Create and start** in one operation; 201; resource checks 422; rolls back on Docker failure |
 | GET | `/api/servers` | JWT | List visible servers; `?limit&offset` (default 20, max 100); `{ data, total }` |
+| GET | `/api/servers/requestable` | JWT | List REQUEST servers available to discover and request; excludes CREATING and already-approved servers; returns `{ data, total }` |
 | GET | `/api/servers/:id` | JWT | Get visible server; 404 for non-visible |
 | POST | `/api/servers/:id/start` | ADMIN \| MOD + `SERVER_LIFECYCLE` | 409 unless STOPPED; container must exist |
 | POST | `/api/servers/:id/stop` | ADMIN \| MOD + `SERVER_LIFECYCLE` | Graceful stop (RCON warn → save-all → docker stop) |
@@ -338,22 +339,13 @@ This closes the former concurrent-admin and insert/flag failure races. D-2 is ad
 - `type` claims pin token purpose: only `type: 'refresh'` may rotate; only `type: 'access'` passes the JWT guard; `pre-auth` is a five-minute response-body Bearer token restricted to `POST /api/auth/2fa/verify`.
 - Login and refresh return `PublicUser` plus session cookies. A 2FA-required login instead returns `{ requiresTwoFactor: true, preAuthToken }` without setting session cookies; the browser-visible pre-auth exception is scoped in §5.2.
 
-### 8.3 Refresh rotation contract `[ACCEPTED]` — P1
+### 8.3 Refresh rotation contract `[IMPLEMENTED]` — remaining session metadata accepted
 
-Current implementation (B-P1-1 delivered) rotates on **every** refresh inside one transaction, keyed by the JWT `jti` SHA-256 digest: `SELECT` row → user status/recovery check → sign successor → `DELETE … RETURNING` the old row (zero rows = replay → 401) → `INSERT` successor; expired rows for the user are lazily swept in the same transaction. Concurrent refreshes with the same token produce exactly one successor; replays (sequential or concurrent) → 401 with stable machine codes `RefreshTokenMissing` / `RefreshTokenMalformed` / `RefreshTokenExpired` / `TokenWrongPurpose` / `RefreshTokenInvalid`, never 500 (B-P1-2).
-Migration `0004` deletes every legacy `refresh_tokens` row (old-format tokens store no derivable `jti`), so all pre-upgrade sessions end at upgrade — every existing user must log in again.
+Every refresh rotates inside one transaction, keyed by the JWT `jti` SHA-256 digest. The transaction verifies the user state, deletes the presented row with `DELETE … RETURNING`, and inserts the successor; zero deleted rows means replay and returns 401. Concurrent refreshes with the same token produce exactly one successor. Refresh failures return stable 401 machine codes: `RefreshTokenMissing`, `RefreshTokenMalformed`, `RefreshTokenExpired`, `TokenWrongPurpose`, or `RefreshTokenInvalid`, never 500.
 
-**Accepted contract (backlog B-P1-1):**
+`JWT_REFRESH_EXPIRES_IN` is parsed once and supplies the JWT expiry, database `expiresAt`, and cookie `maxAge`. Expired rows for the user are lazily swept during rotation; a daily sweep remains deferred until a scheduler is justified. `GET /sessions` filters `expiresAt > now()`. Indexes cover `user_id` and `expires_at`. The frontend should single-flight refresh requests because strict rotation intentionally invalidates the losing concurrent request.
 
-- Atomic rotation in one transaction: `SELECT … FOR UPDATE` → bcrypt-compare → `DELETE` → `INSERT` successor → commit; the losing concurrent request sees no row and gets 401.
-- Add the refresh row id as `jti` so lookup is O(1) instead of the current O(n) bcrypt fan-out over all the user's tokens (a self-DoS amplifier under the 5/10s throttle).
-- All refresh failures → **401** with a stable machine code: `RefreshTokenMissing` (no cookie), `RefreshTokenMalformed`, `RefreshTokenExpired`, `TokenWrongPurpose`, `RefreshTokenInvalid`. Never 500.
-- Expiry synchronization: consume `JWT_REFRESH_EXPIRES_IN` once at boot and derive JWT `expiresIn`, DB `expiresAt` and cookie `maxAge` from it; remove the hardcoded `7d` literals.
-- Cleanup: lazy per-user sweep inside the rotation transaction + a daily in-process sweep of expired rows (no scheduler dependency exists yet — see §16 B-P1-6 for the `@nestjs/schedule` decision).
-- `GET /sessions` MUST filter `expiresAt > now()`. `lastUsedAt`/`userAgent` columns are `[ACCEPTED]`.
-- Indexes: `refresh_tokens(user_id)` and `refresh_tokens(expires_at)` (B-P1-3).
-- Frontend MUST single-flight `/auth/refresh` (two racing tabs ⇒ one tab's cookie is dead by design under strict rotation).
-- Theft detection (revoke a whole token family on reuse) is `[PROPOSED]`, not built.
+Migration `0004` deletes legacy refresh rows because the old format has no derivable `jti`; existing sessions therefore require login again after upgrade. Session metadata (`userAgent`, `lastUsedAt`) and refresh-family theft detection remain future work.
 
 ### 8.4 Guard pipeline `[IMPLEMENTED]`
 
@@ -383,10 +375,7 @@ Accepted design: `POST /api/realtime/ticket` (authenticated, throttled) → sing
 
 ### 8.8 Identity normalization `[IMPLEMENTED]`
 
-- Registration: email is trimmed+lowercased; **username is trimmed but case-preserved**; uniqueness is case-sensitive (Postgres default) — `Bob` and `bob` are two accounts.
-- Login: the identifier is trimmed+**lowercased** and matched exactly against email OR username.
-- Consequence: a username containing any uppercase letter **cannot be used to log in by username** (the lowercased identifier never matches the stored casing); email login still works. Documented defect; accepted fix = normalize at registration (lowercase) or case-insensitive lookup — owner decision folded into D-10.
-- **D-10 ADOPTED (canonical lowercase at write):** registration trims + lowercases username before persistence; provider-generated usernames use the same canonicalization; login keeps trimming + lowercasing the identifier; uniqueness remains the Postgres case-sensitive constraint over canonical values. Existing DBs migrate with a case-collision preflight: pairs like `Bob`+`bob` must be resolved manually before the migration applies (no silent data loss); clean DBs migrate automatically.
+Registration trims and lowercases both email and username before persistence. Login trims and lowercases the identifier, and uniqueness remains the case-sensitive PostgreSQL constraint over canonical values. Provider-generated usernames use the same canonicalization. Migration `0005` performs a case-collision preflight and fails loudly for pairs such as `Bob` and `bob`; no silent data loss occurs.
 
 ### 8.9 Two-factor authentication `[IMPLEMENTED]`
 
@@ -435,7 +424,7 @@ Because a bind mount exposes the same filesystem, `statfs(/mc-data)` measures th
 
 **Invariants (testable):** (1) after `POST /servers`, `$MC_DATA_PATH_HOST/{serverId}` exists on the host; (2) `MIN_FREE_DISK_MB` above actual free space ⇒ create/start fails 422; (3) writes via the container view always appear in the host view.
 
-**Socket default truth:** the shipped compose default is **rootful** Docker (`${DOCKER_SOCKET:-/var/run/docker.sock}`). Rootless Docker requires setting host `DOCKER_SOCKET=/run/user/$UID/docker.sock` (or Podman: `/run/user/$UID/podman/podman.sock`). The old SPEC's "rootless is the default, zero-touch, `${XDG_RUNTIME_DIR}`" claims are false against the compose file. Keeping the rootful default is owner decision D-4 (recommendation: keep — NAS/VPS compatibility); rootless remains a documented override. `tcp://` endpoints are rejected (local-socket-only contract).
+**Socket default truth:** shipped Compose uses **rootful** Docker (`${DOCKER_SOCKET:-/var/run/docker.sock}`). Rootless Docker and Podman remain optional overrides through a host-local Unix socket path; `tcp://` endpoints are rejected. This is the adopted deployment default recorded in D-4.
 
 ### 10.3 Managed container specification `[IMPLEMENTED]` — normative guardrails
 
@@ -444,9 +433,9 @@ Because a bind mount exposes the same filesystem, `statfs(/mc-data)` measures th
 - Image `itzg/minecraft-server`; name `mc-{serverId}`; labels `minepanel.server-id`, `minepanel.managed=true`.
 - Env **whitelist** (nothing else): `EULA=TRUE`, `ENABLE_RCON=TRUE`, `TYPE=<provider>`, `VERSION`, `MEMORY={n}M`, `MAX_PLAYERS`, `DIFFICULTY`, `MODE` (itzg uses MODE, not GAMEMODE), `ONLINE_MODE`, `VIEW_DISTANCE`, `ALLOW_FLIGHT`, `PVP`, `MOTD` (CR/LF stripped), `SEED`.
 - Binds `{MC_DATA_BIND_SOURCE}/{serverId}:/data`; port mapping `25565/tcp` → `server.port` within `MC_PORT_MIN`–`MC_PORT_MAX`; `Memory` = `memoryLimitMb` bytes (min 512); `Privileged: false`; `CapAdd: []`; `NetworkMode` = `DOCKER_NETWORK` (must be a named network — `host`/`none`/`container:` rejected); `RestartPolicy: unless-stopped`.
-- Missing CPU/pids limits: backlog B-P1-10. Untagged image: backlog B-P2-7.
+- Missing CPU/pids limits and untagged image are tracked in Foundation / Next (§16).
 
-**RCON today = `docker exec rcon-cli`** (validated argv: no NUL/CR/LF, ≤2 args, ≤total bytes, hard timeout), used by the graceful-stop sequence. There is no TCP RCON service and `rconPassword` is never written (B-P1-11: generate a per-server password at create, store it AES-GCM-encrypted, and pass it as `RCON_PASSWORD`).
+**RCON today = `docker exec rcon-cli`** (validated argv, bounded bytes/arguments, and hard timeout), used by graceful stop. The backend is intentionally not attached to the Minecraft network. There is no TCP RCON service, and `rconPassword` is not written today. Future work is a **RCON command broker/service with pluggable transport; Docker-exec transport is the default**. TCP RCON is optional only if isolation and operational needs justify it; credential ownership remains a decision, not a required encrypted-storage feature.
 
 ### 10.4 Read-only mount vs future write features `[DECISION REQUIRED: D-8]`
 
@@ -532,18 +521,18 @@ No runtime deletion behavior or HTTP status changes are implied by this manual p
 
 ### 12.1 Reality today `[IMPLEMENTED]` — not uniform
 
-Four shapes coexist: NestJS default for `HttpException`; `{ message }` only for PG errors via `DbExceptionFilter` (23505 → 409 `Resource already exists`, 23503 → 400, 42P01/42703 → 500, other → 500); structured `{ error: '…' }` payloads on some 403s (`AccountPending`, `AccountBanned`, `PasswordChangeRequired`, `CsrfOriginForbidden`); `{ statusCode, error, message, details }` for 422 resource errors. Non-HTTP errors (e.g. JWT library errors in refresh) → **500 `Internal server error`**. No request-id anywhere.
+Four shapes coexist: NestJS default for `HttpException`; `{ message }` for PostgreSQL errors through `DbExceptionFilter` (23505 → 409, 23503 → 400, 42P01/42703 → 500, other → 500); structured `{ error: '…' }` payloads on selected 401/403 paths; and `{ statusCode, error, message, details }` for 422 resource errors. Refresh token failures are normalized to 401 machine codes; other unhandled exceptions still use Nest's generic 500 response. No request ID is generated today.
 
-### 12.2 Accepted envelope `[ACCEPTED]` — P1 (B-P1-8)
+### 12.2 Stable-v1 envelope and request IDs `[ACCEPTED]` — Foundation / Next
 
 ```json
-{ "statusCode": 403, "error": "AccountPending", "message": "human text", "details": {}, "requestId": "uuid" }
+{ "statusCode": 403, "error": "ACCOUNT_PENDING", "message": "human text", "details": {}, "requestId": "uuid" }
 ```
 
-- `error` = stable SCREAMING-case machine code; the frontend MUST switch on `error`, never `message`.
-- `details` optional structured context; `requestId` echoed as `X-Request-Id` and logged with every line.
-- Mapping: 400 validation (class-validator array normalized into `details`), 401/403 authN/Z, 404, 409 conflict, 413/422 domain, 503 docker/db unavailable, 500 generic (never leak internals).
-- Implementation: widen the filter into a global `AppExceptionFilter`; fix the JWT-error→500 fall-through (with B-P1-2).
+- `error` is a stable machine code; clients switch on `error`, never `message`.
+- `details` is optional structured context; `requestId` is echoed as `X-Request-Id` and included in structured logs.
+- Normalize validation, authentication/authorization, not-found, conflict, domain/resource, dependency, and generic errors without leaking internals.
+- Implement this as an API/protocol quality task in the current Nest backend. It is not an Elysia migration task.
 
 ---
 
@@ -557,7 +546,7 @@ Four shapes coexist: NestJS default for `HttpException`; `{ message }` only for 
 
 Consumed `[IMPLEMENTED]`: `DATABASE_URL`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN` (single TTL source for refresh JWT exp, DB `expiresAt`, cookie maxAge — B-P1-5), `GOOGLE_CLIENT_ID` (enables `googleOAuth` capability + issuance), `ENCRYPTION_KEY`, `DOCKER_SOCKET`, `DOCKER_NETWORK`, `MC_DATA_PATH`, `MC_DATA_BIND_SOURCE`, `MC_PORT_MIN`, `MC_PORT_MAX`, `MIN_FREE_DISK_MB`, `MAX_MEMORY_RATIO`, `STOP_WARN_SECONDS`, `REQUIRE_ADMIN_APPROVAL`, `CORS_ORIGIN`, `PORT`, `PANEL_NAME`, `PANEL_DESCRIPTION`, `PANEL_VERSION`, `NODE_ENV` (cookie/preflight behavior).
 
-Declared but **never read** `[CONTRADICTED]`: `LOGIN_THROTTLE_LIMIT`, `LOGIN_THROTTLE_TTL_MS` (dead — B-P1-9: wire or delete), `SMTP_*` (Phase 1.5), `MICROSOFT_*` (Phase 1.5). `DOMAIN` is consumed by Caddy only. `PANEL_ASSETS_PATH` is planned but unmounted — no `/panel/logo` endpoints exist; the old SPEC's static-assets section (server icons, panel logo) is `[PROPOSED]` with the Phase 3 write architecture (D-8). `MC_DATA_PATH_HOST` is compos…e-only (required by `${MC_DATA_PATH_HOST:?}`).
+Declared but **never read** `[CONTRADICTED]`: `LOGIN_THROTTLE_LIMIT` and `LOGIN_THROTTLE_TTL_MS` are dead configuration; `SMTP_*` and `MICROSOFT_*` are reserved for future features. `DOMAIN` is consumed by Caddy only. `PANEL_ASSETS_PATH` is not mounted or consumed; panel/logo endpoints are future work. `MC_DATA_PATH_HOST` is Compose-only and required by `${MC_DATA_PATH_HOST:?}`. Foundation / Next includes deleting or wiring the two dead login-throttle variables; no current implementation should infer behavior from them.
 
 ### 13.3 Reverse-proxy contract `[IMPLEMENTED]`
 
@@ -569,11 +558,11 @@ The only inbound path is Caddy on the `app` network; `trust proxy = 1` is set (`
 
 ### 14.1 Unit tests `[IMPLEMENTED]`
 
-~250 Jest specs colocated as `*.spec.ts`; `DRIZZLE` and `DOCKERODE` tokens always mocked; no unit test touches a live Postgres or Docker daemon; no live secrets are read. Coverage spans auth (login timing, refresh, 2FA, temp password), guards (jwt/roles/permissions/pre-auth/csrf), setup, servers (CAS transitions, reconciliation, admission), docker (container config, RCON validation, degraded mode), gateway (adapter, reservation, system metrics), admin (last-admin, grants), DTO validation.
+The audited repository contains 40 colocated Jest suites and 729 passing unit tests at the revision/date in §2. `DRIZZLE` and `DOCKERODE` tokens are mocked; unit tests do not touch live PostgreSQL or Docker and do not read live secrets. Coverage spans auth, guards, setup, servers, Docker, gateway, admin, and DTO validation.
 
 ### 14.2 e2e `[IMPLEMENTED]` — real boundary
 
-`test/` suites run against a **live loopback Postgres** (`TEST_DATABASE_URL`; CI spins a `postgres:16` service) with env (`JWT_SECRET`, `JWT_EXPIRES_IN`, `ENCRYPTION_KEY`, `CORS_ORIGIN`, `REQUIRE_ADMIN_APPROVAL=false`). **No e2e suite has Docker daemon access and none creates a real Minecraft container** — the Docker service is always mocked. CI `e2e` job: migrations → `test:e2e`. The only daemon-touching smoke is the **release-only** `publish` job (health-200 with the runner's socket; PR builds never see a daemon — explicitly a trust boundary).
+The repository contains 13 e2e suites with 91 test cases. They run against a **live loopback PostgreSQL** (`TEST_DATABASE_URL`; CI provisions `postgres:16`) with Docker mocked. No e2e suite creates a real Minecraft container. The CI `e2e` job applies migrations and runs `test:e2e`; the only daemon-touching check is the release-only `publish` smoke.
 
 ### 14.3 CI pipeline `[IMPLEMENTED]` (`.github/workflows/ci.yml`)
 
@@ -585,18 +574,18 @@ The only inbound path is Caddy on the `app` network; `trust proxy = 1` is set (`
 | `image` | build amd64, degraded-mode smoke (no socket), migration-before-listen check, image-content assertions, bcrypt load, Trivy CRITICAL + fixed-HIGH | PR + master |
 | `publish` | trusted daemon smoke, multi-arch (amd64/arm64) GHCR push with SBOM/provenance; `latest`+sha+semver tags | master push / `v*` tags |
 
-Release gate status: the repository's configured CI gates were green at the last recorded verification; this working tree adds the setup/capability slice and must pass the mandatory gates before release.
+The audited local unit run passed (40 suites, 729 tests). The repository CI workflow defines the remaining migration, e2e, image, and trusted publish gates; no claim is made that the full CI workflow or a real Docker lifecycle run was executed during this documentation audit.
 
 ### 14.4 Missing coverage `[ACCEPTED]` — backlog
 
-- Setup race and throttling have live-Postgres coverage in `test/setup-bootstrap.e2e-spec.ts`; refresh rotation concurrency is covered by `test/refresh-rotation.e2e-spec.ts` (exactly-one-winner) — retained-data delete semantics remain backlog coverage.
-- No **real Docker lifecycle integration test** (container create → run → graceful stop → delete → data retention). `[PROPOSED]`: release-only job (mirrors the trusted `publish` smoke) that runs the full lifecycle against a real daemon before tagging. This is the behavior gap addressed by B-P1-13.
+- Setup race and throttling have live-Postgres coverage in `test/setup-bootstrap.e2e-spec.ts`; refresh rotation concurrency is covered by `test/refresh-rotation.e2e-spec.ts` (exactly-one-winner). Retained-data deletion semantics remain a coverage gap.
+- No **real Docker lifecycle integration test** (container create → run → graceful stop → delete → data retention). Foundation / Next tracks release-only real-daemon coverage before tagging.
 
 ---
 
 ## 15. Implemented feature matrix
 
-Verified in the current working tree. `✓` = implemented and tested as noted; `(✓)` = implemented, partial/indirect test coverage.
+Verified against commit `f638031e737117264455132de0668c0cbb9528c4` on 2026-08-27. `✓` = implemented and tested as noted; `(✓)` = implemented, partial/indirect test coverage.
 
 | Domain | Feature | Status | Evidence |
 |--------|---------|--------|----------|
@@ -613,7 +602,7 @@ Verified in the current working tree. `✓` = implemented and tested as noted; `
 | Admin | user list/filter, role/status changes, last-admin guard | ✓ | `admin.service.ts`, unit+e2e |
 | Admin | temp-password reset, emergency 2FA removal | ✓ | `admin.service.ts`, unit |
 | Admin | MOD permission grant/list/revoke (global + per-server) | ✓ | `admin.service.ts`, unit |
-| Servers | create+start, list, get (visibility-filtered) | ✓ | `servers.service.ts`, unit+e2e |
+| Servers | create+start, list, get (visibility-filtered), requestable discovery | ✓ | `servers.service.ts`, unit+e2e |
 | Servers | start/stop/restart with CAS + advisory lock | ✓ | unit+e2e |
 | Servers | graceful stop (RCON warn → save-all → docker stop) | ✓ | `docker.service.ts` RCON exec, e2e (mocked) |
 | Servers | resource admission (disk statfs, memory ratio) | ✓ | unit |
@@ -629,124 +618,116 @@ Verified in the current working tree. `✓` = implemented and tested as noted; `
 | CI | lint/build/unit/migration/e2e/image/publish, Trivy, multi-arch | ✓ | configured CI gates |
 | API | protocol-1 capability discovery with no-store | ✓ | `app.controller.ts`, unit |
 
-**Not implemented at all** (old SPEC claimed or implied them as current): `@nestjs/schedule` cron (any), `nestjs-pino` logging, `/users` controller, `/versions`, `PATCH /servers/:id` (config), `PATCH /servers/:id/version`, server/panel icons, `/panel/logo`, `/system/stats` REST, magic links, OAuth endpoints, Minecraft linking endpoints, API keys, webhooks, audit log, system events, backups, scheduled tasks, notifications, plugins, file manager, player management, proxies, Bedrock, Ban table, pagination beyond `GET /servers`.
+**Not implemented at this audit revision** (older SPECs claimed or implied them as current): `@nestjs/schedule` cron, `nestjs-pino` logging, `/users` controller, `/versions`, `PATCH /servers/:id` (config), `PATCH /servers/:id/version`, server/panel icons, `/panel/logo`, `/system/stats` REST, GitHub OAuth, magic links, Minecraft linking endpoints, invitations, API keys, webhooks, audit log, system events, backups, scheduled tasks, notifications, plugins, file manager, player management, proxies, Bedrock, `Ban` table, and pagination beyond `GET /servers`.
 
 ---
 
-## 16. Prioritized implementation backlog
+## 16. Prioritized implementation roadmap
 
-Generated from current implementation gaps. Priorities: **P0** release blockers, **P1** important before stable v1, **P2** later improvements, **P3** hygiene/acceptance.
+This roadmap is reconciled against the audited implementation revision in §2. Items are classified by delivery priority, not by framework preference. The current NestJS backend remains the implementation target until its intended feature set is complete.
 
-### P0 — release blockers (security invariants)
+### Foundation / Next — stable-v1 and release hardening
 
-- **B-P0-2 Hosted-frontend auth compatibility:** D-1 is decided and CHIPS primary is shipped. The PKCE authorization-code fallback remains reserved/not implemented and is still a release blocker for complete hosted-browser compatibility. Same-origin deployment is unaffected.
+- **B-NEXT-1 Stable API error contract:** implement machine-readable error codes, one consistent response envelope, validation normalization, request IDs, `X-Request-Id`, and correlated structured logs. This is an API/protocol quality task in NestJS, not an Elysia migration task.
+- **B-NEXT-2 Password semantics decision:** resolve the bcrypt 72-UTF-8-byte limit against the current 128-character DTO limit; implement the selected migration-safe policy before stable v1.
+- **B-NEXT-3 Dead environment cleanup:** delete or wire `LOGIN_THROTTLE_LIMIT` and `LOGIN_THROTTLE_TTL_MS`; do not let declared-but-unused configuration imply runtime behavior.
+- **B-NEXT-4 Progressive login-abuse protection:** design throttling that combines normalized account identity with source/network context and avoids hard-locking an account solely because an attacker knows its username.
+- **B-NEXT-5 Minecraft resource isolation:** add CPU quota (`NanoCpus` or equivalent) and `PidsLimit` to managed containers.
+- **B-NEXT-6 Image reproducibility:** replace blind `itzg/minecraft-server:latest` reliance with an explicit tag or digest strategy and record the resolved image identity where needed.
+- **B-NEXT-7 Trusted Docker lifecycle coverage:** add release-gated real-daemon coverage for create → run → graceful stop → delete, including retained data assertions.
+- **B-NEXT-8 Hosted-browser compatibility:** implement and verify the reserved PKCE authorization-code fallback if complete hosted cross-origin browser support remains a release requirement. Same-origin deployments are unaffected.
 
-### P1 — important before stable v1
+### Phase 1.5 — Identity / Onboarding
 
-- ~~**B-P1-1 Atomic refresh rotation (§8.3):**~~ **DELIVERED** — tx + `jti` SHA-256 O(1) lookup + per-class 401 codes + replay semantics (live concurrency e2e).
-- ~~**B-P1-2 Refresh/logout error contract:**~~ **DELIVERED** — missing/malformed/expired/consumed refresh and missing-cookie logout return 401 machine codes, never 500.
-- ~~**B-P1-3 Session hygiene:**~~ **DELIVERED** — `GET /sessions` filters `expiresAt > now()`; indexes on `refresh_tokens(user_id)` and `(expires_at)`; lazy expired-row sweep inside the rotation transaction. Daily sweep remains tied to the scheduler decision (B-P1-6).
-- **B-P1-4 WebSocket ticket (§8.6):** single-use 60s ticket endpoint; keep cookie fast path; fixes the HttpOnly-token contradiction and Origin-less mobile handshakes.
-- ~~**B-P1-5 Refresh TTL sync:**~~ **DELIVERED** — `JWT_REFRESH_EXPIRES_IN` is the single source for JWT exp, DB `expiresAt`, cookie `maxAge`; invalid values fail boot.
-- **B-P1-6 Scheduler dependency decision:** add `@nestjs/schedule` (in-process, single-instance) for the daily cleanup sweep when the first cron feature lands; there is no scheduler today.
-- ~~**B-P1-7 Identity normalization (§8.8):**~~ **DELIVERED** — D-10 adopted: canonical lowercase at write with collision-preflight migration.
-- **B-P1-8 Stable error envelope + request-id (§12.2):** global `AppExceptionFilter`, machine codes, `X-Request-Id`.
-- **B-P1-9 Dead envs:** wire or delete `LOGIN_THROTTLE_LIMIT`/`LOGIN_THROTTLE_TTL_MS`; declare dead config a release blocker.
-- **B-P1-10 MC container CPU/pids limits:** `NanoCpus` + `PidsLimit` in `HostConfig`.
-- **B-P1-11 RCON credential management:** per-server random `RCON_PASSWORD` at create, AES-GCM-encrypted in the existing `rcon_password` column, passed as env; unpins the current itzg-generated-password behavior.
-- **B-P1-12 Per-account login brute-force counter:** per-username in-memory counter (≥5 fails → 15 min lock, distinct 429 code), admin unlock; complements IP throttling.
-- **B-P1-13 Real Docker lifecycle e2e (release-only, §14.4):** container create → run → graceful stop → delete → data-retention assertions against a real daemon before tagging.
-- **B-P1-15** Remaining concurrency and delete-contract coverage: refresh rotation concurrency now covered by live e2e (exactly-one-winner); retained-data deletion semantics remain, as does OAuth challenge link-race coverage (delivered in `google-oauth.e2e-spec.ts`).
+Completed: Google OAuth (challenge-bound local verification and linking), server visibility/access requests, requestable discovery, and MOD PBAC.
 
-### P2 — later improvements
+The following are **optional or deferred**, not assumed requirements for backend feature completion:
 
-- **B-P2-1** Version/icon/panel-logo endpoints and `/versions` (Phase 3/4, §17) once the write architecture (D-8) lands.
-- **B-P2-2** Session metadata columns (`userAgent`, `lastUsedAt`); touch on rotation.
-- **B-P2-3** WebSocket per-user socket cap + per-IP handshake rate (authenticated sockets are currently uncapped).
-- **B-P2-4** Restrict inter-container traffic on the `mc` network; per-server networks (proposed).
-- **B-P2-5** Non-root backend user (`group_add` docker group instead of `user: root`).
-- **B-P2-6** Backend `cap_drop: [ALL]` + `read_only: true` + `tmpfs: /tmp`; `__Host-` cookie prefix + explicit `path`; version-string consistency (1.0.0 vs 1.0 vs N/A).
-- **B-P2-7** Pin itzg image (digest/tag) in compose; record resolved digest per server (proposed column).
-- **B-P2-8** Fix `system.stats` free-RAM semantics (container cgroup vs host); or document.
-- **B-P2-9** Password hashing upgrade (D-9): HMAC-SHA384 pepper pre-hash (or Argon2id later) + UTF-8 byte measurement, no silent truncation (§18.1).
-- **B-P2-10** Declarative env validation (Joi/Zod) instead of manual preflight.
+- **Optional:** GitHub OAuth; invitation flows and alternate registration modes; magic-link authentication when SMTP is deliberately enabled.
+- **Deferred:** Microsoft Minecraft linking and offline UUID linking until player-management consumers and identity ownership rules are defined.
 
-### P3 — hygiene / accept-and-document
+### Phase 2A — Platform foundations
 
-- **B-P3-1** JWT `algorithms: ['HS256']` explicit pin.
-- **B-P3-2** Register enumeration oracle (409 + fast-fail) — accept + document.
-- **B-P3-3** Gate Swagger behind `SWAGGER_ENABLED` (default off in prod).
-- **B-P3-4** Document MOD global-grant vs visibility 404 nuance.
-- **B-P3-5** Accept in-memory 2FA lockout loss on restart (single-instance).
-- **B-P3-6** Log only PG code + requestId (not raw constraint messages).
-- **B-P3-7** `decrypt()` input validation → distinct error code.
-- **B-P3-8** `/setup/status` write-on-read upsert — accept or lazy-init.
-- **B-P3-9** Dead double-throw in `grantModPermission`; stale `username` claim note.
-- **B-P3-10** License selection (D-11) and README "open-source" wording.
+- **Required foundation:** append-only audit log with an internal, framework-neutral system-event model.
+- **Deferred until first consumer:** scheduler; add an in-process scheduler only when a real feature requires recurring work.
+
+API keys, webhooks, and external integrations MUST NOT block core Minecraft management.
+
+### Phase 3 — Core operations
+
+Deliver in dependency order as product requirements become concrete: RCON/console command broker, real-time server logs/stats/player events, backup and restore, scheduled tasks, controlled filesystem-write architecture, file manager, player management, plugin/mod management, and notifications.
+
+RCON future work MUST use a pluggable command-broker design with Docker-exec as the default transport; a permanent TCP connection pool is not a prerequisite. All filesystem mutation remains blocked by D-8 until its security boundary is decided.
+
+### Phase 2B — Integrations
+
+After Phase 2A foundations: API keys, outbound webhooks, external integrations, and system-event consumers. These are later consumers and MUST NOT gate the core server-management path.
+
+### Later product surfaces
+
+Creation presets/wizard, mod-loader/mod selection, Velocity/networking, Geyser/Bedrock, mobile/player surfaces, and other deferred product work remain later milestones. No detailed design is normative until its product and security decisions are made.
 
 ---
 
 ## 17. Future architecture by phase
 
-All subsections are `[PROPOSED]` unless marked. Dependencies are explicit; current endpoint tables are §7. Google OAuth Phase F is implemented; GitHub OAuth and magic links remain proposals.
+Only current behavior is normative unless a future item is explicitly marked `[ACCEPTED]`. Unresolved features remain high-level proposals; implementation details require a later product and architecture decision.
 
-### 17.1 Phase 1.5 — OAuth, magic links, identity `[IMPLEMENTED IN PART: Google]`
+### 17.1 Phase 1.5 — Identity / Onboarding `[IMPLEMENTED IN PART]`
 
-**Google schema delivered:** `users.passwordHash` is nullable; `googleId` is unique; `minecraftVerified` exists. Password login rejects null-hash accounts. GitHub identity remains proposed.
+**Implemented:** challenge-bound Google OIDC login and account linking, nullable provider-compatible password storage, server visibility (`OPEN`/`REQUEST`/`PRIVATE`), access requests, requestable discovery, and MOD PBAC.
 
-**Google OAuth — security requirements (MUST):**
-- Local JWKS validation only (`https://www.googleapis.com/oauth2/v3/certs`, RS256, cache by `kid` with rotation; `google-auth-library` `verifyIdToken` or `jose`). **`tokeninfo` is a debugging endpoint — forbidden in production** (latency, throttling, availability coupling).
-- Mandatory claims: `iss ∈ {accounts.google.com, https://accounts.google.com}`, `aud` ∈ configured allowlist, `exp`/`iat` freshness, `email_verified === true` before any email-based logic; store `sub` as `googleId` (stable; never key on email).
+**Optional:** GitHub OAuth; invitation flows and alternate registration modes; magic-link authentication when SMTP is deliberately enabled.
 
-**GitHub OAuth — security requirements (MUST):**
-- `GET /user` for the numeric `id` → `githubId` (never key on `login`, which is renameable), plus `GET /user/emails` with the `user:email` scope selecting `primary && verified`; reject when no verified primary email exists.
+**Deferred:** Microsoft Minecraft linking and offline UUID linking until player-management consumers and identity ownership rules are defined. The presence of `minecraftUUID`, `minecraftName`, and `minecraftVerified` columns does not mean linking is implemented.
 
-**Token binding (DECISION D-5):** one OAuth client_id shared by all backends means `aud` cannot distinguish backends — any token obtained by the frontend is replayable to *any* MinePanel backend (confused deputy). Recommended: `POST /auth/oauth/challenge` issues a single-use 5-min random challenge stored hashed; the frontend carries it through the provider flow (Google `nonce`, GitHub `state`) and presents it with the token; the backend consumes it atomically. PKCE MUST be used on the frontend leg regardless.
+The implemented Google flow verifies the ID token locally, requires a configured audience and verified email, binds the credential to a single-use backend challenge, and forbids silent email-match linking. Future providers MUST preserve equivalent token binding and explicit linking confirmation.
 
-**Identity linking (MUST):** silent email-match linking is **forbidden** (account-takeover risk from recycled/attacker-controlled provider emails). Provider login matching an existing password account returns a `LinkConfirmationRequired` state; linking completes only after password re-authentication (or an existing session). Auto-link only when the account was created by the same provider id. The delivered Google link endpoint requires an existing authenticated session plus a new, single-use challenge-bound ID token; it intentionally creates no staged provider-token state. Provider login does not bypass forced password recovery or TOTP: it returns a stable forbidden error rather than issue a session.
+### 17.2 Phase 2A — Platform foundations `[PROPOSED]`
 
-**GitHub token exposure (accepted risk, mitigations MUST):** a raw `gho_…` token (read-only scopes) reaches an arbitrary self-hosted backend; the spec requires verify-then-discard (never persist), redaction in all logs, TLS end-to-end (already enforced), and documentation of residual scope.
+Audit log and an internal framework-neutral system-event model are the required foundations. Add a scheduler only when the first real feature needs recurring work; no scheduler dependency is required merely to complete this phase.
 
-**Username collisions:** sanitize provider display names to `^[a-zA-Z0-9_]{3,32}$`; on unique violation retry with a random 4-digit suffix (≤3 attempts) then 409 `UsernameUnavailable`.
+### 17.3 Phase 3 — Core operations `[PROPOSED]`
 
-**Magic links (SMTP optional, Phase 1.5):** unchanged product shape from the original design (one-time 15-min tokens, no user-enumeration, 501 when SMTP unconfigured) — `[PROPOSED]`, requires the `MagicLinkToken` table.
+Expected areas: RCON/console command broker; real-time server logs, stats, and player events; backup and restore; scheduled tasks; controlled filesystem writes; file manager; player management; plugin/mod management; and notifications.
 
-### 17.2 Phase 2 — developer platform `[PROPOSED]`
+The future RCON design is a command broker/service with pluggable transport; Docker-exec is the default transport because the backend is intentionally off the Minecraft container network. TCP RCON is optional, not a permanent connection-pool requirement.
 
-Audit log (append-only, interceptor-based, `AuditLog` table), API keys (`mpk_` prefix, hashed at rest, full owner permissions), outbound webhooks (HMAC-SHA256 signatures, retry 1×/5s, non-blocking), system events (retention 10k rows), historical metrics (`MetricSnapshot` 60s cadence, 30d retention). All gated ADMIN where specified in the original design. Depends on: error envelope (B-P1-8), scheduler (B-P1-6).
+All filesystem mutation remains blocked by D-8. The backend data mount stays read-only until the write boundary is selected and implemented.
 
-### 17.3 Phase 3 — operations `[PROPOSED]`
+### 17.4 Phase 2B — Integrations `[PROPOSED]`
 
-**WebSocket real-time (3a):** server.status/log/stats events, subscribe/unsubscribe, console.command — all require the WS ticket (B-P1-4) and per-user/console rate limits. Currently only `system.stats` exists (§7.7).
+Later consumers of Phase 2A: API keys, outbound webhooks, external integrations, and system-event consumers. These MUST NOT block core Minecraft management.
 
-**Backups (3c) — accepted contract (§18.4):** consistency via `save-off` → `save-all flush` → copy → `save-on` (MUST re-enable in `finally`); staged+fsync+atomic-rename archives with SHA-256 manifest; verify-before-stop restore with rollback dir and atomic swap; disk preflight; archive safety (§18.3); exclusion rules; retention default 5; create/download = ADMIN or MOD `SERVER_LIFECYCLE`, restore/delete = ADMIN. Depends on write architecture (D-8), scheduler (B-P1-6), audit (Phase 2).
+### 17.5 Later product surfaces `[PROPOSED]`
 
-**File manager (3h) — accepted path-safety algorithm (§18.2):** containment by `path.relative` (never string `startsWith`), realpath re-check, no-follow (`O_NOFOLLOW`), fd-based ops, archive pre-validation, staged uploads (50 MB), read cap 5 MB, protected-files list (ops/whitelist/bans/level.dat) enforced on resolved paths, DELETE admin-only.
+Creation presets/wizard, mod-loader/mod selection, Velocity/networking, Geyser/Bedrock, mobile/player surfaces, and other deferred product work remain later milestones. No detailed design is normative until its product and security decisions are made.
 
-**Plugins (3f/3g):** Modrinth/Hangar sources, `ServerPlugin` table, install/update/toggle; `PLUGIN_MANAGEMENT` permission. **Player management (3i):** whitelist/bans/ops/kick via RCON or JSON files; UUID resolution (Mojang API cached 24h / offline UUIDv3); `Ban` table with auto-expiry cron. **Scheduled tasks (3d)** and **notifications (3e)**: `ScheduledTask`/`Notification` tables; Discord webhook per-server; fire-and-forget with 1×/5s retry. **Admin permissions dashboard (3j):** exists as API already (§7.4); UI only.
+### 17.6 Backend 2.0 — Elysia 2 `[PROPOSED — FUTURE]`
 
-### 17.4 Phase 4 — creation wizard & presets `[PROPOSED]`
+This is a post-feature-completion migration milestone, not current preparation work. It may start only after all of the following are true:
 
-Preset-driven creation (Survival SMP, Creative, Vanilla Hardcore, Modded…), advanced mode, mod picker (Modrinth preferred, CurseForge optional), `ServerMod` table, template clone (`POST /servers/:id/clone`). Depends on: write architecture (D-8), `/versions` metadata (B-P2-1), plugin/backup subsystems.
+1. The intended Nest backend feature set is complete.
+2. Deferred functionality is explicitly documented.
+3. SPEC, roadmap, and supporting docs are synchronized.
+4. Stable API and error contracts exist.
+5. Real Docker lifecycle testing exists.
+6. Framework-neutral black-box HTTP and WebSocket conformance coverage exists.
+7. The final Nest baseline is tagged and frozen.
+8. Elysia 2 is stable enough for the required deployment.
+9. The required Elysia ecosystem works reliably on the selected Bun runtime.
 
-### 17.5 Phase 5 — networking `[PROPOSED]`
-
-Velocity proxy (`ServerProxy` table, `velocity.toml` auto-generation, modern-forwarding secret encrypted, paper-global.yml patch on add/remove), proxy WebSocket events; Bedrock via GeyserMC plugin (minimal) or standalone `itzg/minecraft-bedrock-server` (`BEDROCK` provider, UDP 19132, no RCON). Note: the old SPEC's container-name convention `minepanel-mc-{id}` differs from the implemented `mc-{id}` — the proxy design MUST use the implemented convention.
-
-### 17.6 Phase 6 — mobile app & player portal `[PROPOSED]`
-
-KMP/Compose app + web player portal: server status cards, access requests, player profile, push notifications, quick lifecycle (mod), admin resource overview. Depends on: WS ticket + real-time events (B-P1-4/§17.3), historical metrics (Phase 2), notifications (Phase 3).
+**Migration rule: PARITY FIRST.** The initial port MUST preserve routes, HTTP statuses, response bodies, error codes, cookies, auth/session semantics, CORS/CSRF behavior, database schema/migrations, Docker lifecycle semantics, container labels, and WebSocket protocol semantics. `protocolVersion` MUST NOT change merely because the framework changes. Performance, memory, image-size, startup, and ergonomics improvements are secondary to black-box compatibility and operational correctness.
 
 ---
 
 ## 18. Security requirements for future features
 
-### 18.1 Password hashing `[DECISION REQUIRED: D-9]` — P2
+### 18.1 Password hashing `[DECISION REQUIRED: D-9]` — Foundation / Next
 
-- Reality: `bcrypt` cost 10; DTO caps at 128 **JS characters**; bcrypt silently truncates input beyond **72 UTF-8 bytes** (two passwords sharing a 72-byte prefix collide).
-- MUST: measure passwords in UTF-8 bytes (`Buffer.byteLength`), never JS `.length`; never feed >72-byte passwords to bcrypt; no silent truncation, ever.
-- Recommended (pre-1.0, zero migration): `storedHash = bcrypt(base64url(HMAC-SHA384(pepper, utf8(password))), rounds)` with `PASSWORD_PEPPER` (32 B hex, preflight-required, distinct from `JWT_SECRET`/`ENCRYPTION_KEY`) and centralized `BCRYPT_ROUNDS` (default 12, min 10). OWASP-endorsed construction; defeats hash-shucking; removes the length problem entirely. Fallback if pepper rejected: reject >64-byte passwords with 400 `PasswordTooLong`. Argon2id is the `[PROPOSED]` long-term alternative. References: §20.
-- D-9 decides: pepper pre-hash vs byte-limit vs Argon2id migration.
+- **Reality:** passwords are hashed with bcrypt cost 10; DTO validation allows up to 128 JavaScript characters, while bcrypt accepts only the first 72 UTF-8 bytes.
+- **Required decision:** choose and document a migration-safe policy that measures UTF-8 bytes and never silently truncates or treats two passwords sharing a 72-byte prefix as distinct.
+- The implementation choice (pepper pre-hash, strict byte limit, or a deliberately planned Argon2id migration) remains open. This is a Foundation / Next hardening item, not a reason to change framework now.
 
 ### 18.2 File-manager path safety — normative algorithm (accepted, applies to any data-tree file op incl. deletion)
 
@@ -776,12 +757,12 @@ Running server: `save-off` → `save-all flush` → snapshot copy → `save-on` 
 | D-1 | Hosted-frontend cross-origin auth (§8.5) | **ADOPTED** | CHIPS `Partitioned` cookies primary; PKCE authorization-code flow with memory-only bearer access token is the reserved fallback and is not implemented | Complete hosted-browser compatibility |
 | D-2 | Setup token mandatory? (§8.1) | **ADOPTED** | `X-Setup-Token` required; configured `SETUP_TOKEN` or one-time generated/logged bootstrap token | Stable v1 |
 | D-3 | Deletion semantics (§11.6) | **ADOPTED** | v1 retains host data; guarded manual cleanup; tombstone/backup/sweeper deferred | Stable v1 documentation |
-| D-4 | Shipped socket default (§10.2) | **OPEN** | rootful vs rootless default | Compose config |
-| D-5 | OAuth token binding (§17.1) | **ADOPTED** | single-use hashed 5-min backend challenge carried through Google `nonce`/GitHub `state`, atomically consumed; PKCE on the frontend leg; fixes the shared-Google-client confused-deputy replay (per-backend client and assertion broker rejected) | Phase 1.5 (this round) |
-| D-6 | WS auth primary path (§8.6) | **OPEN** | cookie vs ticket primary after D-1 / when cookies unavailable | Phase 3 real-time |
-| D-7 | Identity linking policy (§17.1) | **ADOPTED** | silent email-match linking forbidden; provider login matching an existing account returns `LinkConfirmationRequired`; linking requires password re-authentication or an existing authenticated session; auto-link only when the account was created by the same provider id | Phase 1.5 (this round) |
+| D-4 | Shipped socket default (§10.2) | **ADOPTED** | Compose uses rootful Docker by default; rootless Docker and Podman are optional host-local Unix-socket overrides | Compose config |
+| D-5 | OAuth token binding (§17.1) | **ADOPTED** | Single-use hashed 5-minute backend challenge carried through Google's `nonce`, atomically consumed; PKCE remains a frontend requirement for future authorization-code flows | Complete for implemented Google flow |
+| D-6 | WS auth primary path (§8.6) | **OPEN** | Cookie vs ticket primary after D-1 / when cookies unavailable | Phase 3 real-time |
+| D-7 | Identity linking policy (§17.1) | **ADOPTED** | Silent email-match linking is forbidden; provider login returns `LinkConfirmationRequired`; linking requires an authenticated session or explicit re-authentication | Complete for implemented Google flow |
 | D-8 | Write architecture (§10.4) | **OPEN** | sidecar vs rw mount with path module vs per-op exec | Phase 3 write features |
-| D-9 | Password hashing (§18.1) | **OPEN** | pepper pre-hash vs byte-limit vs Argon2id | Stable v1 hardening |
+| D-9 | Password hashing (§18.1) | **OPEN** | Pepper pre-hash vs byte-limit vs Argon2id; current bcrypt 72-byte behavior must be resolved | Foundation / Next |
 | D-10 | Identity normalization (§8.8) | **ADOPTED** | canonical lowercase at write: trim + lowercase username at registration and provider-generated usernames; login keeps lowercasing; migration adds case-collision preflight (fail loudly on `Bob`+`bob` pairs, manual resolution, no silent data loss) | Stable v1 |
 | D-11 | License (B-P3-10) | **ADOPTED** | MIT — LICENSE file committed (b5df536); reconcile package.json/SPEC/README/PWA metadata; no license-type change | Any public release |
 
@@ -816,11 +797,11 @@ Password storage:
 
 The previous SPEC.md (pre-rewrite) was an ambitious design document that conflated three things. This revision separates them (§1 legend). Notable corrections:
 
-1. **Never existed** (claimed as current): `nestjs-pino` logging (actual: `ConsoleLogger`), `@nestjs/schedule` cron (absent), `pendingDeleteAt` + deletion cleanup, `discordWebhook`, `Ban`/`MagicLinkToken`/`ApiKey`/`Webhook`/`SystemEvent`/`AuditLog`/`MetricSnapshot`/`Backup`/`ScheduledTask`/`Notification`/`ServerPlugin`/`ServerMod`/`ServerProxy` tables, `/users` endpoints, `/versions`, version-update and icon endpoints, `/panel/logo`, `/system/stats` REST, magic links, OAuth and Minecraft-linking endpoints, strict/standard/relaxed rate-limit tiers, per-username brute-force counter, `refresh_tokens.userAgent`/`lastUsedAt`, 24h sliding refresh renewal, rootless-Docker default, `${XDG_RUNTIME_DIR}` compose default, SvelteKit frontend.
+1. **Never existed** (claimed as current in the previous document): `nestjs-pino` logging (actual: `ConsoleLogger`), `@nestjs/schedule` cron (absent), `pendingDeleteAt` + deletion cleanup, `discordWebhook`, future-model tables, `/users` endpoints, `/versions`, version-update and icon endpoints, `/panel/logo`, `/system/stats` REST, GitHub OAuth, magic links, Minecraft-linking endpoints, strict/standard/relaxed rate-limit tiers, per-username brute-force counter, refresh session metadata, 24h sliding refresh renewal, rootless-Docker default, `${XDG_RUNTIME_DIR}` Compose default, and the SvelteKit frontend.
 2. **Implemented differently than described**: refresh rotates on every use (not within 24h of expiry); production `sameSite` is `none` (docs claimed `lax`); PKs are `randomUUID` (not cuid); ban deletes sessions (spec claimed it does not); 422 error code is `InsufficientResources` (not per-resource codes); `DbExceptionFilter` emits `{message}` only (spec claimed NestJS default shape); delete returns 202 for a synchronous op; RCON is `docker exec rcon-cli`, not TCP RCON; the `mc-{id}` container name (not `minepanel-mc-{id}`).
 3. **Unsafe examples removed**: `startsWith(serverDir)` path check (§18.2), "128 chars is safe with bcrypt" (§18.1), `SameSite=None; Secure` described as sufficient (§8.5), `tokeninfo` + "optional audience check" OAuth flow (§17.1), silent email-match linking (§17.1), "production-ready"/"100% complete" claims (§2).
 4. **Product truth**: frontend stack corrected to React 19 + Vite 7 + Tailwind 4; version strings reconciled as inconsistent (B-P2-6). The repository is MIT-licensed (LICENSE file; D-11 adopted), and `unpublished` context in earlier drafts is obsolete — `package.json` declares `"license": "MIT"`.
 
 ## Appendix B — Validation note
 
-This specification was validated against the repository working tree by: full SPEC read, git state inspection, independent read-only code scouts (implementation truth; schema/migrations/config; docs/claims/tests), first-hand verification of schema, bootstrap, auth, Docker, servers, gateway, controllers, guards, DTOs, compose, Dockerfile, and CI workflow. No commit hash is recorded here.
+This specification was validated against commit `f638031e737117264455132de0668c0cbb9528c4` on 2026-08-27. The audit covered the canonical docs/config, schema and migrations, bootstrap and module composition, auth/identity/guards, admin and access-control paths, Docker and lifecycle services, gateway/adapters, controllers/DTOs, unit and e2e inventories, Compose, Dockerfile, and CI workflow. Local unit verification at this revision reported 40 suites and 729 tests passing; the repository contains 13 e2e suites with 91 test cases, which require the live PostgreSQL setup described in §14.2. No claim of a full CI or real-daemon lifecycle run is made here.

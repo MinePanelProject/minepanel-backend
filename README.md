@@ -14,11 +14,11 @@
 
 ---
 
-> **Phase 1 - v1.0 release candidate.** Auth (JWT cookies, 2FA, admin approval), transactional first-admin bootstrap, protocol-1 capability discovery, server lifecycle, host metrics over WebSocket, and the one-command Docker deployment (Caddy auto-HTTPS, Drizzle migrations on boot, multi-arch images on GHCR) are shipped and CI-green. Open decisions and the hardening backlog are tracked in [SPEC.md](./SPEC.md) §16/§19.
+> **Phase 1 - v1.0 release candidate.** Auth (JWT cookies, 2FA, admin approval), transactional first-admin bootstrap, protocol-1 capability discovery, server lifecycle, host metrics over WebSocket, and the one-command Docker deployment (Caddy auto-HTTPS, Drizzle migrations on boot, multi-arch images on GHCR) are shipped. Open decisions and the hardening backlog are tracked in [SPEC.md](./SPEC.md) §16/§19.
 >
-> **Phase 1 - authorization spine shipped.** Per-server visibility (`OPEN`/`REQUEST`/`PRIVATE`), request/approval workflows, and MOD granular permissions (`PermissionsGuard` + `mod_permissions`) are live.
+> **Phase 1 - authorization spine shipped.** Per-server visibility (`OPEN`/`REQUEST`/`PRIVATE`), request/approval workflows, requestable-server discovery, and MOD granular permissions (`PermissionsGuard` + `mod_permissions`) are live.
 >
-> **Phase 1.5 - Google OAuth shipped.** Challenge-bound Google login, local JWKS verification, LinkConfirmationRequired linking semantics, and truthful capability discovery (`capabilities.auth.googleOAuth`) are live. GitHub OAuth, Minecraft linking, magic links, and invites remain planned - see the [roadmap](https://minepanel.xyz/#roadmap).
+> **Phase 1.5 - Google OAuth shipped.** Challenge-bound Google login, local JWKS verification, LinkConfirmationRequired linking semantics, and truthful capability discovery (`capabilities.auth.googleOAuth`) are live. GitHub OAuth, Minecraft linking, magic links, and invites are optional or deferred - see the [roadmap](https://minepanel.xyz/#roadmap).
 
 ---
 
@@ -179,7 +179,7 @@ Full docs at `/docs` (Swagger UI) when the server is running.
 | Admin      | `GET /admin/users` · `PATCH /admin/users/:id/status` · `PATCH /admin/users/:id/role` · `POST /admin/users/:id/reset-password` · `DELETE /admin/users/:id/2fa` · `GET/POST /admin/users/:id/permissions` · `DELETE /admin/users/:id/permissions/:permId` |
 | Health     | `GET /health`                                                                                 |
 | Info       | `GET /api/info` - protocol-1 capability discovery (`Cache-Control: no-store`) |
-| Servers    | `POST /servers` · `GET /servers` · `GET /servers/:id` · `POST /servers/:id/start` · `POST /servers/:id/stop` · `POST /servers/:id/restart` · `DELETE /servers/:id` · `POST /servers/:id/request-access` · `GET /servers/:id/my-access-request` · `GET /servers/:id/access-requests` · `POST /servers/:id/access-requests/:userId/approve` · `DELETE /servers/:id/access-requests/:userId` |
+| Servers    | `POST /servers` · `GET /servers` · `GET /servers/requestable` · `GET /servers/:id` · `POST /servers/:id/start` · `POST /servers/:id/stop` · `POST /servers/:id/restart` · `DELETE /servers/:id` · `POST /servers/:id/request-access` · `GET /servers/:id/my-access-request` · `GET /servers/:id/access-requests` · `POST /servers/:id/access-requests/:userId/approve` · `DELETE /servers/:id/access-requests/:userId` |
 | WebSocket  | `system.stats` - host metrics for ADMIN sockets only ([docs/realtime.md](./docs/realtime.md)) |
 
 ---
@@ -188,7 +188,9 @@ Full docs at `/docs` (Swagger UI) when the server is running.
 
 Live progress at [minepanel.xyz/#roadmap](https://minepanel.xyz/#roadmap).
 
-See [SPEC.md](./SPEC.md) for the full architecture specification.
+The current NestJS backend remains the implementation target through feature completion. Backend 2.0 — Elysia 2 is a future, parity-first milestone only after the gates listed in [SPEC.md](./SPEC.md) §17.6; no migration preparation is underway.
+
+See [SPEC.md](./SPEC.md) for the canonical architecture and roadmap.
 
 ---
 

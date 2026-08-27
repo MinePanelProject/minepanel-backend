@@ -1,20 +1,18 @@
 # Auth Architecture
-
 ## The Two Tokens
 
 **Access token** — a signed JWT, short-lived (15 min), stored in an HttpOnly cookie called `access_token`.
-- Contains: `{ sub: userId, username, role }`
-- Stateless — the server doesn't store it, it just verifies the signature
-- Short-lived because if stolen, it expires fast
+- Contains `{ sub, username, role, type: 'access', temporaryAuth? }`; the guard also checks current user status, role, and recovery state in PostgreSQL.
+- It is not sufficient to authorize a request by signature alone.
 
-**Refresh token** — a signed JWT, long-lived (7 days), stored in an HttpOnly cookie called `refresh_token`.
-- Contains: `{ sub: userId }` — allows the server to identify the user without `req.user`
-- The server stores a **bcrypt hash** of it in the DB (`RefreshToken` table), not the raw value
-- Long-lived because it's used to get new access tokens without re-logging in
+**Refresh token** — a signed JWT, long-lived (7 days by default), stored in an HttpOnly cookie called `refresh_token`.
+- Contains `{ sub, type: 'refresh', jti, temporaryAuth? }`.
+- The database stores only a SHA-256 digest of the random `jti`; the raw refresh token is never stored.
+- Every successful refresh atomically consumes the presented row and inserts a successor.
 
 ### Why both?
 
-- Access token is verified on every request (JWT signature/expiry via the shared `AccessTokenService`) and DB-current role/status are re-read so bans/demotions take effect immediately; refresh tokens hit the DB for rotation/revocation
+- Access tokens authorize ordinary requests while the guard re-checks DB-current role/status; refresh tokens provide server-side rotation and revocation.
 
 ---
 
@@ -25,9 +23,9 @@
 ```
 client  →  sends email/password
 server  →  verifies password with bcrypt
-server  →  generates access token (JWT, signed, 15min)
-server  →  generates refresh token (JWT, signed, 7d, contains sub only)
-server  →  bcrypt hashes refresh token → stores hash in DB
+server  →  generates access token (JWT, signed, 15m)
+server  →  generates refresh token (JWT, signed, 7d by default, includes random jti)
+server  →  stores SHA-256(jti) for the refresh session
 server  →  sets both as HttpOnly cookies
 server  →  returns user data (no tokens in body)
 ```
@@ -46,13 +44,13 @@ server  →  controller runs
 
 ```
 client  →  sends request (browser sends refresh_token cookie automatically)
-server  →  verifies refresh token JWT → extracts userId from sub
-server  →  fetches all RefreshTokens for that user from DB
-server  →  bcrypt.compare(cookieToken, each DB hash) to find a match
-server  →  generates new access token
-server  →  rotates the refresh token on every successful refresh
-server  →  sets the new cookies
+server  →  verifies refresh JWT purpose, subject, jti, and expiry
+server  →  checks the refresh row by SHA-256(jti) and current user state
+server  →  atomically deletes the presented row and inserts a successor
+server  →  generates new access token and sets both cookies
 ```
+
+Concurrent use of the same refresh token has exactly one winner. Missing, malformed, expired, wrong-purpose, or replayed tokens return 401 machine codes.
 
 ### Logout — `POST /auth/logout`
 
@@ -101,15 +99,15 @@ The HTTP `JwtAuthGuard` is the only place that owns the temporary-password route
 
 One row per active session. A user can have multiple rows (multiple devices/browsers).
 
-| Field     | Notes                                      |
-|-----------|--------------------------------------------|
-| id        | cuid PK                                    |
-| token     | bcrypt hash of the refresh token JWT       |
-| userId    | FK → User                                  |
-| expiresAt | 7 days from creation                       |
-| createdAt |                                            |
+| Field        | Notes                                      |
+|--------------|--------------------------------------------|
+| id           | UUID PK                                    |
+| tokenIdHash  | SHA-256 digest of the JWT `jti`; raw token is never stored |
+| userId       | FK → User                                  |
+| expiresAt    | Derived from `JWT_REFRESH_EXPIRES_IN`       |
+| createdAt    |                                             |
 
-Logout deletes the specific row for that session. Without DB storage you cannot invalidate a specific session — that's why refresh tokens are stateful even though access tokens are not.
+Logout deletes the row for that session. Session metadata such as `userAgent` and `lastUsedAt` remains future work.
 
 ---
 

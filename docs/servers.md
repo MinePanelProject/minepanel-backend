@@ -8,13 +8,13 @@
 
 The NestJS backend manages Minecraft server containers via the Docker socket. Each MC server is an independent container spawned and controlled by the backend.
 
-The socket path is configurable via `DOCKER_SOCKET` (default: `/var/run/docker.sock`). **Rootless Docker is the default** — no root privileges required. `DockerService` reads the path from `ConfigService` at startup, never hardcoded.
+The socket path is configurable via `DOCKER_SOCKET` (default: `/var/run/docker.sock`). **Rootful Docker is the shipped default**; rootless Docker and Podman are optional host-local Unix-socket overrides. `DockerService` reads the path from `ConfigService` at startup, never hardcoded.
 
 > **Implemented (Phase 1 slice):** socket connection, ping, hardened container create/start/stop/remove, container inspect, host RAM/CPU via `docker.info`, host disk via `fs.statfs`, server lifecycle endpoints (`ServersService`) with atomic CAS state transitions, resource guardrails, startup reconciliation, managed-container recovery, and RCON-aware graceful stop with player warning.
 >
 > **Implemented (Phase 1.5 Round 1):** server visibility (`OPEN`/`REQUEST`/`PRIVATE`), `ServerAccess` request/approval/revocation, MOD granular permissions (`PermissionsGuard` + `mod_permissions`), and lifecycle enforcement (`SERVER_LIFECYCLE`).
 >
-> **Deferred:** container stats, log streaming, external RCON service/pool, console command endpoints, encrypted `rconPassword` persistence.
+> **Deferred:** container stats, log streaming, the pluggable RCON command broker, console command endpoints, and any backend-managed RCON credential ownership.
 
 ```
 NestJS backend
@@ -37,7 +37,7 @@ NestJS backend
 |------------------|----------------------------------------------------------------|
 | Image            | `itzg/minecraft-server`                                        |
 | Network          | `minepanel_network` (env: `DOCKER_NETWORK`)                    |
-| Volume           | `{MC_DATA_PATH}/{serverId}:/data`                              |
+| Volume           | `{MC_DATA_BIND_SOURCE}/{serverId}:/data`                         |
 | Port mapping     | `{server.port}:25565`                                          |
 | Memory limit     | `Server.memoryLimitMb` MB (min 512 MB)                         |
 | Restart policy   | `unless-stopped`                                               |
@@ -47,9 +47,9 @@ NestJS backend
 | Capabilities     | none (`CapAdd: []`, hardcoded)                                 |
 | Env vars         | `EULA=TRUE`, `ENABLE_RCON=TRUE`, `TYPE`, `VERSION`, `MEMORY`, `MAX_PLAYERS`, `DIFFICULTY`, `MODE`, `ONLINE_MODE`, `VIEW_DISTANCE`, `ALLOW_FLIGHT`, `PVP`, `MOTD`, `SEED` |
 
-> **`MC_DATA_PATH` is one absolute path, identical on the Docker host and inside the backend container.** Compose mounts `${MC_DATA_PATH_HOST}` at the same absolute path and passes it as `MC_DATA_PATH`; the daemon bind source and backend `statfs` therefore name the same physical root. Relative values and values with surrounding whitespace are rejected (Compose interpolates `MC_DATA_PATH_HOST` verbatim, so the two must normalize identically); the obsolete `mc-data` named volume was removed from compose.
+> **The backend and Minecraft containers use two views of one physical data root.** Compose mounts `${MC_DATA_PATH_HOST}` read-only at the fixed backend path `/mc-data`, passes `MC_DATA_BIND_SOURCE=${MC_DATA_PATH_HOST}` to the backend, and the daemon binds the host source into each Minecraft container. `MC_DATA_PATH` is therefore the backend's container path; it is not required to equal the host bind-source spelling. This preserves host-path compatibility, including Docker Desktop paths.
 >
-> **Operator prerequisites:** the default host root is `$HOME/.minepanel/mc-data` (user-writable; Compose creates it — no privileged prep on rootless Docker). Existing installs on `/srv/...` or the old `minepanel-mc-data` named volume keep their location by setting `MC_DATA_PATH_HOST` to their absolute path (upgrade-only: copy the old volume contents into the chosen host root once, before cutover — fresh installs do nothing). Root-docker operators should pre-create and `chown` the root for the Minecraft container runtime user. On SELinux, label the directory per local policy — never embed `:Z` in `MC_DATA_PATH_HOST`.
+> **Operator prerequisites:** the default host root is `$HOME/.minepanel/mc-data`. Existing installs can retain their location by setting `MC_DATA_PATH_HOST` to an absolute host path. Root-docker operators should pre-create and `chown` the root for the Minecraft container runtime user. On SELinux, label the directory per local policy — never embed `:Z` in `MC_DATA_PATH_HOST`.
 
 ### DockerService methods
 
@@ -101,7 +101,7 @@ If the Docker socket is unavailable at startup or becomes unreachable at runtime
 | Method | Path                                  | Auth         | Description                                  |
 |--------|---------------------------------------|--------------|----------------------------------------------|
 | POST   | /servers                              | ADMIN        | Create and start a new server                |
-| GET    | /servers                              | JWT          | List visible servers                         |
+| GET    | /servers/requestable                  | JWT          | List REQUEST servers available to discover and request |
 | GET    | /servers/:id                          | JWT          | Get single server details                    |
 | POST   | /servers/:id/start                    | ADMIN \| MOD | Start a stopped server (needs `SERVER_LIFECYCLE`) |
 | POST   | /servers/:id/stop                     | ADMIN \| MOD | Stop a running server (needs `SERVER_LIFECYCLE`)  |
@@ -189,7 +189,7 @@ POST /servers/:id/stop
 
 Visibility and PBAC are enforced before any Docker call.
 
-The explicit `DockerService.stopContainer` is mandatory even though the itzg image's `mc-server-runner` PID1 traps `SIGTERM` and sends `stop` over RCON: Docker marks `HasBeenManuallyStopped` **before** delivering the signal, so the `unless-stopped` restart policy cannot relaunch the container behind a `STOPPED` DB row. `stopContainer` distinguishes `204` (`stopped`) from `304` (`already-stopped`); both finalize to `STOPPED` because the container is exited. RCON is provided by the bundled `rcon-cli` inside the container over a non-interactive `docker exec`; the image manages its own random RCON password in `/data/.rcon-cli.*` and no password is stored in the backend.
+The bundled image manages its own RCON credentials for `docker exec rcon-cli`; no password is stored in the backend today. Future work is a pluggable RCON command broker with Docker-exec as the default transport. A permanent TCP connection pool is not a requirement and would undermine the backend's deliberate isolation from the Minecraft network.
 
 ### Restart server flow
 
@@ -235,7 +235,7 @@ Every reconciliation write compares the full observed snapshot (`status`, `conta
 ### Deferred to later slices
 
 - Per-container stats, log streaming, and real-time container events (host `system.stats` is delivered — see [docs/realtime.md](./realtime.md)).
-- External RCON service, connection pool, console command endpoints, and encrypted `rconPassword` persistence.
+- Pluggable RCON command broker and console command endpoints; Docker-exec remains the default transport and backend credential ownership is undecided.
 - Backups, world/version management, and delayed volume cleanup.
 
 ---
@@ -299,7 +299,7 @@ The total returned matches the filtered row set. Pagination (`limit`/`offset`) i
 | DOCKER_SOCKET  | Path to Docker socket                | /var/run/docker.sock         |
 | DOCKER_NETWORK | Docker network for MC containers     | minepanel_network            |
 | MC_DATA_PATH_HOST | Host data root (compose only) | $HOME/.minepanel/mc-data |
-| MC_DATA_PATH   | Base path for MC server data volumes (absolute; must be identical on host and inside backend container) | /mc-data |
+| MC_DATA_PATH   | Backend container path for read-only admission checks | /mc-data |
 | `MC_PORT_MIN`    | Minimum allowed MC server port       | 25565                        |
 | `MC_PORT_MAX`    | Maximum allowed MC server port       | 25665                        |
 | `STOP_WARN_SECONDS` | Graceful shutdown warning seconds (0-300) | 30                     |
