@@ -2,9 +2,27 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - README.md
+      - SPEC.md
+      - AGENTS.md
+      - roadmap.json
+      - LICENSE
+      - docs/**
+      - .github/FUNDING.yml
+      - .vscode/**
   push:
     branches: [master]
     tags: ['v*']
+    paths-ignore:
+      - README.md
+      - SPEC.md
+      - AGENTS.md
+      - roadmap.json
+      - LICENSE
+      - docs/**
+      - .github/FUNDING.yml
+      - .vscode/**
 
 permissions:
   contents: read
