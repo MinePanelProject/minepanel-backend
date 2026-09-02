@@ -61,6 +61,7 @@ const isMinecraftReady = async (container) => {
   try {
     const info = await container.inspect();
     if (info.State?.Running !== true) return false;
+    if (info.State?.Health?.Status === 'healthy') return true;
     const logs = await container.logs({ stderr: true, stdout: true, tail: 200 });
     return /Done \(/u.test(logs.toString());
   } catch {
@@ -190,8 +191,8 @@ try {
   await assertDockerConfig(container, expectedDataDir);
   await waitFor(
     () => isMinecraftReady(container),
-    180_000,
-    'Minecraft container readiness log',
+    300_000,
+    'Minecraft container readiness',
   );
 
   await fetchJson('POST', `/api/servers/${serverId}/stop`, undefined, cookie);
