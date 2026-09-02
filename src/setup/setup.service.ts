@@ -11,6 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import { eq, sql } from 'drizzle-orm';
 import { CreateUserDto } from 'src/auth/dto/register.dto';
+import { assertPasswordWithinByteLimit } from 'src/auth/password';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
 import { setupState, users } from 'src/db/schema';
 
@@ -91,6 +92,7 @@ export class SetupService implements OnModuleInit {
 
     // bcrypt runs before the transaction so the advisory lock is never held
     // during hashing
+    assertPasswordWithinByteLimit(createUser.password);
     const passwordHash = await bcrypt.hash(createUser.password, 10);
 
     await this.db.transaction(async (tx) => {

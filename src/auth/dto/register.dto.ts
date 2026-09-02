@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsEmail, IsNotEmpty, Matches, MaxLength, MinLength } from 'class-validator';
+import { PasswordByteLimit } from './password-byte-limit';
 
 export class CreateUserDto {
   @ApiProperty()
@@ -18,9 +19,9 @@ export class CreateUserDto {
   @Matches(/^[a-zA-Z0-9_]+$/)
   username: string;
 
-  @ApiProperty()
+  @ApiProperty({ maxLength: 72, description: 'At most 72 UTF-8 bytes' })
   @IsNotEmpty()
   @MinLength(8)
-  @MaxLength(128)
+  @PasswordByteLimit()
   password: string;
 }

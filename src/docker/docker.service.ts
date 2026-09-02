@@ -26,10 +26,12 @@ import {
   STOP_TIMEOUT_SECONDS,
 } from './docker.constants';
 
-const MINECRAFT_IMAGE = 'itzg/minecraft-server';
+const DEFAULT_MINECRAFT_IMAGE =
+  'itzg/minecraft-server:2026.8.2@sha256:efa878ddb49cf5251b2e5f2ad71b08fd2f7236c1f7907433f6697258b31d2ce4';
+const DEFAULT_MC_CPU_NANO_CPUS = 2_000_000_000;
+const DEFAULT_MC_PIDS_LIMIT = 512;
 const CONTAINER_PORT = '25565/tcp';
 const MIN_MEMORY_MB = 512;
-
 export type ContainerInspectState = {
   id: string;
   name: string;
@@ -51,6 +53,9 @@ export type DockerConfig = {
   mcDataPath: string;
   mcDataBindSource: string;
   network: string;
+  image: string;
+  cpuNanoCpus: number;
+  pidsLimit: number;
   portMin: number;
   portMax: number;
 };
@@ -126,13 +131,15 @@ export class DockerService {
 
     const config = {
       name: `mc-${server.id}`,
-      Image: MINECRAFT_IMAGE,
+      Image: dockerConfig.image,
       ExposedPorts: { [CONTAINER_PORT]: {} },
       Env: env,
       Labels: { 'minepanel.server-id': server.id, 'minepanel.managed': 'true' },
       HostConfig: {
         Binds: [`${dataDir}:/data`],
         Memory: server.memoryLimitMb * 1024 * 1024,
+        NanoCpus: dockerConfig.cpuNanoCpus,
+        PidsLimit: dockerConfig.pidsLimit,
         PortBindings: { [CONTAINER_PORT]: [{ HostPort: String(server.port) }] },
         Privileged: false,
         CapAdd: [],
@@ -506,6 +513,37 @@ export class DockerService {
     if (network === 'host' || network === 'none' || network.startsWith('container:')) {
       throw new BadRequestException('DOCKER_NETWORK must be a named network');
     }
+    const rawImage = this.configService.get<string>('MINECRAFT_IMAGE', DEFAULT_MINECRAFT_IMAGE);
+    const image = rawImage.trim();
+    if (
+      image.endsWith(':latest') ||
+      !/^[a-z0-9]+(?:[._/-][a-z0-9]+)*:[a-z0-9][a-z0-9._-]*(?:@sha256:[a-f0-9]{64})?$/iu.test(image)
+    ) {
+      throw new BadRequestException('MINECRAFT_IMAGE must be a versioned tagged image reference');
+    }
+
+    const cpuNanoCpus = Number(
+      this.configService.get<number>('MC_CPU_NANO_CPUS', DEFAULT_MC_CPU_NANO_CPUS),
+    );
+    const pidsLimit = Number(
+      this.configService.get<number>('MC_PIDS_LIMIT', DEFAULT_MC_PIDS_LIMIT),
+    );
+    if (
+      !Number.isSafeInteger(cpuNanoCpus) ||
+      cpuNanoCpus < 100_000_000 ||
+      cpuNanoCpus > 64_000_000_000 ||
+      !Number.isSafeInteger(pidsLimit) ||
+      pidsLimit < 128 ||
+      pidsLimit > 32_768
+    ) {
+      throw new BadRequestException(
+        'MC_CPU_NANO_CPUS must be 100000000-64000000000 and MC_PIDS_LIMIT 128-32768',
+      );
+    }
+
+    if (rawImage !== rawImage.trim()) {
+      throw new BadRequestException('MINECRAFT_IMAGE must not have surrounding whitespace');
+    }
 
     const portMin = Number(this.configService.get<number>('MC_PORT_MIN', 25565));
     const portMax = Number(this.configService.get<number>('MC_PORT_MAX', 25665));
@@ -524,6 +562,9 @@ export class DockerService {
       mcDataPath: path.resolve(mcDataPath),
       mcDataBindSource,
       network,
+      image,
+      cpuNanoCpus,
+      pidsLimit,
       portMin,
       portMax,
     };

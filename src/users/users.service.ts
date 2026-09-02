@@ -3,6 +3,7 @@ import * as bcrypt from 'bcrypt';
 import { and, eq, isNull, ne, or } from 'drizzle-orm';
 import { EditUserDto } from 'src/auth/dto/editUser.dto';
 import { UpdatePasswordDTO } from 'src/auth/dto/updatePw.dto';
+import { assertPasswordWithinByteLimit } from 'src/auth/password';
 import { hashRefreshTokenId } from 'src/auth/refresh-token-id';
 import { DRIZZLE, type DrizzleDB } from 'src/db/db.module';
 import { type Role, refreshTokens, type User, type UserStatus, users } from 'src/db/schema';
@@ -78,8 +79,9 @@ export class UsersService {
     refreshTokenId: string | undefined,
     temporaryAuth = false,
   ): Promise<PublicUser> {
+    assertPasswordWithinByteLimit(dto.oldPassword);
+    assertPasswordWithinByteLimit(dto.newPassword);
     const userData = await this.findById(userId);
-
     if (!userData) {
       throw new Error();
     }

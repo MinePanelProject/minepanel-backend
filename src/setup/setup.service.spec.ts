@@ -18,7 +18,12 @@ type SetupTransactionFixture = {
   update: jest.Mock;
 };
 
-import { ConflictException, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, type TestingModule } from '@nestjs/testing';
 import * as bcrypt from 'bcrypt';
@@ -167,6 +172,12 @@ describe('SetupService', () => {
     // every write went through the transaction handle; the root db only served
     // the token-resolution state read
     expect(rootInsert).not.toHaveBeenCalled();
+  });
+  it('rejects over-limit admin passwords before opening the transaction', async () => {
+    await expect(
+      service.initAdminRegister({ ...dto(), password: '😀'.repeat(19) }, CONFIGURED_TOKEN),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it('rejects a missing setup token before touching the database transaction', async () => {

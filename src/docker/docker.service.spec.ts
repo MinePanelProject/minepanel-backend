@@ -164,7 +164,8 @@ describe('DockerService', () => {
       expect(fakeDocker.createContainer).toHaveBeenCalledWith(
         expect.objectContaining({
           name: 'mc-abc-123',
-          Image: 'itzg/minecraft-server',
+          Image:
+            'itzg/minecraft-server:2026.8.2@sha256:efa878ddb49cf5251b2e5f2ad71b08fd2f7236c1f7907433f6697258b31d2ce4',
           ExposedPorts: { '25565/tcp': {} },
           Env: expect.arrayContaining([
             'EULA=TRUE',
@@ -177,6 +178,8 @@ describe('DockerService', () => {
           HostConfig: {
             Binds: ['/mc-data/abc-123:/data'],
             Memory: 2048 * 1024 * 1024,
+            NanoCpus: 2_000_000_000,
+            PidsLimit: 512,
             PortBindings: { '25565/tcp': [{ HostPort: '25570' }] },
             Privileged: false,
             CapAdd: [],
@@ -193,6 +196,35 @@ describe('DockerService', () => {
       expect(config.HostConfig).not.toHaveProperty('Devices');
       expect(config.HostConfig).not.toHaveProperty('Volumes');
       expect(config.HostConfig.Binds).toHaveLength(1);
+    });
+    it('uses the configured image and finite isolation limits', async () => {
+      fakeDocker.createContainer.mockResolvedValue({ id: 'c1' });
+      configMock.map.set(
+        'MINECRAFT_IMAGE',
+        `itzg/minecraft-server:2026.8.2@sha256:${'a'.repeat(64)}`,
+      );
+      configMock.map.set('MC_CPU_NANO_CPUS', 1_500_000_000);
+      configMock.map.set('MC_PIDS_LIMIT', 1024);
+
+      await service.createContainer(makeServer());
+
+      const config = fakeDocker.createContainer.mock.calls[0][0];
+      expect(config.Image).toBe(`itzg/minecraft-server:2026.8.2@sha256:${'a'.repeat(64)}`);
+      expect(config.HostConfig.NanoCpus).toBe(1_500_000_000);
+      expect(config.HostConfig.PidsLimit).toBe(1024);
+    });
+
+    it.each([
+      ['MINECRAFT_IMAGE', 'itzg/minecraft-server:latest'],
+      ['MC_CPU_NANO_CPUS', 99_999_999],
+      ['MC_PIDS_LIMIT', 64],
+    ])('rejects unsafe %s configuration', async (key, value) => {
+      configMock.map.set(key, value);
+
+      await expect(service.createContainer(makeServer())).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(fakeDocker.createContainer).not.toHaveBeenCalled();
     });
 
     it('maps the env whitelist from the server', async () => {
@@ -452,7 +484,9 @@ describe('DockerService', () => {
       await service.createContainer(makeServer());
 
       const config = fakeDocker.createContainer.mock.calls[0][0];
-      expect(config.Image).toBe('itzg/minecraft-server');
+      expect(config.Image).toBe(
+        'itzg/minecraft-server:2026.8.2@sha256:efa878ddb49cf5251b2e5f2ad71b08fd2f7236c1f7907433f6697258b31d2ce4',
+      );
       expect(config.HostConfig.NetworkMode).toBe('minepanel_network');
       expect(config.HostConfig.NetworkMode).not.toBe('host');
       expect(config.HostConfig.Binds).toHaveLength(1);

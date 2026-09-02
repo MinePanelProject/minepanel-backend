@@ -13,6 +13,7 @@
     "build": "nest build && bun scripts/postbuild.mjs",
     "format": "biome format --write .",
     "smoke:totp": "bun scripts/totp-smoke.mjs",
+    "docker:lifecycle": "bun scripts/docker-lifecycle-smoke.mjs",
     "check:scripts": "bun scripts/check-package-scripts.mjs",
     "check:deployment": "bun scripts/check-deployment-contract.mjs",
     "start": "nest start",

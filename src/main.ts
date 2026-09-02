@@ -9,6 +9,7 @@ import { AppModule } from './app.module';
 import { getCanonicalCorsOrigin } from './common/cors-origin';
 import { CustomLogger } from './common/custom-logger';
 import { DbExceptionFilter } from './common/filters/db-exception.filter';
+import { requestIdMiddleware } from './common/request-id.middleware';
 import { runProductionMigrations } from './db/migrate';
 import { SocketIoAdapter } from './gateway/socket-io.adapter';
 import { SocketReservationService } from './gateway/socket-reservation.service';
@@ -118,6 +119,7 @@ async function bootstrap() {
   app.use(helmet());
 
   app.use(cookieParser());
+  app.use(requestIdMiddleware);
 
   app.useGlobalPipes(
     new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }),

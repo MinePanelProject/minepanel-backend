@@ -28,9 +28,10 @@ services:
       MIN_FREE_DISK_MB: ${MIN_FREE_DISK_MB:-2048}
       MAX_MEMORY_RATIO: ${MAX_MEMORY_RATIO:-0.90}
       STOP_WARN_SECONDS: ${STOP_WARN_SECONDS:-30}
+      MINECRAFT_IMAGE: ${MINECRAFT_IMAGE:?Set MINECRAFT_IMAGE to a versioned image identity}
+      MC_CPU_NANO_CPUS: ${MC_CPU_NANO_CPUS:-2000000000}
+      MC_PIDS_LIMIT: ${MC_PIDS_LIMIT:-512}
       REQUIRE_ADMIN_APPROVAL: ${REQUIRE_ADMIN_APPROVAL:-true}
-      LOGIN_THROTTLE_LIMIT: ${LOGIN_THROTTLE_LIMIT:-5}
-      LOGIN_THROTTLE_TTL_MS: ${LOGIN_THROTTLE_TTL_MS:-10000}
       PANEL_NAME: ${PANEL_NAME:-MinePanel}
       PANEL_DESCRIPTION: ${PANEL_DESCRIPTION:-Minecraft server management panel API}
       PANEL_VERSION: ${PANEL_VERSION:-1.0}
@@ -88,7 +89,7 @@ services:
         condition: service_started
 
   minecraft-image:
-    image: itzg/minecraft-server:latest
+    image: ${MINECRAFT_IMAGE:?Set MINECRAFT_IMAGE to a versioned image identity}
     entrypoint: ["/bin/true"]
     restart: "no"
     networks:
