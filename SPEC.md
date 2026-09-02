@@ -678,7 +678,7 @@ The following are **optional or deferred**, not assumed requirements for backend
 
 ### Future compatibility — hosted browsers `[PROPOSED]`
 
-- **B-COMPAT-1:** Reassess and, if product requirements expand beyond the supported hosted-browser matrix, perform a fresh security/design review of a PKCE authorization-code fallback. PKCE is not implemented, is not part of Stable-v1, and is not a missing completion item.
+- **B-COMPAT-1:** Reassess hosted-browser compatibility only if product requirements expand beyond the supported browser matrix. Any browser-based OAuth Authorization Code flow MUST use PKCE and receive a fresh security/design review against then-current browser OAuth guidance. PKCE is not implemented, is not part of Stable-v1, and is not a missing completion item.
 
 
 ### Phase 2A — Platform foundations
@@ -761,7 +761,7 @@ This is a post-feature-completion migration milestone, not current preparation w
 
 ### 17.7 Future compatibility — hosted-browser auth `[PROPOSED]`
 
-The current supported hosted-browser contract does not require PKCE: it depends on a public HTTPS PWA, browser-trusted public HTTPS panel origins, CHIPS `Partitioned` HttpOnly cookies, and Web Locks where required by the PWA session-authority model. PKCE remains unimplemented and conditional future work only if MinePanel deliberately expands its browser compatibility requirements. Any revisit requires a fresh security/design review against then-current browser-based OAuth guidance.
+The current supported hosted-browser contract does not require PKCE: it depends on a public HTTPS PWA, browser-trusted public HTTPS panel origins, CHIPS `Partitioned` HttpOnly cookies, and Web Locks where required by the PWA session-authority model. PKCE remains unimplemented and conditional future work only if MinePanel deliberately expands its browser compatibility requirements. If MinePanel later adopts a browser-based OAuth Authorization Code flow, that flow MUST use PKCE and receive a fresh security/design review against then-current browser OAuth guidance.
 
 ---
 
@@ -805,7 +805,7 @@ Running server: `save-off` → `save-all flush` → snapshot copy → `save-on` 
 | D-2 | Setup token mandatory? (§8.1) | **ADOPTED** | `X-Setup-Token` required; configured `SETUP_TOKEN` or one-time generated/logged bootstrap token | Stable v1 |
 | D-3 | Deletion semantics (§11.6) | **ADOPTED** | v1 retains host data; guarded manual cleanup; tombstone/backup/sweeper deferred | Stable v1 documentation |
 | D-4 | Shipped socket default (§10.2) | **ADOPTED** | Compose uses rootful Docker by default; rootless Docker and Podman are optional host-local Unix-socket overrides | Compose config |
-| D-5 | OAuth token binding (§17.1) | **ADOPTED** | Single-use hashed 5-minute backend challenge carried through Google's `nonce`, atomically consumed; PKCE was considered for future authorization-code compatibility but is not implemented or required by the current hosted-browser contract | Complete for implemented Google flow |
+| D-5 | OAuth token binding (§17.1) | **ADOPTED** | Single-use hashed 5-minute backend challenge carried through Google's `nonce`, atomically consumed; MinePanel does not use a hosted-browser OAuth Authorization Code flow today, and PKCE is not implemented or required for the current Stable-v1 CHIPS + Web Locks architecture. If MinePanel later adopts a browser-based OAuth Authorization Code flow, that flow MUST use PKCE and receive a fresh security/design review against then-current browser OAuth guidance | Complete for implemented Google flow |
 | D-6 | WS auth primary path (§8.6) | **OPEN** | Cookie vs ticket primary after D-1 / when cookies unavailable | Phase 3 real-time |
 | D-7 | Identity linking policy (§17.1) | **ADOPTED** | Silent email-match linking is forbidden; provider login returns `LinkConfirmationRequired`; linking requires an authenticated session or explicit re-authentication | Complete for implemented Google flow |
 | D-8 | Write architecture (§10.4) | **OPEN** | sidecar vs rw mount with path module vs per-op exec | Phase 3 write features |

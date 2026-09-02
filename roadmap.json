@@ -68,6 +68,20 @@
       ]
     },
     {
+      "id": "identity-future",
+      "label": "Future Identity / Onboarding",
+      "name": "Optional and Deferred Follow-ons",
+      "status": "future",
+      "description": "Identity and onboarding follow-ons that remain outside the completed Phase 1.5 core scope.",
+      "items": [
+        { "text": "[Optional] GitHub OAuth", "done": false },
+        { "text": "[Optional] Invitation and alternate registration modes", "done": false },
+        { "text": "[Optional] Magic-link authentication when SMTP is deliberately enabled", "done": false },
+        { "text": "[Deferred] Microsoft Minecraft account linking", "done": false },
+        { "text": "[Deferred] Offline player UUID linking", "done": false }
+      ]
+    },
+    {
       "id": "compatibility",
       "label": "Future Compatibility",
       "name": "Hosted Browser Compatibility",
