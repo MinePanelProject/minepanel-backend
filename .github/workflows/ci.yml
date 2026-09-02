@@ -12,7 +12,7 @@ on:
       - .github/FUNDING.yml
       - .vscode/**
   push:
-    branches: [master, foundation/stable-v1-hardening]
+    branches: [master]
     tags: ['v*']
     paths-ignore:
       - README.md
@@ -270,7 +270,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [test, migration, e2e, image]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/foundation/stable-v1-hardening' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
     services:
       postgres:
         image: postgres:16-alpine

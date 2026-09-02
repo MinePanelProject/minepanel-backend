@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-08-27",
+  "updatedAt": "2026-09-02",
   "phases": [
     {
       "id": "1",
@@ -143,8 +143,9 @@
       "items": [
         { "text": "Complete and freeze the final NestJS feature baseline", "done": false },
         { "text": "Document deferred functionality and synchronize all docs", "done": false },
-        { "text": "Establish stable API/error contracts and black-box HTTP/WS conformance", "done": false },
-        { "text": "Add trusted real-Docker lifecycle coverage", "done": false },
+        { "text": "Establish stable API/error contracts", "done": true },
+        { "text": "Establish black-box HTTP/WS conformance", "done": false },
+        { "text": "Add trusted real-Docker lifecycle coverage", "done": true },
         { "text": "Verify Elysia 2 ecosystem reliability on the selected Bun runtime", "done": false },
         { "text": "Port with route, status, body, auth, cookie, DB, Docker, and WS parity", "done": false }
       ]
