@@ -163,7 +163,7 @@ Registration defaults to `ACTIVE` unless `REQUIRE_ADMIN_APPROVAL=true`, in which
 
 ## Minecraft Account Linking
 
-Minecraft account linking is **not implemented**. The schema contains `minecraftUUID`, `minecraftName`, and `minecraftVerified` fields, but no endpoint or service currently writes them. Microsoft OAuth linking and offline UUID linking remain optional future onboarding work; they are not prerequisites for the current server-access implementation.
+Minecraft account linking is **not implemented**. The schema contains `minecraftUUID`, `minecraftName`, and `minecraftVerified` fields, but no endpoint or service currently writes them. Microsoft Minecraft account linking and offline UUID linking remain deferred future onboarding work; they are not prerequisites for the current server-access implementation.
 
 The future player-management phase may consume linked identities for whitelist automation, but it must define the provider, verification, unlinking, and offline-mode rules before adding an endpoint.
 

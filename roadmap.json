@@ -37,9 +37,9 @@
       "label": "Foundation / Next",
       "name": "Stable-v1 Hardening",
       "status": "completed",
-      "description": "Stable-v1 hardening is implemented and gated by unit, build, migration, e2e, and trusted real-Docker lifecycle checks. The conditional hosted-browser PKCE fallback remains future work.",
+      "description": "Stable-v1 hardening is implemented and gated by unit, build, migration, e2e, and trusted real-Docker lifecycle checks. Its required seven-item scope is complete; hosted-browser compatibility expansion remains conditional future work.",
       "progress": 100,
-      "progressLabel": "7 of 8 items complete; PKCE fallback deferred",
+      "progressLabel": "100% complete (7/7 required items)",
       "items": [
         { "text": "Stable API error envelope, machine codes, and request IDs", "done": true },
         { "text": "Resolve password semantics and bcrypt UTF-8 byte limits", "done": true },
@@ -47,8 +47,7 @@
         { "text": "Progressive login-abuse throttling using account + source context", "done": true },
         { "text": "Minecraft CPU quota and PIDs limit", "done": true },
         { "text": "Reproducible Minecraft image strategy", "done": true },
-        { "text": "Trusted real-Docker lifecycle CI", "done": true },
-        { "text": "Hosted-browser PKCE fallback if required", "done": false }
+        { "text": "Trusted real-Docker lifecycle CI", "done": true }
       ]
     },
     {
@@ -65,12 +64,17 @@
         { "text": "Server visibility: OPEN / REQUEST / PRIVATE", "done": true },
         { "text": "Access request and approval workflow", "done": true },
         { "text": "Requestable server discovery", "done": true },
-        { "text": "MOD granular permissions (PBAC per server)", "done": true },
-        { "text": "[Optional] GitHub OAuth", "done": false },
-        { "text": "[Optional] Invitation and alternate registration modes", "done": false },
-        { "text": "[Optional] Magic-link authentication when SMTP is enabled", "done": false },
-        { "text": "[Deferred] Microsoft Minecraft account linking", "done": false },
-        { "text": "[Deferred] Offline player UUID linking", "done": false }
+        { "text": "MOD granular permissions (PBAC per server)", "done": true }
+      ]
+    },
+    {
+      "id": "compatibility",
+      "label": "Future Compatibility",
+      "name": "Hosted Browser Compatibility",
+      "status": "future",
+      "description": "Conditional compatibility expansion only if product requirements move beyond the currently supported secure-context, partitioned-cookie, and Web Locks browser contract.",
+      "items": [
+        { "text": "Reassess and, if required, design hosted-browser PKCE fallback", "done": false }
       ]
     },
     {

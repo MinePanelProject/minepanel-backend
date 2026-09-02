@@ -122,5 +122,6 @@ Production issuance and clearing use the same explicit attributes: `HttpOnly; Se
 
 `httpOnly: true` — JavaScript cannot read the cookie (XSS protection).
 `secure: true` in production — cookie only sent over HTTPS.
-`sameSite: none` plus `Partitioned` — CHIPS is the primary hosted cross-origin mechanism on supported browsers.
-The PKCE authorization-code flow with a memory-only bearer access token is the reserved fallback and is not implemented; this backend does not claim complete hosted-browser compatibility.
+`sameSite: none` plus `Partitioned` — CHIPS is the adopted hosted cross-origin mechanism for the supported browser contract. The hosted PWA also uses Web Locks where required to coordinate refresh authority across tabs.
+
+The supported hosted dashboard contract is a public HTTPS PWA used with browser environments that provide the required secure-context, partitioned-cookie, and Web Locks behavior. MinePanel does not claim universal, legacy-browser, arbitrary embedded-WebView, or private/LAN-origin compatibility. PKCE is not implemented, does not belong to Stable-v1, and remains only a conditional future compatibility option if those requirements expand; no JavaScript-readable session token or bearer-session fallback is introduced.
