@@ -15,6 +15,7 @@ import {
 } from './google-token.service';
 import { PreAuthGuard } from './guards/pre-auth.guard';
 import { IdentityService } from './identity.service';
+import { LoginAbuseService } from './login-abuse.service';
 import { OAuthChallengeService } from './oauth-challenge.service';
 import { parseRefreshTokenTtl, REFRESH_TOKEN_TTL } from './refresh-token-ttl';
 
@@ -55,6 +56,7 @@ import { parseRefreshTokenTtl, REFRESH_TOKEN_TTL } from './refresh-token-ttl';
     GoogleTokenService,
     IdentityService,
     OAuthChallengeService,
+    LoginAbuseService,
   ],
   exports: [AccessTokenService, IdentityService, OAuthChallengeService],
 })

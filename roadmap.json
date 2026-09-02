@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-08-27",
+  "updatedAt": "2026-09-02",
   "phases": [
     {
       "id": "1",
@@ -36,18 +36,18 @@
       "id": "next",
       "label": "Foundation / Next",
       "name": "Stable-v1 Hardening",
-      "status": "planned",
-      "description": "With documentation authority reconciled, stabilize the API protocol, close resource-isolation gaps, and add trusted lifecycle coverage before stable v1.",
-      "progress": 0,
-      "progressLabel": "Next milestone",
+      "status": "completed",
+      "description": "Stable-v1 hardening is implemented and gated by unit, build, migration, e2e, and trusted real-Docker lifecycle checks. The conditional hosted-browser PKCE fallback remains future work.",
+      "progress": 100,
+      "progressLabel": "7 of 8 items complete; PKCE fallback deferred",
       "items": [
-        { "text": "Stable API error envelope, machine codes, and request IDs", "done": false },
-        { "text": "Resolve password semantics and bcrypt UTF-8 byte limits", "done": false },
-        { "text": "Delete or wire dead login-throttle environment variables", "done": false },
-        { "text": "Progressive login-abuse throttling using account + source context", "done": false },
-        { "text": "Minecraft CPU quota and PIDs limit", "done": false },
-        { "text": "Reproducible Minecraft image strategy", "done": false },
-        { "text": "Trusted real-Docker lifecycle CI", "done": false },
+        { "text": "Stable API error envelope, machine codes, and request IDs", "done": true },
+        { "text": "Resolve password semantics and bcrypt UTF-8 byte limits", "done": true },
+        { "text": "Delete or wire dead login-throttle environment variables", "done": true },
+        { "text": "Progressive login-abuse throttling using account + source context", "done": true },
+        { "text": "Minecraft CPU quota and PIDs limit", "done": true },
+        { "text": "Reproducible Minecraft image strategy", "done": true },
+        { "text": "Trusted real-Docker lifecycle CI", "done": true },
         { "text": "Hosted-browser PKCE fallback if required", "done": false }
       ]
     },
@@ -143,8 +143,9 @@
       "items": [
         { "text": "Complete and freeze the final NestJS feature baseline", "done": false },
         { "text": "Document deferred functionality and synchronize all docs", "done": false },
-        { "text": "Establish stable API/error contracts and black-box HTTP/WS conformance", "done": false },
-        { "text": "Add trusted real-Docker lifecycle coverage", "done": false },
+        { "text": "Establish stable API/error contracts", "done": true },
+        { "text": "Establish black-box HTTP/WS conformance", "done": false },
+        { "text": "Add trusted real-Docker lifecycle coverage", "done": true },
         { "text": "Verify Elysia 2 ecosystem reliability on the selected Bun runtime", "done": false },
         { "text": "Port with route, status, body, auth, cookie, DB, Docker, and WS parity", "done": false }
       ]

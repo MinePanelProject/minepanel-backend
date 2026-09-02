@@ -20,8 +20,8 @@ Normative language, defined once and used consistently:
 - **SHOULD** — a strong recommendation; a valid exception must be justified in the code or docs.
 - **MAY** — optional behavior; no default obligation either way.
 
-- **Status: release candidate, not "production-ready".** Phase 1, the per-server authorization spine, requestable-server discovery, transactional setup bootstrap, protocol-1 capability discovery, and challenge-bound Google OAuth are implemented. Hosted-auth compatibility still requires the reserved PKCE fallback, and the remaining release gates in §16 must be resolved before production-ready status.
-- **Last verified implementation state:** commit `f638031e737117264455132de0668c0cbb9528c4`, audited 2026-08-27. The audit baseline was clean before this documentation reconciliation.
+- **Status: stable-v1 hardening implemented.** Foundation / Next items B-NEXT-1 through B-NEXT-7 are implemented and tested; the conditional PKCE fallback remains future work and does not block this milestone.
+- **Last verified implementation state:** this branch's final commit and CI run are the release evidence for the hardening milestone.
 - **Version truth:** `package.json` says `1.0.0`; `PANEL_VERSION` defaults to `"1.0"`; the Swagger fallback is `"N/A"`; CI sets `PANEL_VERSION` to `1.0.0` in e2e. This inconsistency is tracked as backlog item B-P2-6.
 - **License:** the repository is MIT-licensed. `package.json` declares `"license": "MIT"` and `LICENSE` is present. `private: true` controls package publication and does not change the license.
 
@@ -52,7 +52,7 @@ Direct browser access from `https://app.minepanel.xyz` to LAN/private-network in
 
 **Development phases (canonical numbering — used consistently everywhere):**
 
-- **Foundation / Next:** stabilize the API error envelope and request IDs; resolve password semantics; remove dead environment configuration; add Minecraft CPU/PID isolation; make the Minecraft image reproducible; add trusted real-Docker lifecycle CI. `[ACCEPTED]`.
+- **Foundation / Next:** stable-v1 hardening is `[IMPLEMENTED]`: stable API errors/request IDs; explicit password byte semantics; dead login configuration removal; bounded progressive abuse protection; Minecraft CPU/PID isolation; reproducible image identity; and trusted real-Docker lifecycle coverage.
 - **Phase 1.5 — Identity / Onboarding:** Google OAuth, server visibility/access requests, requestable discovery, and MOD PBAC are `[IMPLEMENTED]`. Remaining GitHub OAuth, Minecraft/Microsoft linking, offline UUID linking, invitation/registration modes, and magic links are explicitly classified in §17.1; none is assumed mandatory for backend feature completion.
 - **Phase 2A — Platform foundations:** audit log, framework-neutral system-event model, and a scheduler only when first required by a real feature. `[PROPOSED]`.
 - **Phase 3 — Core operations:** RCON/console broker, real-time server events, backup/restore, scheduled tasks, controlled filesystem writes, file manager, player management, plugins/mods, and notifications. `[PROPOSED]`.
@@ -108,7 +108,7 @@ Compose services (`docker-compose.yml`):
 | `nestjs` | `$MINEPANEL_IMAGE` (default `ghcr.io/minepanelproject/minepanel-backend:latest`) | `pull_policy: missing`; `expose: 3000` only; `user: root`; `security_opt: no-new-privileges`; healthcheck `curl /health`; depends on healthy postgres and completed `minecraft-image` prefetch |
 | `postgres` | `postgres:16-alpine` | volume `postgres-data`; healthcheck `pg_isready`; no published ports |
 | `caddy` | `caddy:2-alpine` | publishes 80/443 (+443/udp); auto-HTTPS from `$DOMAIN`; proxies to `nestjs:3000`; serves `./Caddyfile` |
-| `minecraft-image` | `itzg/minecraft-server:latest` | one-shot prefetch (`entrypoint: ["/bin/true"]`) so the first server create does not stall on a pull |
+| `minecraft-image` | `${MINECRAFT_IMAGE}` (required; `.env.example` pins a verified multi-arch digest) | one-shot prefetch (`entrypoint: ["/bin/true"]`) using the exact identity passed to managed containers |
 
 The backend image release contract is explicit: pushes to `master` publish
 `edge` and an immutable `sha-<full-40-character-commit-sha>` tag, never
@@ -127,10 +127,9 @@ current revision, so `edge` is the supported pre-stable channel.
 5. **MC containers.** Untrusted, modded game code. They run unprivileged, memory-capped, with no added Linux capabilities, on a bridge network. Known gap (backlog B-P2-4): the `mc` bridge allows unrestricted container-to-container traffic; per-server networks are `[PROPOSED]`.
 6. **Data volume.** Host directory owned via daemon binds; itzg entrypoint chowns to its runtime user at container start; the backend reads it `:ro`.
 
-### 4.3 Hardening backlog `[ACCEPTED]`
+### 4.3 Hardening backlog `[IMPLEMENTED]`
 
-- **B-NEXT-5:** add `NanoCpus` CPU quota and `PidsLimit` to MC container `HostConfig` (one MC server can currently starve backend/postgres; fork-bomb surface).
-- **B-NEXT-6:** pin the itzg image with an explicit tag or digest strategy and record resolved identity where needed.
+- **B-NEXT-1 through B-NEXT-7:** stable-v1 API errors/request IDs, password semantics, throttle configuration, progressive login abuse protection, CPU/PID isolation, reproducible Minecraft image identity, and trusted lifecycle coverage are implemented below and gated in CI.
 - **B-P2-4:** document/restrict inter-container traffic on the `mc` network; per-server networks remain `[PROPOSED]`.
 - **B-P2-5:** run the backend as a non-root user with `group_add` for the Docker group instead of `user: root`.
 - **B-P2-6:** consider `cap_drop: [ALL]` + `read_only: true` + `tmpfs: /tmp` for the backend container.
@@ -527,21 +526,29 @@ No runtime deletion behavior or HTTP status changes are implied by this manual p
 
 ## 12. Error contract
 
-### 12.1 Reality today `[IMPLEMENTED]` — not uniform
+### 12.1 Stable-v1 API errors `[IMPLEMENTED]`
 
-Four shapes coexist: NestJS default for `HttpException`; `{ message }` for PostgreSQL errors through `DbExceptionFilter` (23505 → 409, 23503 → 400, 42P01/42703 → 500, other → 500); structured `{ error: '…' }` payloads on selected 401/403 paths; and `{ statusCode, error, message, details }` for 422 resource errors. Refresh token failures are normalized to 401 machine codes; other unhandled exceptions still use Nest's generic 500 response. No request ID is generated today.
+Every HTTP request receives a server-trusted correlation ID. A bounded safe
+`X-Request-Id` value is accepted; malformed or oversized values are replaced
+with a UUID. The response always echoes the chosen ID in `X-Request-Id`.
 
-### 12.2 Stable-v1 envelope and request IDs `[ACCEPTED]` — Foundation / Next
+Application errors use one envelope:
 
 ```json
-{ "statusCode": 403, "error": "ACCOUNT_PENDING", "message": "human text", "details": {}, "requestId": "uuid" }
+{ "statusCode": 403, "error": "AccountPending", "message": "human text", "details": {}, "requestId": "uuid" }
 ```
 
-- `error` is a stable machine code; clients switch on `error`, never `message`.
-- `details` is optional structured context; `requestId` is echoed as `X-Request-Id` and included in structured logs.
-- Normalize validation, authentication/authorization, not-found, conflict, domain/resource, dependency, and generic errors without leaking internals.
-- Implement this as an API/protocol quality task in the current Nest backend. It is not an Elysia migration task.
+`error` is a stable machine code and clients MUST NOT switch on `message`.
+Validation errors use `ValidationError` with bounded message details.
+Known domain codes (including auth/session and `InsufficientResources`) are
+preserved; generic Nest, dependency, database, rate-limit, not-found,
+conflict, and unexpected errors map to stable status-based codes. Internal
+exception details, SQL errors, Docker errors, stack traces, tokens, secrets,
+and filesystem paths are never returned.
 
+The request middleware logs a structured `http.request` event and the global
+filter logs a structured `http.error` event; both include the request ID.
+Successful response bodies remain unchanged.
 ---
 
 ## 13. Configuration contract
@@ -552,9 +559,15 @@ Four shapes coexist: NestJS default for `HttpException`; `{ message }` for Postg
 
 ### 13.2 Environment variables — consumed vs declared
 
-Consumed `[IMPLEMENTED]`: `DATABASE_URL`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN` (single TTL source for refresh JWT exp, DB `expiresAt`, cookie maxAge — B-P1-5), `GOOGLE_CLIENT_ID` (enables `googleOAuth` capability + issuance), `ENCRYPTION_KEY`, `DOCKER_SOCKET`, `DOCKER_NETWORK`, `MC_DATA_PATH`, `MC_DATA_BIND_SOURCE`, `MC_PORT_MIN`, `MC_PORT_MAX`, `MIN_FREE_DISK_MB`, `MAX_MEMORY_RATIO`, `STOP_WARN_SECONDS`, `REQUIRE_ADMIN_APPROVAL`, `CORS_ORIGIN`, `PORT`, `PANEL_NAME`, `PANEL_DESCRIPTION`, `PANEL_VERSION`, `NODE_ENV` (cookie/preflight behavior).
+Consumed `[IMPLEMENTED]`: `DATABASE_URL`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN` (single TTL source for refresh JWT exp, DB `expiresAt`, cookie maxAge — B-P1-5), `GOOGLE_CLIENT_ID` (enables `googleOAuth` capability + issuance), `ENCRYPTION_KEY`, `DOCKER_SOCKET`, `DOCKER_NETWORK`, `MINECRAFT_IMAGE`, `MC_CPU_NANO_CPUS`, `MC_PIDS_LIMIT`, `MC_DATA_PATH`, `MC_DATA_BIND_SOURCE`, `MC_PORT_MIN`, `MC_PORT_MAX`, `MIN_FREE_DISK_MB`, `MAX_MEMORY_RATIO`, `STOP_WARN_SECONDS`, `REQUIRE_ADMIN_APPROVAL`, `CORS_ORIGIN`, `PORT`, `PANEL_NAME`, `PANEL_DESCRIPTION`, `PANEL_VERSION`, `NODE_ENV` (cookie/preflight behavior).
 
-Declared but **never read** `[CONTRADICTED]`: `LOGIN_THROTTLE_LIMIT` and `LOGIN_THROTTLE_TTL_MS` are dead configuration; `SMTP_*` and `MICROSOFT_*` are reserved for future features. `DOMAIN` is consumed by Caddy only. `PANEL_ASSETS_PATH` is not mounted or consumed; panel/logo endpoints are future work. `MC_DATA_PATH_HOST` is Compose-only and required by `${MC_DATA_PATH_HOST:?}`. Foundation / Next includes deleting or wiring the two dead login-throttle variables; no current implementation should infer behavior from them.
+`LOGIN_THROTTLE_LIMIT` and `LOGIN_THROTTLE_TTL_MS` were removed. Login route
+throttling remains explicit in code: Nest provides coarse source throttling,
+while `LoginAbuseService` adds bounded account/source progressive protection.
+`SMTP_*` and `MICROSOFT_*` remain reserved for future features. `DOMAIN` is
+consumed by Caddy only. `PANEL_ASSETS_PATH` is not mounted or consumed;
+panel/logo endpoints are future work. `MC_DATA_PATH_HOST` is Compose-only and
+required by `${MC_DATA_PATH_HOST:?}`.
 
 ### 13.3 Reverse-proxy contract `[IMPLEMENTED]`
 
@@ -566,27 +579,37 @@ The only inbound path is Caddy on the `app` network; `trust proxy = 1` is set (`
 
 ### 14.1 Unit tests `[IMPLEMENTED]`
 
-The audited repository contains 40 colocated Jest suites and 729 passing unit tests at the revision/date in §2. `DRIZZLE` and `DOCKERODE` tokens are mocked; unit tests do not touch live PostgreSQL or Docker and do not read live secrets. Coverage spans auth, guards, setup, servers, Docker, gateway, admin, and DTO validation.
+Unit suites remain colocated and use mocked `DRIZZLE`/`DOCKERODE` providers.
+They cover the stable error envelope/request IDs, UTF-8 password boundaries,
+progressive login abuse, CPU/PID/image HostConfig guardrails, and existing
+auth, setup, lifecycle, gateway, admin, and DTO behavior.
 
 ### 14.2 e2e `[IMPLEMENTED]` — real boundary
 
-The repository contains 13 e2e suites with 91 test cases. They run against a **live loopback PostgreSQL** (`TEST_DATABASE_URL`; CI provisions `postgres:16`) with Docker mocked. No e2e suite creates a real Minecraft container. The CI `e2e` job applies migrations and runs `test:e2e`; the only daemon-touching check is the release-only `publish` smoke.
+PostgreSQL e2e suites run against live loopback PostgreSQL with Docker mocked.
+The release-gated `trusted-lifecycle` job additionally runs
+`scripts/docker-lifecycle-smoke.mjs` against a real Docker daemon.
 
 
 | Job | Runs | Gate |
 |-----|------|------|
-| `test` | biome lint:ci, build, jest in-band | PR + master |
-| `migration` | full `db:migrate` chain on a fresh Postgres | PR + master |
-| `e2e` | migrations + e2e on live PG (no daemon) | PR + master |
-| `image` | build amd64, degraded-mode smoke (no socket), migration-before-listen check, image-content assertions, bcrypt load, Trivy CRITICAL + fixed-HIGH | PR + master |
-| `publish` | trusted daemon smoke, multi-arch (amd64/arm64) GHCR push with SBOM/provenance; master publishes `edge` + full SHA, `vX.Y.Z` publishes exact/minor/major/`latest` + full SHA | master push / `v*` tags |
+| `test` | biome lint:ci, build, anti-slop tests, TOTP smoke, Jest in-band | PR + hardening branch + master |
+| `migration` | full `db:migrate` chain on a fresh Postgres | PR + hardening branch + master |
+| `e2e` | migrations + e2e on live PG (no daemon) | PR + hardening branch + master |
+| `image` | build amd64, degraded-mode smoke, image-content assertions, bcrypt load, Trivy CRITICAL + fixed-HIGH | PR + hardening branch + master |
+| `trusted-lifecycle` | build + migration + real create/run/RCON-stop/delete/data-retention lifecycle | hardening branch + master + release tags |
+| `publish` | trusted smoke, multi-arch (amd64/arm64) GHCR push with SBOM/provenance | master push / `v*` tags |
 
-The audited local unit run passed (40 suites, 729 tests). The repository CI workflow defines the remaining migration, e2e, image, and trusted publish gates; no claim is made that the full CI workflow or a real Docker lifecycle run was executed during this documentation audit.
+The trusted lifecycle uses an isolated temporary data root, a unique bridge
+network, strong cleanup assertions, and proves retained data before cleanup.
 
-### 14.4 Missing coverage `[ACCEPTED]` — backlog
+### 14.4 Coverage status `[IMPLEMENTED]`
 
-- Setup race and throttling have live-Postgres coverage in `test/setup-bootstrap.e2e-spec.ts`; refresh rotation concurrency is covered by `test/refresh-rotation.e2e-spec.ts` (exactly-one-winner). Retained-data deletion semantics remain a coverage gap.
-- No **real Docker lifecycle integration test** (container create → run → graceful stop → delete → data retention). Foundation / Next tracks release-only real-daemon coverage before tagging.
+Setup race and throttling retain live-Postgres coverage; refresh rotation
+concurrency retains exactly-one-winner coverage. The trusted lifecycle now
+covers real container configuration, readiness, graceful RCON stop, removal,
+and retained data semantics.
+
 
 ---
 
@@ -597,6 +620,7 @@ Verified against commit `f638031e737117264455132de0668c0cbb9528c4` on 2026-08-27
 | Domain | Feature | Status | Evidence |
 |--------|---------|--------|----------|
 | Auth | register / login (timing-equalized, dummy hash) | ✓ | `auth.service.ts`, unit+e2e |
+| Auth | progressive account/source login abuse throttling | ✓ | `login-abuse.service.ts`, unit |
 | Auth | HttpOnly cookie sessions (access 15m / refresh 7d) | ✓ | `auth.controller.ts`, e2e |
 | Auth | refresh rotation (atomic, jti-keyed, exactly-one-winner) | ✓ | `auth.service.ts`, e2e concurrency |
 | Auth | Google OAuth (challenge + local JWKS + session reuse) | ✓ | `google-token.service.ts`, `google-oauth.service.ts`, e2e |
@@ -617,15 +641,15 @@ Verified against commit `f638031e737117264455132de0668c0cbb9528c4` on 2026-08-27
 | Servers | delete: container+row, data retained (202 sync) | ✓ | `servers.service.ts:465-494` |
 | Access | request/approve/revoke, OPEN/REQUEST/PRIVATE, non-disclosure | ✓ | `server-access.service.ts`, unit |
 | Docker | socket-only client, degraded mode, guardrail container spec | ✓ | unit |
+| Docker | memory/CPU/PID limits, immutable image identity, retained-data lifecycle | ✓ | `docker.service.ts`, trusted lifecycle job |
 | Docker | host info, statfs disk, free mem | ✓ | unit |
 | Gateway | WS auth (cookie/event), ADMIN metrics room, `system.stats` 10s | ✓ | `events.gateway.ts`, e2e |
 | Common | CSRF origin guard, exact-origin CORS, helmet, ValidationPipe | ✓ | unit |
-| Errors | PG-code filter (23505/23503/42P01/42703) | ✓ | unit |
-| Deploy | compose (nestjs/postgres/caddy/prefetch), preflight, boot migrations | ✓ | image+smoke jobs |
-| CI | lint/build/unit/migration/e2e/image/publish, Trivy, multi-arch | ✓ | configured CI gates |
+| Errors | stable envelope, request IDs, validation/PG/domain normalization | ✓ | common filter and middleware unit tests |
+| Deploy | compose image prefetch, resource config, preflight, boot migrations | ✓ | deployment contract and trusted lifecycle jobs |
 | API | protocol-1 capability discovery with no-store | ✓ | `app.controller.ts`, unit |
 
-**Not implemented at this audit revision** (older SPECs claimed or implied them as current): `@nestjs/schedule` cron, `nestjs-pino` logging, `/users` controller, `/versions`, `PATCH /servers/:id` (config), `PATCH /servers/:id/version`, server/panel icons, `/panel/logo`, `/system/stats` REST, GitHub OAuth, magic links, Minecraft linking endpoints, invitations, API keys, webhooks, audit log, system events, backups, scheduled tasks, notifications, plugins, file manager, player management, proxies, Bedrock, `Ban` table, and pagination beyond `GET /servers`.
+**Deferred or not implemented:** `@nestjs/schedule` cron, `nestjs-pino` logging, `/users` controller, `/versions`, `PATCH /servers/:id` (config), `PATCH /servers/:id/version`, server/panel icons, `/panel/logo`, `/system/stats` REST, GitHub OAuth, magic links, Minecraft linking endpoints, invitations, API keys, webhooks, audit log, system events, backups, scheduled tasks, notifications, plugins, file manager, player management, proxies, Bedrock, `Ban` table, and pagination beyond `GET /servers`.
 
 ---
 
@@ -633,16 +657,16 @@ Verified against commit `f638031e737117264455132de0668c0cbb9528c4` on 2026-08-27
 
 This roadmap is reconciled against the audited implementation revision in §2. Items are classified by delivery priority, not by framework preference. The current NestJS backend remains the implementation target until its intended feature set is complete.
 
-### Foundation / Next — stable-v1 and release hardening
+### Foundation / Next — stable-v1 and release hardening `[IMPLEMENTED]`
 
-- **B-NEXT-1 Stable API error contract:** implement machine-readable error codes, one consistent response envelope, validation normalization, request IDs, `X-Request-Id`, and correlated structured logs. This is an API/protocol quality task in NestJS, not an Elysia migration task.
-- **B-NEXT-2 Password semantics decision:** resolve the bcrypt 72-UTF-8-byte limit against the current 128-character DTO limit; implement the selected migration-safe policy before stable v1.
-- **B-NEXT-3 Dead environment cleanup:** delete or wire `LOGIN_THROTTLE_LIMIT` and `LOGIN_THROTTLE_TTL_MS`; do not let declared-but-unused configuration imply runtime behavior.
-- **B-NEXT-4 Progressive login-abuse protection:** design throttling that combines normalized account identity with source/network context and avoids hard-locking an account solely because an attacker knows its username.
-- **B-NEXT-5 Minecraft resource isolation:** add CPU quota (`NanoCpus` or equivalent) and `PidsLimit` to managed containers.
-- **B-NEXT-6 Image reproducibility:** replace blind `itzg/minecraft-server:latest` reliance with an explicit tag or digest strategy and record the resolved image identity where needed.
-- **B-NEXT-7 Trusted Docker lifecycle coverage:** add release-gated real-daemon coverage for create → run → graceful stop → delete, including retained data assertions.
-- **B-NEXT-8 Hosted-browser compatibility:** implement and verify the reserved PKCE authorization-code fallback if complete hosted cross-origin browser support remains a release requirement. Same-origin deployments are unaffected.
+- **B-NEXT-1:** stable error envelope, validation normalization, request IDs, `X-Request-Id`, and structured correlation logs.
+- **B-NEXT-2:** strict 72 UTF-8-byte password policy across registration, login, setup, recovery, and password changes; existing bcrypt hashes remain usable when their credential is within policy.
+- **B-NEXT-3:** dead `LOGIN_THROTTLE_LIMIT` and `LOGIN_THROTTLE_TTL_MS` variables removed.
+- **B-NEXT-4:** bounded progressive account/source abuse protection layered with coarse source throttling; account-wide hard lockout is avoided.
+- **B-NEXT-5:** operator-configured global `NanoCpus` and `PidsLimit` guardrails on managed containers.
+- **B-NEXT-6:** one required `MINECRAFT_IMAGE` identity shared by Compose prefetch and backend-created containers; the shipped default is a verified amd64/arm64 digest.
+- **B-NEXT-7:** trusted CI runs create → ready → graceful RCON stop → delete and proves retained data.
+- **B-NEXT-8:** conditional hosted-browser PKCE fallback remains future work and is not implemented.
 
 ### Phase 1.5 — Identity / Onboarding
 
@@ -710,7 +734,10 @@ Later consumers of Phase 2A: API keys, outbound webhooks, external integrations,
 
 ### 17.5 Later product surfaces `[PROPOSED]`
 
-Creation presets/wizard, mod-loader/mod selection, Velocity/networking, Geyser/Bedrock, mobile/player surfaces, and other deferred product work remain later milestones. No detailed design is normative until its product and security decisions are made.
+Creation presets/wizard, mod-loader/mod selection, Velocity/networking,
+Geyser/Bedrock, mobile/player surfaces, and other deferred product work
+remain later milestones. No detailed design is normative until its product
+and security decisions are made.
 
 ### 17.6 Backend 2.0 — Elysia 2 `[PROPOSED — FUTURE]`
 
@@ -732,11 +759,14 @@ This is a post-feature-completion migration milestone, not current preparation w
 
 ## 18. Security requirements for future features
 
-### 18.1 Password hashing `[DECISION REQUIRED: D-9]` — Foundation / Next
+### 18.1 Password hashing `[IMPLEMENTED — D-9 ADOPTED]` — Foundation / Next
 
-- **Reality:** passwords are hashed with bcrypt cost 10; DTO validation allows up to 128 JavaScript characters, while bcrypt accepts only the first 72 UTF-8 bytes.
-- **Required decision:** choose and document a migration-safe policy that measures UTF-8 bytes and never silently truncates or treats two passwords sharing a 72-byte prefix as distinct.
-- The implementation choice (pepper pre-hash, strict byte limit, or a deliberately planned Argon2id migration) remains open. This is a Foundation / Next hardening item, not a reason to change framework now.
+Passwords continue to use bcrypt cost 10. Every password entry point validates
+the UTF-8 byte length at most 72 before hashing or credential acceptance; input
+is never truncated. This keeps existing bcrypt hashes usable for credentials
+within the policy and rejects ambiguous over-limit passwords rather than
+creating two interpretations of the same hash prefix. The minimum remains
+eight JavaScript characters at the DTO boundary.
 
 ### 18.2 File-manager path safety — normative algorithm (accepted, applies to any data-tree file op incl. deletion)
 
@@ -771,7 +801,7 @@ Running server: `save-off` → `save-all flush` → snapshot copy → `save-on` 
 | D-6 | WS auth primary path (§8.6) | **OPEN** | Cookie vs ticket primary after D-1 / when cookies unavailable | Phase 3 real-time |
 | D-7 | Identity linking policy (§17.1) | **ADOPTED** | Silent email-match linking is forbidden; provider login returns `LinkConfirmationRequired`; linking requires an authenticated session or explicit re-authentication | Complete for implemented Google flow |
 | D-8 | Write architecture (§10.4) | **OPEN** | sidecar vs rw mount with path module vs per-op exec | Phase 3 write features |
-| D-9 | Password hashing (§18.1) | **OPEN** | Pepper pre-hash vs byte-limit vs Argon2id; current bcrypt 72-byte behavior must be resolved | Foundation / Next |
+| D-9 | Password hashing (§18.1) | **ADOPTED** | Keep bcrypt cost 10; reject passwords over 72 UTF-8 bytes at every entry point; never truncate; existing in-policy bcrypt hashes remain compatible | Stable v1 |
 | D-10 | Identity normalization (§8.8) | **ADOPTED** | canonical lowercase at write: trim + lowercase username at registration and provider-generated usernames; login keeps lowercasing; migration adds case-collision preflight (fail loudly on `Bob`+`bob` pairs, manual resolution, no silent data loss) | Stable v1 |
 | D-11 | License (B-P3-10) | **ADOPTED** | MIT — LICENSE file committed (b5df536); reconcile package.json/SPEC/README/PWA metadata; no license-type change | Any public release |
 
@@ -807,10 +837,10 @@ Password storage:
 The previous SPEC.md (pre-rewrite) was an ambitious design document that conflated three things. This revision separates them (§1 legend). Notable corrections:
 
 1. **Never existed** (claimed as current in the previous document): `nestjs-pino` logging (actual: `ConsoleLogger`), `@nestjs/schedule` cron (absent), `pendingDeleteAt` + deletion cleanup, `discordWebhook`, future-model tables, `/users` endpoints, `/versions`, version-update and icon endpoints, `/panel/logo`, `/system/stats` REST, GitHub OAuth, magic links, Minecraft-linking endpoints, strict/standard/relaxed rate-limit tiers, per-username brute-force counter, refresh session metadata, 24h sliding refresh renewal, rootless-Docker default, `${XDG_RUNTIME_DIR}` Compose default, and the SvelteKit frontend.
-2. **Implemented differently than described**: refresh rotates on every use (not within 24h of expiry); production `sameSite` is `none` (docs claimed `lax`); PKs are `randomUUID` (not cuid); ban deletes sessions (spec claimed it does not); 422 error code is `InsufficientResources` (not per-resource codes); `DbExceptionFilter` emits `{message}` only (spec claimed NestJS default shape); delete returns 202 for a synchronous op; RCON is `docker exec rcon-cli`, not TCP RCON; the `mc-{id}` container name (not `minepanel-mc-{id}`).
+2. **Implemented differently than described**: refresh rotates on every use (not within 24h of expiry); production `sameSite` is `none` (docs claimed `lax`); PKs are `randomUUID` (not cuid); ban deletes sessions (spec claimed it does not); 422 error code is `InsufficientResources` (not per-resource codes); the former `DbExceptionFilter` wording described a `{message}`-only response, while the stable-v1 implementation now emits `{statusCode, error, message, details, requestId}`; delete returns 202 for a synchronous op; RCON is `docker exec rcon-cli`, not TCP RCON; the `mc-{id}` container name (not `minepanel-mc-{id}`).
 3. **Unsafe examples removed**: `startsWith(serverDir)` path check (§18.2), "128 chars is safe with bcrypt" (§18.1), `SameSite=None; Secure` described as sufficient (§8.5), `tokeninfo` + "optional audience check" OAuth flow (§17.1), silent email-match linking (§17.1), "production-ready"/"100% complete" claims (§2).
 4. **Product truth**: frontend stack corrected to React 19 + Vite 7 + Tailwind 4; version strings reconciled as inconsistent (B-P2-6). The repository is MIT-licensed (LICENSE file; D-11 adopted), and `unpublished` context in earlier drafts is obsolete — `package.json` declares `"license": "MIT"`.
 
 ## Appendix B — Validation note
 
-This specification was validated against commit `f638031e737117264455132de0668c0cbb9528c4` on 2026-08-27. The audit covered the canonical docs/config, schema and migrations, bootstrap and module composition, auth/identity/guards, admin and access-control paths, Docker and lifecycle services, gateway/adapters, controllers/DTOs, unit and e2e inventories, Compose, Dockerfile, and CI workflow. Local unit verification at this revision reported 40 suites and 729 tests passing; the repository contains 13 e2e suites with 91 test cases, which require the live PostgreSQL setup described in §14.2. No claim of a full CI or real-daemon lifecycle run is made here.
+This specification was validated on branch `foundation/stable-v1-hardening` after the stable-v1 hardening implementation. The audit covered the canonical docs/config, schema and migrations, bootstrap and module composition, auth/identity/guards, admin and access-control paths, Docker and lifecycle services, gateway/adapters, controllers/DTOs, unit and e2e inventories, Compose, Dockerfile, and CI workflow. Local verification passed with 44 unit suites and 756 tests, 13 live-PostgreSQL e2e suites and 91 tests, a fresh migration chain, a production build, and a real-Docker create → readiness → graceful stop → delete scenario with retained data. The pushed branch CI run remains the final release gate.

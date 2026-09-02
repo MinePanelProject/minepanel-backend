@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Inject,
   Injectable,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -27,6 +28,7 @@ import { EditUserDto } from './dto/editUser.dto';
 import { LoginUserDto } from './dto/login.dto';
 import { CreateUserDto } from './dto/register.dto';
 import { UpdatePasswordDTO } from './dto/updatePw.dto';
+import { LoginAbuseService, type LoginAttemptContext } from './login-abuse.service';
 import * as bcrypt from './password';
 import { createRefreshTokenId, hashRefreshTokenId } from './refresh-token-id';
 import { REFRESH_TOKEN_TTL, type RefreshTokenTtl } from './refresh-token-ttl';
@@ -198,6 +200,7 @@ export class AuthService {
     @Inject(DRIZZLE) private readonly db: AuthDatabase,
     private readonly configService: ConfigService,
     @Inject(REFRESH_TOKEN_TTL) private readonly refreshTokenTtl: RefreshTokenTtl,
+    @Optional() private readonly loginAbuseService?: LoginAbuseService,
   ) {
     const encryptionKey = this.configService.get<string>('ENCRYPTION_KEY');
     if (!encryptionKey || !/^[\da-f]{64}$/i.test(encryptionKey)) {
@@ -216,6 +219,7 @@ export class AuthService {
       throw new ConflictException('User already exists');
     }
 
+    bcrypt.assertPasswordWithinByteLimit(createUser.password);
     const passwordHash = await bcrypt.hash(createUser.password, 10);
     const requireApproval = this.configService.get<string>('REQUIRE_ADMIN_APPROVAL') === 'true';
 
@@ -229,7 +233,10 @@ export class AuthService {
     return true;
   }
 
-  async loginUser(loginUser: LoginUserDto): Promise<LoginResponse> {
+  async loginUser(loginUser: LoginUserDto, context?: LoginAttemptContext): Promise<LoginResponse> {
+    if (context && this.loginAbuseService) {
+      await this.loginAbuseService.assertAllowed(context);
+    }
     const user = await this.usersService.findByIdentifier(loginUser.identifier);
 
     // Always run exactly two bcrypt comparisons so timing does not reveal
@@ -245,7 +252,8 @@ export class AuthService {
         : DUMMY_PASSWORD_HASH;
     const tempMatches = await bcrypt.compare(loginUser.password, tempHash);
 
-    if (!user || (!primaryMatches && !tempMatches)) {
+    if (!bcrypt.isPasswordWithinByteLimit(loginUser.password) || !user) {
+      this.recordLoginFailure(context);
       throw new UnauthorizedException('Wrong credentials');
     }
 
@@ -256,6 +264,7 @@ export class AuthService {
     // the same generic failure as any other wrong password.
     if (user.mustChangePassword) {
       if (!tempMatches) {
+        this.recordLoginFailure(context);
         throw new UnauthorizedException('Wrong credentials');
       }
 
@@ -273,11 +282,14 @@ export class AuthService {
           { expiresIn: '5m' },
         );
 
+        this.recordLoginSuccess(context);
         return { requiresTwoFactor: true, preAuthToken };
       }
 
       await this.consumeTempPassword(user);
-      return this.issueSession(user, true);
+      const session = await this.issueSession(user, true);
+      this.recordLoginSuccess(context);
+      return session;
     }
 
     if (primaryMatches) {
@@ -287,12 +299,16 @@ export class AuthService {
           { expiresIn: '5m' },
         );
 
+        this.recordLoginSuccess(context);
         return { requiresTwoFactor: true, preAuthToken };
       }
 
-      return this.issueSession(user);
+      const session = await this.issueSession(user);
+      this.recordLoginSuccess(context);
+      return session;
     }
 
+    this.recordLoginFailure(context);
     throw new UnauthorizedException('Wrong credentials');
   }
 
@@ -651,6 +667,13 @@ export class AuthService {
     }
   }
 
+  private recordLoginFailure(context: LoginAttemptContext | undefined): void {
+    if (context && this.loginAbuseService) this.loginAbuseService.recordFailure(context);
+  }
+
+  private recordLoginSuccess(context: LoginAttemptContext | undefined): void {
+    if (context && this.loginAbuseService) this.loginAbuseService.recordSuccess(context);
+  }
   private assertLoginAllowed(user: User): void {
     if (user.status === 'PENDING') {
       throw new ForbiddenException({ error: 'AccountPending' });

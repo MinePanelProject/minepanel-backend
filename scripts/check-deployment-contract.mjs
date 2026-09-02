@@ -18,15 +18,17 @@ required(workflow, 'type=semver,pattern={{major}}.{{minor}},enable=${{ startsWit
 required(workflow, 'type=semver,pattern={{major}},enable=${{ startsWith(github.ref, \'refs/tags/v\') }}', 'workflow');
 required(workflow, 'type=raw,value=latest,enable=${{ startsWith(github.ref, \'refs/tags/v\') }}', 'workflow');
 forbidden(workflow, 'type=raw,value=latest,enable=${{ github.ref == \'refs/heads/master\' }}', 'workflow');
-required(workflow, 'needs: [test, migration, e2e, image]', 'publish gate');
+required(workflow, 'needs: [test, migration, e2e, image, trusted-lifecycle]', 'publish gate');
 required(workflow, 'platforms: linux/amd64,linux/arm64', 'publish platforms');
 required(workflow, 'provenance: mode=max', 'publish provenance');
 required(workflow, 'sbom: true', 'publish SBOM');
 required(workflow, 'docker run -d --name minepanel-release-smoke', 'trusted smoke');
+required(workflow, 'Run trusted real-Docker lifecycle', 'trusted lifecycle');
 
 const compose = read('docker-compose.yml');
 required(compose, 'image: ${MINEPANEL_IMAGE:-ghcr.io/minepanelproject/minepanel-backend:latest}', 'compose image');
 required(compose, 'pull_policy: missing', 'compose pull policy');
+required(compose, 'MINECRAFT_IMAGE:?Set MINECRAFT_IMAGE', 'minecraft image override');
 required(compose, 'MINEPANEL_IMAGE', 'compose override');
 
 for (const relativePath of ['README.md', 'docs/deployment.md']) {

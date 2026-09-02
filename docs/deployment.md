@@ -46,8 +46,8 @@ docker compose pull && docker compose up -d
 
 ## How it works
 
-- `docker compose pull` fetches the configured `MINEPANEL_IMAGE` before any container is recreated. The shipped Compose file uses `pull_policy: missing`: normal `up` reuses a locally cached image, while this explicit pull command refreshes it.
-- The default Compose image is `ghcr.io/minepanelproject/minepanel-backend:latest`; `latest` is reserved for a tagged stable release and is not published yet. Use `edge` or a pinned release/SHA tag as described below.
+- `docker compose pull` fetches the configured `MINEPANEL_IMAGE` and `MINECRAFT_IMAGE` before any container is recreated. Both services use `pull_policy: missing` semantics through Compose's explicit pull workflow.
+- `MINECRAFT_IMAGE` is required and is the single image identity for the prefetch helper and every managed Minecraft container. The template pins a verified amd64/arm64 manifest digest; changing it is an explicit operator decision.
 - The `nestjs` container runs as `root` (documented runtime) so it can read the local Docker socket.
 - Database migrations run inside the container **before** the API starts listening on port 3000.
 - The backend only exposes port 3000 internally; Caddy is the only service reachable from the internet on 80/443.
@@ -101,6 +101,9 @@ Key variables:
 | `DOCKER_NETWORK` | `minepanel_network` | Bridge network used for managed Minecraft containers. |
 | `MIN_FREE_DISK_MB` | `2048` | Minimum free disk required to create a new server. |
 | `MAX_MEMORY_RATIO` | `0.90` | Max fraction of host RAM allocatable to MC servers. |
+| `MINECRAFT_IMAGE` | pinned in `.env.example` | Required image identity shared by prefetch and managed containers; use a multi-arch tag plus digest for stable releases. |
+| `MC_CPU_NANO_CPUS` | `2000000000` | Global per-managed-container CPU quota in Docker NanoCPU units; bounded to 0.1-64 CPUs. |
+| `MC_PIDS_LIMIT` | `512` | Finite per-managed-container process limit; bounded to 128-32768. |
 | `STOP_WARN_SECONDS` | `30` | Seconds to warn players before a graceful shutdown. Integer `0`-`300`. |
 | `POSTGRES_VOLUME_NAME` | `minepanel-postgres-data` | Named volume for Postgres data. |
 | `CADDY_DATA_VOLUME_NAME` | `minepanel-caddy-data` | Named volume for Caddy certificates. |
@@ -214,10 +217,12 @@ If the `nestjs` container exits during startup, migrations failed before the API
 ### Socket permission errors
 
 If you see Docker daemon unreachable errors, verify the socket path and permissions. Rootless Docker sockets live under `$XDG_RUNTIME_DIR`; set `DOCKER_SOCKET` accordingly.
-
 ### Prefetch service
 
-The `minecraft-image` service pulls the `itzg/minecraft-server` image and creates the managed-MC bridge, then exits cleanly. It has `restart: "no"`. If it fails, the `nestjs` service will not start because of the `service_completed_successfully` dependency.
+The `minecraft-image` service pulls the required `MINECRAFT_IMAGE` identity
+and creates the managed-Minecraft bridge, then exits cleanly. If it fails, the
+`nestjs` service will not start because of the successful-completion
+dependency.
 
 ### CORS, secure cookies, and CSRF
 
@@ -226,6 +231,16 @@ Authenticated browser requests use HttpOnly cookies. In production the backend e
 `CORS_ORIGIN` must be the one exact frontend origin (for example `https://minepanel.xyz`), must use `https://` in production, and must never be `*`. CORS permits that frontend to read credentialed API responses; it does **not** prevent a malicious site from submitting a cookie-bearing HTML form.
 
 The API therefore rejects every HTTP `POST`, `PUT`, `PATCH`, or `DELETE` request that supplies an `Origin` header other than the canonical `CORS_ORIGIN` (or the API's own origin — same-origin callers such as the Swagger UI at `/docs`), returning `403 {"error":"CsrfOriginForbidden"}`. This protects bodyless form-targetable actions such as session invalidation and server lifecycle operations. Browser requests from the configured frontend must preserve their exact `Origin` header. Origin-less mutating requests remain supported for non-browser automation and CLI clients; do not expose a browser client through a different origin. `OPTIONS` preflights and read-only methods are not subject to this check. Socket.IO/Engine.IO enforces its own matching Origin admission.
+
+### API errors and request IDs
+
+Every request receives a bounded server-trusted `X-Request-Id`, echoed in
+stable error responses as `requestId`. Invalid client IDs are replaced with a
+UUID. Errors use `{ statusCode, error, message, details, requestId }`; clients
+must switch on `error`, not human text. Login keeps coarse source throttling
+and adds bounded account/source progressive penalties in process memory. This
+state is intentionally local to one backend instance and expires automatically;
+use a shared external limiter only if deployment topology later requires it.
 
 ### Retained Minecraft data cleanup
 

@@ -17,6 +17,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { Public } from 'src/common/decorators/public.decorator';
+import { type RequestWithId } from 'src/common/request-id.middleware';
 import { type PublicUser } from 'src/users/public-user';
 import { AuthService, requireRefreshToken, type TwoFactorChallenge } from './auth.service';
 import {
@@ -39,7 +40,7 @@ import { REFRESH_TOKEN_TTL, type RefreshTokenTtl } from './refresh-token-ttl';
 type JwtPayload = { id: string; username: string; role: string; temporaryAuth?: boolean };
 type AuthCookieJar = { refresh_token?: string };
 
-type AuthenticatedRequest = Request & { user: JwtPayload; cookies: AuthCookieJar };
+type AuthenticatedRequest = RequestWithId & { user: JwtPayload; cookies: AuthCookieJar };
 type RefreshRequest = Request & { cookies: AuthCookieJar };
 
 @ApiTags('auth')
@@ -72,9 +73,12 @@ export class AuthController {
   async login(
     @Body() loginUser: LoginUserDto,
     @Res({ passthrough: true }) res: Pick<Response, 'cookie'>,
+    @Req() request?: RequestWithId,
   ): Promise<PublicUser | TwoFactorChallenge> {
-    const loginResult = await this.authService.loginUser(loginUser);
-
+    const loginResult = await this.authService.loginUser(loginUser, {
+      identifier: loginUser.identifier,
+      source: request?.ip ?? request?.socket.remoteAddress ?? 'unknown',
+    });
     if ('requiresTwoFactor' in loginResult) {
       return loginResult;
     }

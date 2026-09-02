@@ -147,6 +147,25 @@ describe('UsersService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(update).not.toHaveBeenCalled();
     });
+    it('rejects over-limit old and new passwords before reading the user', async () => {
+      await expect(
+        service.updatePassword(
+          'user-1',
+          { oldPassword: '😀'.repeat(19), newPassword: 'NewPass123!' },
+          'current-refresh',
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(select).not.toHaveBeenCalled();
+
+      await expect(
+        service.updatePassword(
+          'user-1',
+          { oldPassword: 'Password123!', newPassword: '😀'.repeat(19) },
+          'current-refresh',
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(select).not.toHaveBeenCalled();
+    });
 
     it('rejects an OAuth-only account before updating its password', async () => {
       rows = [makeUser({ passwordHash: null })];

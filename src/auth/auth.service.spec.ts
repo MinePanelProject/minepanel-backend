@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as cryptoUtil from 'src/common/crypto.util';
@@ -264,6 +264,19 @@ describe('AuthService', () => {
       expect.any(String),
       'PENDING',
     );
+  });
+  it('rejects over-limit registration passwords before hashing', async () => {
+    createService(makeUser());
+    usersService.findByIdentifier = jest.fn().mockResolvedValue(null);
+
+    await expect(
+      service.registerUser({
+        email: 'new@example.com',
+        username: 'newuser',
+        password: '😀'.repeat(19),
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(hashSpy).not.toHaveBeenCalled();
   });
 
   it('creates one session for a non-2FA login and sanitizes the returned user', async () => {

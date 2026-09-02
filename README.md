@@ -41,8 +41,8 @@ docker compose pull && docker compose up -d
 │                      │                       │
 │      /var/run/docker.sock (root, local)      │
 │                      ▼                       │
-│        mc-{id} (itzg/minecraft-server)       │
-│        on dedicated managed-MC bridge        │
+        mc-{id} (itzg/minecraft-server pinned image)        │
+        on managed bridge (CPU/PIDs capped)                 │
 └──────────────────────────────────────────────┘
 ```
 
@@ -153,6 +153,7 @@ See [`.env.example`](./.env.example) for the full list. Key variables:
 | `DOMAIN`                | Public domain - used by Caddy for HTTPS            | required in prod     |
 | `CORS_ORIGIN`           | Allowed frontend origin - never derived from `DOMAIN` | required in prod  |
 | `MINEPANEL_IMAGE`       | Backend image used by Compose                      | `ghcr.io/minepanelproject/minepanel-backend:latest` |
+| `MINECRAFT_IMAGE`       | Required image identity shared by prefetch and managed containers | pinned multi-arch digest in `.env.example` |
 | `DATABASE_URL`          | PostgreSQL connection string                       | required             |
 | `JWT_SECRET`            | Secret for JWT signing                             | required             |
 | `ENCRYPTION_KEY`        | 32 random bytes encoded as 64 hexadecimal characters; generate with `openssl rand -hex 32` | required |
@@ -163,6 +164,8 @@ See [`.env.example`](./.env.example) for the full list. Key variables:
 | `MC_DATA_PATH`          | Base path inside the backend; Compose fixes it to `/mc-data` (direct backend execution only) | `/mc-data` |
 | `MIN_FREE_DISK_MB`      | Minimum free disk to allow server creation         | `2048`               |
 | `MAX_MEMORY_RATIO`       | Max fraction of host RAM allocatable to MC servers | `0.90`               |
+| `MC_CPU_NANO_CPUS`      | Per-container CPU quota in NanoCPU units           | `2000000000` |
+| `MC_PIDS_LIMIT`         | Per-container process limit                        | `512` |
 
 ---
 

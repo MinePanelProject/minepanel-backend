@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsNotEmpty, MaxLength, MinLength } from 'class-validator';
+import { PasswordByteLimit } from './password-byte-limit';
 
 export class LoginUserDto {
   @ApiProperty()
@@ -10,9 +11,9 @@ export class LoginUserDto {
   @MinLength(3)
   identifier: string;
 
-  @ApiProperty()
+  @ApiProperty({ maxLength: 72, description: 'At most 72 UTF-8 bytes' })
   @IsNotEmpty()
   @MinLength(8)
-  @MaxLength(128)
+  @PasswordByteLimit()
   password: string;
 }

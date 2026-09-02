@@ -11,6 +11,7 @@ const requiredScripts = [
   'build',
   'format',
   'smoke:totp',
+  'docker:lifecycle',
   'typecheck',
   'lint',
   'lint:ci',
