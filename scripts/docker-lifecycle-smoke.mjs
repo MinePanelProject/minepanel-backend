@@ -235,5 +235,30 @@ try {
       await network.remove();
     } catch {}
   }
-  await rm(dataRoot, { recursive: true, force: true });
+  try {
+    await rm(dataRoot, { recursive: true, force: true });
+  } catch (error) {
+    if (error?.code === 'EACCES') {
+      const cleaner = await docker.createContainer({
+        Image: image,
+        Entrypoint: ['/bin/sh'],
+        Cmd: ['-c', 'rm -rf /data'],
+        HostConfig: {
+          AutoRemove: true,
+          Binds: [`${dataRoot}:/data`],
+          NetworkMode: 'none',
+        },
+      });
+      try {
+        await cleaner.start();
+        await cleaner.wait();
+      } catch {}
+      try {
+        await cleaner.remove({ force: true });
+      } catch {}
+      try {
+        await rm(dataRoot, { recursive: true, force: true });
+      } catch {}
+    }
+  }
 }
