@@ -82,16 +82,6 @@
       ]
     },
     {
-      "id": "compatibility",
-      "label": "Future Compatibility",
-      "name": "Hosted Browser Compatibility",
-      "status": "future",
-      "description": "Conditional compatibility expansion only if product requirements move beyond the currently supported secure-context, partitioned-cookie, and Web Locks browser contract.",
-      "items": [
-        { "text": "Reassess and, if required, design hosted-browser PKCE fallback", "done": false }
-      ]
-    },
-    {
       "id": "2a",
       "label": "Phase 2A",
       "name": "Platform Foundations",
