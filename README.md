@@ -18,7 +18,7 @@
 >
 > **Phase 1 - authorization spine shipped.** Per-server visibility (`OPEN`/`REQUEST`/`PRIVATE`), request/approval workflows, requestable-server discovery, and MOD granular permissions (`PermissionsGuard` + `mod_permissions`) are live.
 >
-> **Phase 1.5 - Identity / onboarding core scope complete.** Challenge-bound Google login and account linking, server visibility and access requests, requestable-server discovery, and MOD granular permissions are live. GitHub OAuth, Minecraft linking, magic links, and invites remain optional or deferred follow-ons and do not gate backend feature completion - see the [roadmap](https://minepanel.xyz/#roadmap).
+> **Phase 1.5 - Identity / onboarding core scope complete.** Challenge-bound Google login and account linking, server visibility and access requests, requestable-server discovery, and MOD granular permissions are live. GitHub OAuth, invitations and alternate registration modes, and SMTP-dependent magic links are optional; Microsoft Minecraft linking and offline UUID linking are deferred. None gates backend feature completion - see the [roadmap](https://minepanel.xyz/#roadmap).
 
 ---
 
@@ -26,7 +26,7 @@
 
 MinePanel is a self-hosted Minecraft server management panel. It runs entirely on your own hardware via Docker - no cloud lock-in, no external services.
 
-The backend is a **NestJS REST + WebSocket API** that manages user authentication, spawns Minecraft server containers through the Docker socket, and exposes all panel operations to the hosted protocol-1 management dashboard (`minepanel-pwa`; hosted-browser PKCE fallback is reserved and not implemented).
+The backend is a **NestJS REST + WebSocket API** that manages user authentication, spawns Minecraft server containers through the Docker socket, and exposes all panel operations to the hosted protocol-1 management dashboard (`minepanel-pwa`). Hosted authentication supports the current browser environments that provide the required secure-context, partitioned-cookie, and Web Locks behavior; universal, legacy-browser, embedded-WebView, and private/LAN-origin compatibility is not claimed.
 
 ---
 
@@ -188,7 +188,7 @@ In production, migrations run automatically inside the container before the API 
 
 Full docs at `/docs` (Swagger UI) when the server is running.
 
-`GET /api/info` returns protocol 1 and explicit capability flags. Production session cookies use `HttpOnly; Secure; SameSite=None; Partitioned; Path=/` (CHIPS). The PKCE authorization-code fallback and WebSocket tickets are reserved, not implemented, and advertised as unsupported; clients must not infer compatibility from `PANEL_VERSION`.
+`GET /api/info` returns protocol 1 and explicit capability flags. Production session cookies use `HttpOnly; Secure; SameSite=None; Partitioned; Path=/` (CHIPS), coordinated with Web Locks by the hosted PWA where required. PKCE is not implemented, is not required for Stable-v1, and remains only a conditional future compatibility option if browser requirements expand; it is advertised as unsupported. Clients must not infer compatibility from `PANEL_VERSION`.
 
 | Group      | Endpoints                                                                                     |
 |------------|-----------------------------------------------------------------------------------------------|

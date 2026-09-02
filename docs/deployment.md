@@ -226,7 +226,7 @@ dependency.
 
 ### CORS, secure cookies, and CSRF
 
-Authenticated browser requests use HttpOnly cookies. In production the backend emits `Secure; SameSite=None; Partitioned; Path=/` (CHIPS) for both session cookies; development omits `Secure` and `Partitioned` and uses `SameSite=Lax`. CHIPS is the primary hosted cross-origin mechanism where supported. The PKCE authorization-code fallback is reserved and not implemented, so complete hosted-browser compatibility is not claimed.
+Authenticated browser requests use HttpOnly cookies. In production the backend emits `Secure; SameSite=None; Partitioned; Path=/` (CHIPS) for both session cookies; development omits `Secure` and `Partitioned` and uses `SameSite=Lax`. The supported hosted-browser contract is a public HTTPS PWA used with browser environments that provide the required secure-context, partitioned-cookie, and Web Locks behavior; Web Locks coordinate refresh authority where required. PKCE is not implemented or required for Stable-v1 and remains conditional future compatibility work only if browser requirements expand. Universal, legacy-browser, arbitrary embedded-WebView, and private/LAN-origin compatibility is not claimed.
 
 `CORS_ORIGIN` must be the one exact frontend origin (for example `https://minepanel.xyz`), must use `https://` in production, and must never be `*`. CORS permits that frontend to read credentialed API responses; it does **not** prevent a malicious site from submitting a cookie-bearing HTML form.
 

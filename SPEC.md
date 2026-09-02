@@ -20,8 +20,8 @@ Normative language, defined once and used consistently:
 - **SHOULD** — a strong recommendation; a valid exception must be justified in the code or docs.
 - **MAY** — optional behavior; no default obligation either way.
 
-- **Status: stable-v1 hardening implemented.** Foundation / Next items B-NEXT-1 through B-NEXT-7 are implemented and tested; the conditional PKCE fallback remains future work and does not block this milestone.
-- **Last verified implementation state:** this branch's final commit and CI run are the release evidence for the hardening milestone.
+- **Status: stable-v1 hardening implemented.** Foundation / Next items B-NEXT-1 through B-NEXT-7 are implemented and tested; their required seven-item scope is complete. Hosted-browser compatibility expansion remains conditional future work and does not block this milestone.
+- **Stable-v1 implementation evidence:** master merge commit `7a184f63da49d2a8be7c4319d91a2dbe770441f8` and master CI run `33647554764`.
 - **Version truth:** `package.json` says `1.0.0`; `PANEL_VERSION` defaults to `"1.0"`; the Swagger fallback is `"N/A"`; CI sets `PANEL_VERSION` to `1.0.0` in e2e. This inconsistency is tracked as backlog item B-P2-6.
 - **License:** the repository is MIT-licensed. `package.json` declares `"license": "MIT"` and `LICENSE` is present. `private: true` controls package publication and does not change the license.
 
@@ -33,13 +33,13 @@ MinePanel is a self-hosted Minecraft server management panel. A single `docker c
 
 | Client | Repo | Tech | Status |
 |--------|------|------|--------|
-| Web dashboard (hosted PWA) | `minepanel-pwa` | React 19 + Vite 7 + TypeScript + Tailwind 4 | `[IMPLEMENTED]` — hosted React PWA at `app.minepanel.xyz` with multi-backend discovery and a protocol-1 auth/management surface; current hosted auth uses CHIPS cookies + Web Locks where supported; not part of this backend's compose file |
+| Web dashboard (hosted PWA) | `minepanel-pwa` | React 19 + Vite 7 + TypeScript + Tailwind 4 | `[IMPLEMENTED]` — hosted React PWA at `app.minepanel.xyz` with multi-backend discovery and a protocol-1 auth/management surface; current hosted auth uses cross-origin HttpOnly CHIPS cookies and Web Locks on supported browser environments; not part of this backend's compose file |
 | Mobile app | `minepanel-mobile` | KMP + Compose Multiplatform (iOS + Android) | `[PROPOSED]` — Phase 6 |
 | Backend API | `minepanel-backend` (this repo) | NestJS 11 + PostgreSQL | `[IMPLEMENTED]` |
 
 The backend is client-agnostic. Role-based guards (`ADMIN` / `MOD` / `USER`) plus per-server access rules and MOD granular permissions enforce access at the API level.
 
-**Hosted multi-backend dashboard (`app.minepanel.xyz`)** — `[IMPLEMENTED]` hosted React PWA with multi-backend discovery and the delivered protocol-1 auth/management surface. Current hosted auth uses cross-origin HttpOnly CHIPS cookies plus Web Locks where supported; the PKCE authorization-code fallback remains reserved and is not implemented. Full browser compatibility without that fallback is not claimed, private/LAN target compatibility remains limited, and backend features outside this surface remain unclaimed. Backend guards remain authoritative; PWA authorization checks only shape the interface.
+**Hosted multi-backend dashboard (`app.minepanel.xyz`)** — `[IMPLEMENTED]` hosted React PWA with multi-backend discovery and the delivered protocol-1 auth/management surface. The supported hosted-browser contract is current browser environments that provide the required secure-context, partitioned-cookie, and Web Locks behavior. Auth uses cross-origin HttpOnly CHIPS cookies coordinated by Web Locks; PKCE is not implemented, is not required for Stable-v1, and remains only a conditional future compatibility option. Universal, legacy-browser, arbitrary embedded-WebView, and private/LAN-origin compatibility are not claimed.
 
 Direct browser access from `https://app.minepanel.xyz` to LAN/private-network instances (RFC1918 addresses, `.local` hostnames, or other browser-untrusted origins) is **not automatically guaranteed** by the generic HTTPS multi-backend architecture: browsers apply stricter mixed-content and certificate rules to such origins. The intended hosted path is browser-trusted public HTTPS backend origins; private-network endpoints are a separate compatibility concern requiring validation.
 
@@ -129,7 +129,7 @@ current revision, so `edge` is the supported pre-stable channel.
 
 ### 4.3 Hardening backlog `[IMPLEMENTED]`
 
-- **B-NEXT-1 through B-NEXT-7:** stable-v1 API errors/request IDs, password semantics, throttle configuration, progressive login abuse protection, CPU/PID isolation, reproducible Minecraft image identity, and trusted lifecycle coverage are implemented below and gated in CI.
+- **B-NEXT-1 through B-NEXT-7:** stable-v1 API errors/request IDs, password semantics, throttle configuration, progressive login abuse protection, CPU/PID isolation, reproducible Minecraft image identity, and trusted lifecycle coverage are implemented below and gated in CI. No additional item gates the completed milestone.
 - **B-P2-4:** document/restrict inter-container traffic on the `mc` network; per-server networks remain `[PROPOSED]`.
 - **B-P2-5:** run the backend as a non-root user with `group_add` for the Docker group instead of `user: root`.
 - **B-P2-6:** consider `cap_drop: [ALL]` + `read_only: true` + `tmpfs: /tmp` for the backend container.
@@ -368,7 +368,7 @@ Known nuance (B-P3-4): a MOD with a global `SERVER_LIFECYCLE` grant can pass the
 
 ### 8.5 Hosted-frontend cross-origin authentication `[ACCEPTED: D-1]`
 
-The hosted dashboard (`minepanel-pwa`) uses protocol-1 capability discovery. CHIPS `Partitioned` HttpOnly cookies are the primary cross-origin session mechanism where the browser supports them; the backend emits `SameSite=None; Secure; Partitioned` in production. The PKCE authorization-code flow with a memory-only bearer access token is the documented fallback design, but it is reserved and not implemented. Therefore complete hosted-browser compatibility remains a release blocker; same-origin deployment is fully supported.
+The hosted dashboard (`minepanel-pwa`) uses protocol-1 capability discovery. The supported hosted-browser contract is a public HTTPS PWA used from browser environments that provide the required secure-context, partitioned-cookie, and Web Locks behavior. CHIPS `Partitioned` HttpOnly cookies remain the adopted cross-origin session mechanism, coordinated by Web Locks where the PWA session-authority model requires it; the backend emits `SameSite=None; Secure; Partitioned` in production. PKCE is not implemented and is not required for Stable-v1. It remains a conditional future compatibility option only if product requirements expand beyond the supported browser matrix. MinePanel does not claim universal, legacy-browser, arbitrary embedded-WebView, or private/LAN-origin compatibility.
 
 `GET /api/info` truthfully advertises `partitionedCookies: true`, `pkceAuthorizationCode: false`, `googleOAuth` according to `GOOGLE_CLIENT_ID`, and `websocketTicket: false`. Clients MUST NOT infer support from panel version strings. The previous claim that `SameSite=None; Secure` alone is sufficient is obsolete.
 
@@ -666,7 +666,6 @@ This roadmap is reconciled against the audited implementation revision in §2. I
 - **B-NEXT-5:** operator-configured global `NanoCpus` and `PidsLimit` guardrails on managed containers.
 - **B-NEXT-6:** one required `MINECRAFT_IMAGE` identity shared by Compose prefetch and backend-created containers; the shipped default is a verified amd64/arm64 digest.
 - **B-NEXT-7:** trusted CI runs create → ready → graceful RCON stop → delete and proves retained data.
-- **B-NEXT-8:** conditional hosted-browser PKCE fallback remains future work and is not implemented.
 
 ### Phase 1.5 — Identity / Onboarding
 
@@ -676,6 +675,11 @@ The following are **optional or deferred**, not assumed requirements for backend
 
 - **Optional:** GitHub OAuth; invitation flows and alternate registration modes; magic-link authentication when SMTP is deliberately enabled.
 - **Deferred:** Microsoft Minecraft linking and offline UUID linking until player-management consumers and identity ownership rules are defined.
+
+### Future compatibility — hosted browsers `[PROPOSED]`
+
+- **B-COMPAT-1:** Reassess hosted-browser compatibility only if product requirements expand beyond the supported browser matrix. Any browser-based OAuth Authorization Code flow MUST use PKCE and receive a fresh security/design review against then-current browser OAuth guidance. PKCE is not implemented, is not part of Stable-v1, and is not a missing completion item.
+
 
 ### Phase 2A — Platform foundations
 
@@ -755,6 +759,10 @@ This is a post-feature-completion migration milestone, not current preparation w
 
 **Migration rule: PARITY FIRST.** The initial port MUST preserve routes, HTTP statuses, response bodies, error codes, cookies, auth/session semantics, CORS/CSRF behavior, database schema/migrations, Docker lifecycle semantics, container labels, and WebSocket protocol semantics. `protocolVersion` MUST NOT change merely because the framework changes. Performance, memory, image-size, startup, and ergonomics improvements are secondary to black-box compatibility and operational correctness.
 
+### 17.7 Future compatibility — hosted-browser auth `[PROPOSED]`
+
+The current supported hosted-browser contract does not require PKCE: it depends on a public HTTPS PWA, browser-trusted public HTTPS panel origins, CHIPS `Partitioned` HttpOnly cookies, and Web Locks where required by the PWA session-authority model. PKCE remains unimplemented and conditional future work only if MinePanel deliberately expands its browser compatibility requirements. If MinePanel later adopts a browser-based OAuth Authorization Code flow, that flow MUST use PKCE and receive a fresh security/design review against then-current browser OAuth guidance.
+
 ---
 
 ## 18. Security requirements for future features
@@ -793,11 +801,11 @@ Running server: `save-off` → `save-all flush` → snapshot copy → `save-on` 
 
 | # | Decision | Status | Options / record | Blocking |
 |---|----------|--------|------------------|----------|
-| D-1 | Hosted-frontend cross-origin auth (§8.5) | **ADOPTED** | CHIPS `Partitioned` cookies primary; PKCE authorization-code flow with memory-only bearer access token is the reserved fallback and is not implemented | Complete hosted-browser compatibility |
+| D-1 | Hosted-frontend cross-origin auth (§8.5) | **ADOPTED** | CHIPS `Partitioned` HttpOnly cookies coordinated by Web Locks on the supported hosted-browser matrix; PKCE is not implemented or required for Stable-v1 and remains a conditional future compatibility option | None for current supported-browser contract; future expansion only |
 | D-2 | Setup token mandatory? (§8.1) | **ADOPTED** | `X-Setup-Token` required; configured `SETUP_TOKEN` or one-time generated/logged bootstrap token | Stable v1 |
 | D-3 | Deletion semantics (§11.6) | **ADOPTED** | v1 retains host data; guarded manual cleanup; tombstone/backup/sweeper deferred | Stable v1 documentation |
 | D-4 | Shipped socket default (§10.2) | **ADOPTED** | Compose uses rootful Docker by default; rootless Docker and Podman are optional host-local Unix-socket overrides | Compose config |
-| D-5 | OAuth token binding (§17.1) | **ADOPTED** | Single-use hashed 5-minute backend challenge carried through Google's `nonce`, atomically consumed; PKCE remains a frontend requirement for future authorization-code flows | Complete for implemented Google flow |
+| D-5 | OAuth token binding (§17.1) | **ADOPTED** | Single-use hashed 5-minute backend challenge carried through Google's `nonce`, atomically consumed; MinePanel does not use a hosted-browser OAuth Authorization Code flow today, and PKCE is not implemented or required for the current Stable-v1 CHIPS + Web Locks architecture. If MinePanel later adopts a browser-based OAuth Authorization Code flow, that flow MUST use PKCE and receive a fresh security/design review against then-current browser OAuth guidance | Complete for implemented Google flow |
 | D-6 | WS auth primary path (§8.6) | **OPEN** | Cookie vs ticket primary after D-1 / when cookies unavailable | Phase 3 real-time |
 | D-7 | Identity linking policy (§17.1) | **ADOPTED** | Silent email-match linking is forbidden; provider login returns `LinkConfirmationRequired`; linking requires an authenticated session or explicit re-authentication | Complete for implemented Google flow |
 | D-8 | Write architecture (§10.4) | **OPEN** | sidecar vs rw mount with path module vs per-op exec | Phase 3 write features |
@@ -843,4 +851,4 @@ The previous SPEC.md (pre-rewrite) was an ambitious design document that conflat
 
 ## Appendix B — Validation note
 
-This specification was validated on branch `foundation/stable-v1-hardening` after the stable-v1 hardening implementation. The audit covered the canonical docs/config, schema and migrations, bootstrap and module composition, auth/identity/guards, admin and access-control paths, Docker and lifecycle services, gateway/adapters, controllers/DTOs, unit and e2e inventories, Compose, Dockerfile, and CI workflow. Local verification passed with 44 unit suites and 756 tests, 13 live-PostgreSQL e2e suites and 91 tests, a fresh migration chain, a production build, and a real-Docker create → readiness → graceful stop → delete scenario with retained data. The pushed branch CI run remains the final release gate.
+The Stable-v1 implementation audit covered the canonical docs/config, schema and migrations, bootstrap and module composition, auth/identity/guards, admin and access-control paths, Docker and lifecycle services, gateway/adapters, controllers/DTOs, unit and e2e inventories, Compose, Dockerfile, and CI workflow. Local verification passed with 44 unit suites and 756 tests, 13 live-PostgreSQL e2e suites and 91 tests, a fresh migration chain, a production build, and a real-Docker create → readiness → graceful stop → delete scenario with retained data. The implementation evidence remains master merge commit `7a184f63da49d2a8be7c4319d91a2dbe770441f8` and master CI run `33647554764`; this documentation reconciliation does not re-run or re-prove that lifecycle scenario.
