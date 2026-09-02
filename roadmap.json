@@ -37,7 +37,7 @@
       "label": "Foundation / Next",
       "name": "Stable-v1 Hardening",
       "status": "completed",
-      "description": "Stable-v1 hardening is implemented and gated by unit, build, migration, e2e, and trusted real-Docker lifecycle checks. Its required seven-item scope is complete; hosted-browser compatibility expansion remains conditional future work.",
+      "description": "Stable-v1 hardening is implemented and gated by unit, build, migration, e2e, and trusted real-Docker lifecycle checks. Its required seven-item scope is complete.",
       "progress": 100,
       "progressLabel": "100% complete (7/7 required items)",
       "items": [
@@ -55,9 +55,9 @@
       "label": "Phase 1.5",
       "name": "Identity / Onboarding",
       "status": "completed",
-      "description": "The core Phase 1.5 scope is complete: Google OAuth and the server authorization spine are shipped. Optional/deferred onboarding integrations remain future work and do not gate backend feature completion.",
+      "description": "The required identity and onboarding scope is complete: Google authentication and linking, server visibility and access workflows, requestable discovery, and MOD granular permissions.",
       "progress": 100,
-      "progressLabel": "Core scope complete; optional/deferred follow-ons remain",
+      "progressLabel": "100% complete",
       "items": [
         { "text": "Google OAuth with challenge-bound local verification", "done": true },
         { "text": "Google account linking with explicit confirmation", "done": true },
@@ -68,31 +68,16 @@
       ]
     },
     {
-      "id": "identity-future",
-      "label": "Future Identity / Onboarding",
-      "name": "Optional and Deferred Follow-ons",
-      "status": "future",
-      "description": "Identity and onboarding follow-ons that remain outside the completed Phase 1.5 core scope.",
-      "items": [
-        { "text": "[Optional] GitHub OAuth", "done": false },
-        { "text": "[Optional] Invitation and alternate registration modes", "done": false },
-        { "text": "[Optional] Magic-link authentication when SMTP is deliberately enabled", "done": false },
-        { "text": "[Deferred] Microsoft Minecraft account linking", "done": false },
-        { "text": "[Deferred] Offline player UUID linking", "done": false }
-      ]
-    },
-    {
       "id": "2a",
       "label": "Phase 2A",
       "name": "Platform Foundations",
       "status": "planned",
-      "description": "Framework-neutral foundations for operations and integrations. API keys and webhooks do not block core Minecraft management.",
+      "description": "The next backend milestone: framework-neutral foundations required by core operations and later integrations.",
       "progress": 0,
-      "progressLabel": "Starts after stable-v1 foundation",
+      "progressLabel": "Next planned milestone",
       "items": [
         { "text": "Append-only audit log", "done": false },
-        { "text": "Framework-neutral system-event model", "done": false },
-        { "text": "Add a scheduler when a real feature first requires it", "done": false }
+        { "text": "Framework-neutral system-event model", "done": false }
       ]
     },
     {
@@ -100,17 +85,20 @@
       "label": "Phase 3",
       "name": "Core Operations",
       "status": "planned",
-      "description": "The core operations suite, delivered as concrete product requirements and security boundaries are established.",
+      "description": "The core Minecraft operations suite, built in dependency order on top of the stable backend and Phase 2A foundations.",
       "progress": 0,
-      "progressLabel": "Planned",
+      "progressLabel": "Planned after Phase 2A",
       "items": [
         { "text": "RCON / console command broker (Docker-exec default)", "done": false },
         { "text": "Real-time server logs, stats, and player events", "done": false },
         { "text": "Backup and restore", "done": false },
+        { "text": "Scheduler foundation when scheduled operations first require it", "done": false },
         { "text": "Scheduled tasks", "done": false },
         { "text": "Controlled filesystem-write architecture", "done": false },
         { "text": "File manager", "done": false },
         { "text": "Player management", "done": false },
+        { "text": "Microsoft Minecraft account linking for player-management consumers", "done": false },
+        { "text": "Offline player UUID linking with explicit offline-mode identity rules", "done": false },
         { "text": "Plugin and mod management", "done": false },
         { "text": "Notifications", "done": false }
       ]
@@ -120,7 +108,7 @@
       "label": "Phase 2B",
       "name": "Integrations",
       "status": "future",
-      "description": "Later consumers of the platform foundations; these do not gate core server management.",
+      "description": "External consumers of the platform foundations. These remain secondary to the core Minecraft management path.",
       "items": [
         { "text": "API keys", "done": false },
         { "text": "Outbound webhooks", "done": false },
@@ -129,11 +117,23 @@
       ]
     },
     {
+      "id": "identity-future",
+      "label": "Future Identity / Account Access",
+      "name": "Optional Follow-ons",
+      "status": "future",
+      "description": "Optional account-access features that may be added after the core management experience is established.",
+      "items": [
+        { "text": "[Optional] GitHub OAuth", "done": false },
+        { "text": "[Optional] Invitation and alternate registration modes", "done": false },
+        { "text": "[Optional] Magic-link authentication when SMTP is deliberately enabled", "done": false }
+      ]
+    },
+    {
       "id": "later",
       "label": "Later",
       "name": "Product Surfaces",
       "status": "future",
-      "description": "Deferred product surfaces with intentionally unresolved designs.",
+      "description": "Later product capabilities whose detailed architecture will be defined only when they become active development targets.",
       "items": [
         { "text": "Creation presets and server wizard", "done": false },
         { "text": "Mod-loader and mod selection", "done": false },
@@ -147,7 +147,7 @@
       "label": "Backend 2.0",
       "name": "Elysia 2",
       "status": "future",
-      "description": "Post-feature-completion, parity-first migration from NestJS when Elysia 2 and its required Bun ecosystem are stable. No migration preparation is planned now.",
+      "description": "Post-feature-completion, parity-first migration from NestJS when the final feature baseline is frozen and Elysia 2 with its required Bun ecosystem is production-ready.",
       "items": [
         { "text": "Complete and freeze the final NestJS feature baseline", "done": false },
         { "text": "Document deferred functionality and synchronize all docs", "done": false },
