@@ -1,10 +1,10 @@
 type ServerMutation = Partial<Server>;
 
-type ServerResourceRow = Pick<Server, 'id' | 'memoryLimitMb'>;
+type ServerAllocationRow = { totalMemoryMb: number | string | null };
 
 type ServerCountRow = { total: number };
 
-type ServerQueryRow = Server | ServerResourceRow | ServerCountRow;
+type ServerQueryRow = Server | ServerAllocationRow | ServerCountRow;
 
 /** Minimal projection returned by listRequestableServers (requestable discovery). */
 type RequestableRow = {
@@ -27,6 +27,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, type TestingModule } from '@nestjs/testing';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { DRIZZLE } from 'src/db/db.module';
 import type { Server } from 'src/db/schema';
 import {
@@ -461,7 +462,7 @@ describe('ServersService', () => {
     });
 
     it('returns the exact memory InsufficientResources payload after locked allocation', async () => {
-      selectResults.push([{ id: 'other', memoryLimitMb: 4000 }]);
+      selectResults.push([{ totalMemoryMb: 4000 }]);
 
       let error: HttpException | undefined;
       try {
@@ -486,15 +487,42 @@ describe('ServersService', () => {
       expect(docker.createContainer).not.toHaveBeenCalled();
     });
 
-    it('sums every existing server regardless of status for the create allocation', async () => {
-      selectResults.push([{ id: 'stopped', memoryLimitMb: 4000 }]);
+    it('uses a SQL allocation aggregate for all server statuses', async () => {
+      selectResults.push([{ totalMemoryMb: 4000 }]);
       insertResults.push(makeServer({ status: 'CREATING', containerId: null }));
       updateResults.push([makeServer({ status: 'CREATING' })], [makeServer({ status: 'RUNNING' })]);
 
       await service.createServer(makeDto(), adminPrincipal);
 
-      // the create allocation query must not filter STOPPED rows
       expect(queryChains[0].where).not.toHaveBeenCalled();
+      expect(db.select).toHaveBeenCalledWith({ totalMemoryMb: expect.anything() });
+      const aggregateSelection = db.select.mock.calls[0][0];
+      expect(new PgDialect().sqlToQuery(aggregateSelection.totalMemoryMb).sql).toBe(
+        'coalesce(sum("servers"."memory_limit_mb"), 0)',
+      );
+    });
+
+    it('treats the SQL aggregate zero-row result as zero allocation', async () => {
+      selectResults.push([]);
+      insertResults.push(makeServer({ status: 'CREATING', containerId: null }));
+      updateResults.push([makeServer({ status: 'CREATING' })], [makeServer({ status: 'RUNNING' })]);
+
+      await expect(service.createServer(makeDto(), adminPrincipal)).resolves.toEqual(
+        expect.objectContaining({ status: 'RUNNING' }),
+      );
+    });
+
+    it('filters the excluded server and stopped servers in start allocation queries', async () => {
+      selectResults.push([makeServer({ status: 'STOPPED' })], [{ totalMemoryMb: '4000' }]);
+      updateResults.push([makeServer({ status: 'STARTING' })], [makeServer({ status: 'RUNNING' })]);
+
+      await expect(service.startServer('server-1', adminPrincipal)).resolves.toEqual(
+        expect.objectContaining({ status: 'RUNNING' }),
+      );
+
+      const renderedWhere = new PgDialect().sqlToQuery(queryChains[1].where.mock.calls[0][0]);
+      expect(renderedWhere.sql).toBe('("servers"."status" <> $1 and "servers"."id" <> $2)');
+      expect(renderedWhere.params).toEqual(['STOPPED', 'server-1']);
     });
 
     it('fails closed for a null total RAM measurement', async () => {
@@ -551,6 +579,27 @@ describe('ServersService', () => {
         InternalServerErrorException,
       );
       expect(calls).toEqual(['hostInfo', 'diskInfo']);
+    });
+    it('starts host and disk preflight reads concurrently', async () => {
+      let releaseHost!: (value: HostInfo) => void;
+      const hostInfo = new Promise<HostInfo>((resolve) => {
+        releaseHost = resolve;
+      });
+      docker.getHostInfo = jest.fn(() => hostInfo);
+      docker.getHostDiskInfo = jest.fn().mockResolvedValue({
+        totalDiskMb: 100000,
+        freeDiskMb: 5000,
+      });
+
+      const request = service.createServer(makeDto(), adminPrincipal);
+      expect(docker.getHostInfo).toHaveBeenCalledTimes(1);
+      expect(docker.getHostDiskInfo).toHaveBeenCalledTimes(1);
+
+      releaseHost({ totalRamMb: null, cpuCount: 8 });
+      await expect(request).rejects.toMatchObject({
+        response: expect.objectContaining({ message: 'Host resource information unavailable' }),
+        status: 503,
+      });
     });
   });
 
@@ -826,9 +875,9 @@ describe('ServersService', () => {
     });
 
     it('settles STOPPED when admission fails after a successful stop', async () => {
-      selectResults.push([makeServer({ status: 'RUNNING' })], []);
+      selectResults.push([makeServer({ status: 'RUNNING' })], [{ totalMemoryMb: 0 }]);
       updateResults.push([makeServer({ status: 'STOPPING' })], [makeServer({ status: 'STOPPED' })]);
-      setResources(undefined, { totalDiskMb: 1000, freeDiskMb: 100 });
+      setResources({ totalRamMb: 8192, cpuCount: 8 }, { totalDiskMb: 1000, freeDiskMb: 100 });
 
       await expect(service.restartServer('server-1', adminPrincipal)).rejects.toMatchObject({
         status: 422,
