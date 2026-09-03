@@ -25,8 +25,10 @@ export class SystemMetricsService {
     let freeRamMb: number | null;
 
     try {
-      hostInfo = await this.dockerService.getHostInfo();
-      diskInfo = await this.dockerService.getHostDiskInfo();
+      [hostInfo, diskInfo] = await Promise.all([
+        this.dockerService.getHostInfo(),
+        this.dockerService.getHostDiskInfo(),
+      ]);
       freeRamMb = this.dockerService.getHostFreeMemoryMb();
     } catch {
       return null;

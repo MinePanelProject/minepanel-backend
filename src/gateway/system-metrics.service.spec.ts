@@ -30,6 +30,29 @@ describe('SystemMetricsService', () => {
       cpuCount: 8,
     });
   });
+  it('starts host and disk reads concurrently before deriving free memory', async () => {
+    const { service, docker } = makeService();
+    let releaseHost!: (value: HostInfo) => void;
+    const hostInfo = new Promise<HostInfo>((resolve) => {
+      releaseHost = resolve;
+    });
+    docker.getHostInfo.mockReturnValue(hostInfo);
+    docker.getHostDiskInfo.mockResolvedValue({ totalDiskMb: 10000, freeDiskMb: 7000 });
+    docker.getHostFreeMemoryMb.mockReturnValue(1024);
+
+    const snapshot = service.collectSnapshot();
+    expect(docker.getHostInfo).toHaveBeenCalledTimes(1);
+    expect(docker.getHostDiskInfo).toHaveBeenCalledTimes(1);
+    expect(docker.getHostFreeMemoryMb).not.toHaveBeenCalled();
+
+    releaseHost({ totalRamMb: 4096, cpuCount: 8 });
+    await expect(snapshot).resolves.toEqual({
+      totalRamMb: 4096,
+      usedRamMb: 3072,
+      freeDiskMb: 7000,
+      cpuCount: 8,
+    });
+  });
 
   it.each([
     ['host info null', () => ({ totalRamMb: null, cpuCount: 8 })],

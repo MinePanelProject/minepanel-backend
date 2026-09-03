@@ -146,9 +146,10 @@ export class ServersService implements OnModuleInit {
 
   async createServer(dto: CreateServerDto, principal: ServerPrincipal): Promise<PublicServer> {
     const config = this.parseResourceConfig();
-    const hostInfo = await this.dockerService.getHostInfo();
-    const diskInfo = await this.dockerService.getHostDiskInfo();
-
+    const [hostInfo, diskInfo] = await Promise.all([
+      this.dockerService.getHostInfo(),
+      this.dockerService.getHostDiskInfo(),
+    ]);
     this.checkDisk(diskInfo, config.minFreeDiskMb, 'Insufficient disk space to create server');
 
     const created = await this.db.transaction(async (tx) => {
@@ -323,9 +324,10 @@ export class ServersService implements OnModuleInit {
     }
 
     const config = this.parseResourceConfig();
-    const hostInfo = await this.dockerService.getHostInfo();
-    const diskInfo = await this.dockerService.getHostDiskInfo();
-
+    const [hostInfo, diskInfo] = await Promise.all([
+      this.dockerService.getHostInfo(),
+      this.dockerService.getHostDiskInfo(),
+    ]);
     this.checkDisk(diskInfo, config.minFreeDiskMb, 'Insufficient disk space to start server');
 
     const started = await this.db.transaction(async (tx) => {
@@ -456,9 +458,10 @@ export class ServersService implements OnModuleInit {
 
     try {
       const config = this.parseResourceConfig();
-      const hostInfo = await this.dockerService.getHostInfo();
-      const diskInfo = await this.dockerService.getHostDiskInfo();
-
+      const [hostInfo, diskInfo] = await Promise.all([
+        this.dockerService.getHostInfo(),
+        this.dockerService.getHostDiskInfo(),
+      ]);
       this.checkDisk(diskInfo, config.minFreeDiskMb, 'Insufficient disk space to restart server');
 
       const starting = await this.db.transaction(async (tx) => {
@@ -742,17 +745,18 @@ export class ServersService implements OnModuleInit {
     tx: Tx,
     options: { excludeServerId?: string; includeStopped?: boolean } = { includeStopped: true },
   ): Promise<number> {
-    const rows = options.includeStopped
-      ? await tx.select({ id: servers.id, memoryLimitMb: servers.memoryLimitMb }).from(servers)
-      : await tx
-          .select({ id: servers.id, memoryLimitMb: servers.memoryLimitMb })
-          .from(servers)
-          .where(ne(servers.status, 'STOPPED'));
-
-    return rows.reduce(
-      (sum, row) => (row.id !== options.excludeServerId ? sum + (row.memoryLimitMb ?? 0) : sum),
-      0,
+    const where = and(
+      options.includeStopped ? undefined : ne(servers.status, 'STOPPED'),
+      options.excludeServerId ? ne(servers.id, options.excludeServerId) : undefined,
     );
+    const allocationQuery = tx
+      .select({
+        totalMemoryMb: sql<number>`coalesce(sum(${servers.memoryLimitMb}), 0)`,
+      })
+      .from(servers);
+    const [row] = await (where ? allocationQuery.where(where) : allocationQuery);
+
+    return Number(row?.totalMemoryMb ?? 0);
   }
 
   private parseResourceConfig(): ResourceConfig {
