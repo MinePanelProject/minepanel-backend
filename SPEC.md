@@ -59,6 +59,7 @@ Direct browser access from `https://app.minepanel.xyz` to LAN/private-network in
 - **Phase 2B — Integrations:** API keys, outbound webhooks, external integrations, and system-event consumers after the foundations. `[PROPOSED]`.
 - **Later product surfaces:** creation presets/wizard, mod-loader selection, Velocity/networking, Geyser/Bedrock, and other deferred surfaces. `[PROPOSED]`.
 - **Backend 2.0 — Elysia 2:** a future parity-first port after the Nest feature set and migration gates are complete; see §17.6. `[PROPOSED]`.
+- **MCP Server / Agent Interface:** a post-Elysia, thin client-agnostic MCP server adapter over the application/domain layer — never direct Docker, filesystem, or database access; see §17.7. `[PROPOSED]`.
 
 ## 4. Deployment topology and trust boundaries
 
@@ -702,6 +703,10 @@ After Phase 2A foundations: API keys, outbound webhooks, external integrations, 
 
 Creation presets/wizard, mod-loader/mod selection, Velocity/networking, Geyser/Bedrock, mobile/player surfaces, and other deferred product work remain later milestones. No detailed design is normative until its product and security decisions are made.
 
+### MCP Server / Agent Interface `[PROPOSED]`
+
+Post-Elysia only: a thin, client-agnostic MCP server adapter over MinePanel's application/domain layer through existing authorization and orchestration — never direct Docker, filesystem, or database access. Scope: shared contracts/schemas, scoped MCP auth with per-server restrictions, read/control/destructive permission separation, server state/logs/metrics/players/backups/node resources, lifecycle and console operations, structured diagnostics (`diagnose_server`, `safe_restart`), audit attribution for agent-triggered mutations, and generic MCP clients with Hermes as an example integration. See §17.7.
+
 ---
 
 ## 17. Future architecture by phase
@@ -759,7 +764,22 @@ This is a post-feature-completion migration milestone, not current preparation w
 
 **Migration rule: PARITY FIRST.** The initial port MUST preserve routes, HTTP statuses, response bodies, error codes, cookies, auth/session semantics, CORS/CSRF behavior, database schema/migrations, Docker lifecycle semantics, container labels, and WebSocket protocol semantics. `protocolVersion` MUST NOT change merely because the framework changes. Performance, memory, image-size, startup, and ergonomics improvements are secondary to black-box compatibility and operational correctness.
 
-### 17.7 Future compatibility — hosted-browser auth `[PROPOSED]`
+### 17.7 MCP Server / Agent Interface `[PROPOSED — FUTURE]`
+
+Post-Elysia only: a thin, client-agnostic MCP server adapter over MinePanel's application/domain layer. It is a boundary adapter — never direct Docker, filesystem, or database access — and every operation routes through MinePanel's existing authorization and orchestration. It may start only after the Elysia 2 migration (§17.6) is complete.
+
+Planned scope:
+
+- Shared contracts and schemas for MCP-exposed capabilities where appropriate.
+- Scoped MCP auth, including per-server restrictions.
+- Read / control / destructive permission separation.
+- Server state, logs, metrics, players, backups, and node resources.
+- Lifecycle and console operations through existing MinePanel authorization and orchestration.
+- Structured diagnostics and higher-level tools such as `diagnose_server` / `safe_restart`.
+- Audit attribution for agent-triggered mutations.
+- Generic MCP clients, with Hermes as an example integration.
+
+### 17.8 Future compatibility — hosted-browser auth `[PROPOSED]`
 
 The current supported hosted-browser contract does not require PKCE: it depends on a public HTTPS PWA, browser-trusted public HTTPS panel origins, CHIPS `Partitioned` HttpOnly cookies, and Web Locks where required by the PWA session-authority model. PKCE remains unimplemented and conditional future work only if MinePanel deliberately expands its browser compatibility requirements. If MinePanel later adopts a browser-based OAuth Authorization Code flow, that flow MUST use PKCE and receive a fresh security/design review against then-current browser OAuth guidance.
 

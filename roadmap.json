@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-09-02",
+  "updatedAt": "2026-09-09",
   "phases": [
     {
       "id": "1",
@@ -156,6 +156,23 @@
         { "text": "Add trusted real-Docker lifecycle coverage", "done": true },
         { "text": "Verify Elysia 2 ecosystem reliability on the selected Bun runtime", "done": false },
         { "text": "Port with route, status, body, auth, cookie, DB, Docker, and WS parity", "done": false }
+      ]
+    },
+    {
+      "id": "mcp-server",
+      "label": "MCP Server / Agent Interface",
+      "name": "MCP / Agent Adapter",
+      "status": "future",
+      "description": "Post-Elysia, thin client-agnostic MCP server adapter over MinePanel's application/domain layer — never direct Docker, filesystem, or database access.",
+      "items": [
+        { "text": "Shared contracts and schemas where appropriate", "done": false },
+        { "text": "Scoped MCP auth, including per-server restrictions", "done": false },
+        { "text": "Read / control / destructive permission separation", "done": false },
+        { "text": "Server state, logs, metrics, players, backups, and node resources", "done": false },
+        { "text": "Lifecycle and console operations through existing MinePanel authorization and orchestration", "done": false },
+        { "text": "Structured diagnostics and higher-level tools (diagnose_server, safe_restart)", "done": false },
+        { "text": "Audit attribution for agent-triggered mutations", "done": false },
+        { "text": "Generic MCP clients — Hermes as an example integration", "done": false }
       ]
     }
   ],
