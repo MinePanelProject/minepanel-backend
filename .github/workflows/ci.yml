@@ -5,6 +5,9 @@ on:
     paths-ignore:
       - README.md
       - SPEC.md
+      - ARCHITECTURE.md
+      - ROADMAP.md
+      - DEVELOPMENT.md
       - AGENTS.md
       - roadmap.json
       - LICENSE
@@ -17,6 +20,9 @@ on:
     paths-ignore:
       - README.md
       - SPEC.md
+      - ARCHITECTURE.md
+      - ROADMAP.md
+      - DEVELOPMENT.md
       - AGENTS.md
       - roadmap.json
       - LICENSE
