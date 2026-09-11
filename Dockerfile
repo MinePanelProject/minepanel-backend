@@ -19,8 +19,9 @@ WORKDIR /app
 COPY package.json bun.lock ./
 # --omit=peer drops drizzle-orm's optional peers that Bun would otherwise
 # install; @grpc/grpc-js (needed by dockerode) and its protobufjs subtree stay.
-# protobufjs is pinned via overrides to the CVE-fixed 7.5.5. Only @prisma is
-# pruned — it is never imported by the app.
+# protobufjs is pinned through package.json overrides to a CVE-fixed release;
+# the pinned versions live there, not here. Only @prisma is pruned — it is
+# never imported by the app.
 RUN bun install --frozen-lockfile --production --omit=peer \
  && rm -rf node_modules/@prisma
 
