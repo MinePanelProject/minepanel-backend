@@ -8,25 +8,41 @@
 
 **Self-hosted Minecraft server management panel - one `docker compose up` away.**
 
-[minepanel.xyz](https://minepanel.xyz) · [SPEC.md](./SPEC.md) · [Deployment Guide](./docs/deployment.md) · [Real-Time API](./docs/realtime.md)
+[minepanel.xyz](https://minepanel.xyz) · [Deployment Guide](./docs/deployment.md)
 
 </div>
 
 ---
 
-> **Phase 1 - v1.0 release candidate.** Auth (JWT cookies, 2FA, admin approval), transactional first-admin bootstrap, protocol-1 capability discovery, server lifecycle, host metrics over WebSocket, and the one-command Docker deployment (Caddy auto-HTTPS, Drizzle migrations on boot, multi-arch images on GHCR) are shipped. Open decisions and the hardening backlog are tracked in [SPEC.md](./SPEC.md) §16/§19.
->
-> **Phase 1 - authorization spine shipped.** Per-server visibility (`OPEN`/`REQUEST`/`PRIVATE`), request/approval workflows, requestable-server discovery, and MOD granular permissions (`PermissionsGuard` + `mod_permissions`) are live.
->
-> **Phase 1.5 - Identity / onboarding core scope complete.** Challenge-bound Google login and account linking, server visibility and access requests, requestable-server discovery, and MOD granular permissions are live. GitHub OAuth, invitations and alternate registration modes, and SMTP-dependent magic links are optional; Microsoft Minecraft linking and offline UUID linking are deferred. None gates backend feature completion - see the [roadmap](https://minepanel.xyz/#roadmap).
+MinePanel is a self-hosted Minecraft server management panel. It runs entirely on your own hardware via
+Docker - no cloud lock-in, no external services. This repository is the backend: a **NestJS REST +
+WebSocket API** that manages authentication, spawns Minecraft server containers through the Docker
+socket, and serves the hosted protocol-1 dashboard ([`minepanel-pwa`](https://github.com/MinePanelProject/minepanel-pwa)).
+
+> **Status: v1.0 release candidate, no stable release published.** Authentication (JWT HttpOnly
+> cookies, TOTP, admin approval, Google sign-in), the transactional first-admin bootstrap, protocol-1
+> capability discovery, server lifecycle, per-server access control with MOD granular permissions, host
+> metrics over WebSocket, and the one-command Docker deployment (Caddy auto-HTTPS, boot migrations,
+> multi-arch GHCR images) are shipped. There is no stable semver release yet; the `edge` image built
+> from `master` is the current channel. Planning state and gates: [`ROADMAP.md`](./ROADMAP.md).
 
 ---
 
-## What is MinePanel?
+## Engineering documentation
 
-MinePanel is a self-hosted Minecraft server management panel. It runs entirely on your own hardware via Docker - no cloud lock-in, no external services.
+| Document | Read it for |
+|----------|-------------|
+| [`SPEC.md`](./SPEC.md) | The contract: supported clients, deployment topology, data model, HTTP/WS API, auth and authorization semantics, lifecycle state machine, error and configuration contracts, invariants, decision register, security requirements |
+| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | How the current system is built: module structure, request pipeline, persistence and advisory locks, Docker boundary, realtime, capability negotiation, deployment |
+| [`ROADMAP.md`](./ROADMAP.md) | What is completed, next, committed, conditional or exploratory - with dependencies, gates and acceptance conditions |
+| [`DEVELOPMENT.md`](./DEVELOPMENT.md) | Local setup, commands, migrations, test suites, and the validation expected before claiming a change is done |
+| [`AGENTS.md`](./AGENTS.md) | Coding-agent working rules, style conventions and red lines |
+| [`docs/`](./docs) | Domain detail: [deployment](./docs/deployment.md) · [servers](./docs/servers.md) · [auth](./docs/auth-architecture.md) · [access control](./docs/access-control.md) · [realtime](./docs/realtime.md) |
 
-The backend is a **NestJS REST + WebSocket API** that manages user authentication, spawns Minecraft server containers through the Docker socket, and exposes all panel operations to the hosted protocol-1 management dashboard (`minepanel-pwa`). Hosted authentication supports the current browser environments that provide the required secure-context, partitioned-cookie, and Web Locks behavior; universal, legacy-browser, embedded-WebView, and private/LAN-origin compatibility is not claimed.
+`SPEC.md` wins over any other document in this repository: it defines what the system is *required* to
+do. The code, migrations, tests and deployment configuration define what it *currently* does; when
+they disagree, the discrepancy is investigated and classified in `SPEC.md` §1 rather than silently
+reconciled in either direction.
 
 ---
 
@@ -42,41 +58,46 @@ docker compose pull && docker compose up -d
 │      /var/run/docker.sock (root, local)      │
 │                      ▼                       │
         mc-{id} (itzg/minecraft-server pinned image)        │
-        on managed bridge (CPU/PIDs capped)                 │
+        on managed bridge (memory/CPU/PIDs capped)          │
 └──────────────────────────────────────────────┘
 ```
 
-- **Caddy** handles automatic HTTPS (Let's Encrypt) - just set `DOMAIN` and `CORS_ORIGIN` in `.env`
-- **NestJS** mounts the local Docker socket to spawn and control MC containers
-- Each Minecraft server runs in its own isolated container on a dedicated bridge network
-- MC data lives in `{MC_DATA_PATH_HOST}/{serverId}/`; the backend sees it read-only
+- **Caddy** handles automatic HTTPS - set `DOMAIN` and `CORS_ORIGIN` in `.env`
+- **NestJS** mounts the local Docker socket to create and control MC containers
+- Each Minecraft server runs in its own container on a dedicated bridge network
+- MC data lives in `{MC_DATA_PATH_HOST}/{serverId}/`; the backend sees it **read-only**
+
+Only Caddy publishes ports (80/443). The backend is never published: publishing port 3000 would break
+the `trust proxy = 1` assumption and defeat both per-IP throttling and the CSRF origin check
+([`SPEC.md`](./SPEC.md) §4.2).
 
 ---
 
-## Tech Stack
+## Tech stack
 
-| Layer       | Technology                                                        |
-|-------------|-------------------------------------------------------------------|
-| Framework   | [NestJS](https://nestjs.com/) v11                                 |
-| Language    | TypeScript 5                                                      |
-| Runtime     | [Bun](https://bun.sh/) 1.3.14 (production) / Node.js 20 (dev, unpinned)  |
-| Database    | PostgreSQL 16 + [Drizzle ORM](https://orm.drizzle.team/)          |
-| Auth        | JWT via HttpOnly cookies (no Passport)                            |
-| Docker      | [Dockerode](https://github.com/apocas/dockerode) - local socket   |
-| Proxy       | [Caddy](https://caddyserver.com/) - auto HTTPS, included in compose |
-| Validation  | `class-validator` + `class-transformer`                           |
-| API docs    | Swagger / OpenAPI at `/docs`                                      |
-| Linter      | [Biome](https://biomejs.dev/)                                     |
+| Layer | Technology |
+|-------|------------|
+| Framework | [NestJS](https://nestjs.com/) v11 |
+| Language | TypeScript 5 |
+| Runtime | [Bun](https://bun.sh/) 1.3.14 (production and package manager) |
+| Database | PostgreSQL 16 + [Drizzle ORM](https://orm.drizzle.team/) |
+| Auth | JWT via HttpOnly cookies, TOTP, Google Identity Services (no Passport) |
+| Docker | [Dockerode](https://github.com/apocas/dockerode) over a local Unix socket |
+| Realtime | Socket.IO 4 |
+| Proxy | [Caddy](https://caddyserver.com/) - automatic HTTPS, included in Compose |
+| Validation | `class-validator` + `class-transformer` |
+| API docs | Swagger / OpenAPI at `/docs` |
+| Lint/format | Biome 2.4 + oxlint |
 
 ---
 
-## Quick Deploy
+## Quick deploy
 
-**Requirements:** a Linux server with Docker Engine and the Compose plugin, a domain pointing to it, and ports 80 and 443 open.
+**Requirements:** a Linux or macOS host with Docker Engine and the Compose plugin, a domain pointing
+to it, and ports 80/443 reachable.
 
-MinePanel has no published stable semver release yet. The current pre-stable
-channel is `edge`, built from `master`. Download the deployment assets without
-cloning the source repository:
+There is no published stable semver release yet, so the current channel is `edge`, built from
+`master`. Download the deployment assets without cloning the source:
 
 ```bash
 curl -fsSLo docker-compose.yml https://raw.githubusercontent.com/MinePanelProject/minepanel-backend/master/docker-compose.yml
@@ -105,120 +126,107 @@ MC_DATA_PATH_HOST=/absolute/path/to/mc-data
 docker compose pull && docker compose up -d
 ```
 
-The Compose service keeps `pull_policy: missing`: it reuses a locally cached
-image during `up`; the explicit `docker compose pull` above refreshes it.
+The Compose service uses `pull_policy: missing`, so an ordinary `up` reuses a locally cached image;
+the explicit `docker compose pull` refreshes it. Caddy provisions the HTTPS certificate
+automatically and the panel is live at `https://your-domain.com`.
 
-Caddy automatically provisions an HTTPS certificate. The panel is live at `https://your-domain.com`.
-Stable is not published yet. When a `vX.Y.Z` release exists, download the
-assets from that exact raw GitHub ref and set `MINEPANEL_IMAGE` to the matching
-`X.Y.Z` image tag. See the [full deployment guide](./docs/deployment.md) for
-pinning and updates.
+**Stable is not published yet.** When a `vX.Y.Z` release exists, download the assets from that exact
+raw GitHub ref and set `MINEPANEL_IMAGE` to the matching `X.Y.Z` image tag, so the Compose file,
+`.env.example`, `Caddyfile` and image all carry the same version. See the
+[deployment guide](./docs/deployment.md) for pinning, updating, proxy alternatives, troubleshooting,
+socket configuration and retained-data cleanup.
 
 ---
 
 ## Development
 
 ```bash
-# Clone the source repository for development
 git clone https://github.com/MinePanelProject/minepanel-backend
 cd minepanel-backend
-
-# Install dependencies
 bun install
-
-# Start PostgreSQL only
-docker compose -f docker-compose.dev.yml up -d
-
-# Copy and configure env
+docker compose -f docker-compose.dev.yml up -d   # local PostgreSQL only
 cp .env.example .env
-
-# Push DB schema
 bun db:push
-
-# Start with hot reload
 bun start:dev
 ```
 
-API: `http://localhost:3000/api`
-Swagger: `http://localhost:3000/docs`
+API: `http://localhost:3000/api` · Swagger: `http://localhost:3000/docs`
+
+Full command reference, environment setup, migration workflow and validation gates:
+[`DEVELOPMENT.md`](./DEVELOPMENT.md).
 
 ---
 
-## Environment Variables
+## Configuration
 
-See [`.env.example`](./.env.example) for the full list. Key variables:
+See [`.env.example`](./.env.example) for the complete list, with descriptions and defaults. The
+variables an operator must set are in **Quick deploy** above; the ones that most often need tuning:
 
-| Variable                | Description                                        | Default              |
-|-------------------------|----------------------------------------------------|----------------------|
-| `DOMAIN`                | Public domain - used by Caddy for HTTPS            | required in prod     |
-| `CORS_ORIGIN`           | Allowed frontend origin - never derived from `DOMAIN` | required in prod  |
-| `MINEPANEL_IMAGE`       | Backend image used by Compose                      | `ghcr.io/minepanelproject/minepanel-backend:latest` |
-| `MINECRAFT_IMAGE`       | Required image identity shared by prefetch and managed containers | pinned multi-arch digest in `.env.example` |
-| `DATABASE_URL`          | PostgreSQL connection string                       | required             |
-| `JWT_SECRET`            | Secret for JWT signing                             | required             |
-| `ENCRYPTION_KEY`        | 32 random bytes encoded as 64 hexadecimal characters; generate with `openssl rand -hex 32` | required |
-| `SETUP_TOKEN`           | One-time first-admin secret sent as `X-Setup-Token`; if omitted, a token is generated/logged once per incomplete process | optional fallback |
-| `REQUIRE_ADMIN_APPROVAL`| New users start as PENDING until admin approves    | `true`               |
-| `MC_PORT_MIN/MAX`       | Port range for Minecraft server containers         | `25565` / `25665`    |
-| `MC_DATA_PATH_HOST`     | Host data root - **required in Compose** (wizards default `$HOME/.minepanel/mc-data`; mounted read-only at `/mc-data`) | `$HOME/.minepanel/mc-data` |
-| `MC_DATA_PATH`          | Base path inside the backend; Compose fixes it to `/mc-data` (direct backend execution only) | `/mc-data` |
-| `MIN_FREE_DISK_MB`      | Minimum free disk to allow server creation         | `2048`               |
-| `MAX_MEMORY_RATIO`       | Max fraction of host RAM allocatable to MC servers | `0.90`               |
-| `MC_CPU_NANO_CPUS`      | Per-container CPU quota in NanoCPU units           | `2000000000` |
-| `MC_PIDS_LIMIT`         | Per-container process limit                        | `512` |
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `MINECRAFT_IMAGE` | Image identity shared by the Compose prefetch and every managed Minecraft container; a pinned multi-arch digest in `.env.example`, `:latest` rejected | pinned digest |
+| `MINEPANEL_IMAGE` | Backend image used by Compose | `ghcr.io/minepanelproject/minepanel-backend:latest` |
+| `REQUIRE_ADMIN_APPROVAL` | New registrations start as PENDING until an admin approves | `true` |
+| `MC_DATA_PATH_HOST` | Host data root; mounted read-only at `/mc-data` and used as the container bind source | required in Compose |
+| `MC_PORT_MIN` / `MC_PORT_MAX` | Host port range for Minecraft containers | `25565` / `25665` |
+| `MC_CPU_NANO_CPUS` / `MC_PIDS_LIMIT` | Per-container CPU quota and process limit | `2000000000` / `512` |
+| `MIN_FREE_DISK_MB` / `MAX_MEMORY_RATIO` | Admission thresholds for create and start | `2048` / `0.90` |
+| `STOP_WARN_SECONDS` | Player warning before a graceful shutdown (`0`-`300`) | `30` |
+| `GOOGLE_CLIENT_ID` | Enables Google sign-in and the `googleOAuth` capability | unset |
+
+The distinction between variables the application consumes and variables that exist only for Compose
+interpolation is documented in [`SPEC.md`](./SPEC.md) §13.2.
 
 ---
 
 ## Database
 
-Schema defined in [`src/db/schema.ts`](./src/db/schema.ts).
+Schema: [`src/db/schema.ts`](./src/db/schema.ts) (the single authoritative schema). Migrations:
+`drizzle/`.
 
 ```bash
-bun db:push      # sync schema to DB (dev)
-bun db:generate  # generate SQL migrations
-bun db:migrate   # apply migrations (prod)
-bun db:studio    # open Drizzle Studio GUI
+bun db:push      # sync schema to the database (development)
+bun db:generate  # generate SQL migrations from schema changes
+bun db:migrate   # apply migrations (production)
+bun db:studio    # Drizzle Studio
 ```
 
-In production, migrations run automatically inside the container before the API starts.
+In production the container applies the whole migration chain before the API starts listening.
 
 ---
 
-## API Overview
+## API
 
-Full docs at `/docs` (Swagger UI) when the server is running.
+Exhaustive, always-current reference: **Swagger UI at `/docs`** while the server runs. Architecturally
+important semantics (global prefix, status codes, error envelope, capability discovery, auth flows)
+are in [`SPEC.md`](./SPEC.md) §7, §8 and §12; the endpoint groups are setup, auth (including 2FA and
+Google), admin, servers, server access, plus `GET /health` and `GET /api/info`.
 
-`GET /api/info` returns protocol 1 and explicit capability flags. Production session cookies use `HttpOnly; Secure; SameSite=None; Partitioned; Path=/` (CHIPS), coordinated with Web Locks by the hosted PWA where required. PKCE is not implemented, is not required for Stable-v1, and remains only a conditional future compatibility option if browser requirements expand; it is advertised as unsupported. Clients must not infer compatibility from `PANEL_VERSION`.
-
-| Group      | Endpoints                                                                                     |
-|------------|-----------------------------------------------------------------------------------------------|
-| Setup      | `GET /setup/status` · `POST /setup/init` (requires `X-Setup-Token`, throttled 5/10 min/IP) |
-| Auth       | `POST /auth/register` · `POST /auth/login` · `POST /auth/refresh` · `POST /auth/logout` · `POST /auth/logout-all` · `GET /auth/profile` · `GET /auth/sessions` · `PATCH /auth/profile` · `PATCH /auth/password` · `POST /auth/oauth/challenge` · `POST /auth/oauth/google/login` · `POST /auth/oauth/google/link` · `POST /auth/2fa/setup` · `POST /auth/2fa/confirm` · `POST /auth/2fa/verify` · `DELETE /auth/2fa/disable` |
-| Admin      | `GET /admin/users` · `PATCH /admin/users/:id/status` · `PATCH /admin/users/:id/role` · `POST /admin/users/:id/reset-password` · `DELETE /admin/users/:id/2fa` · `GET/POST /admin/users/:id/permissions` · `DELETE /admin/users/:id/permissions/:permId` |
-| Health     | `GET /health`                                                                                 |
-| Info       | `GET /api/info` - protocol-1 capability discovery (`Cache-Control: no-store`) |
-| Servers    | `POST /servers` · `GET /servers` · `GET /servers/requestable` · `GET /servers/:id` · `POST /servers/:id/start` · `POST /servers/:id/stop` · `POST /servers/:id/restart` · `DELETE /servers/:id` · `POST /servers/:id/request-access` · `GET /servers/:id/my-access-request` · `GET /servers/:id/access-requests` · `POST /servers/:id/access-requests/:userId/approve` · `DELETE /servers/:id/access-requests/:userId` |
-| WebSocket  | `system.stats` - host metrics for ADMIN sockets only ([docs/realtime.md](./docs/realtime.md)) |
+`GET /api/info` returns protocol 1 and explicit capability flags and is the compatibility contract
+for hosted clients - they must branch on those flags, never on `PANEL_VERSION`. Production session
+cookies are `HttpOnly; Secure; SameSite=None; Partitioned; Path=/` (CHIPS), coordinated with Web Locks
+by the hosted dashboard where required. See [`docs/realtime.md`](./docs/realtime.md) for the WebSocket
+surface.
 
 ---
 
 ## Roadmap
 
-Live progress at [minepanel.xyz/#roadmap](https://minepanel.xyz/#roadmap). This repository owns
-[`roadmap.json`](./roadmap.json), which contains backend implementation progress only. It does not
-own website presentation content. The site fetches this file server-side, so roadmap updates do not
-require a minepanel-site deployment.
+Live progress is rendered at [minepanel.xyz/#roadmap](https://minepanel.xyz/#roadmap) from this
+repository's [`roadmap.json`](./roadmap.json), which the site fetches server-side - a roadmap update
+needs no site deployment. The rationale, dependencies and gates behind those progress items live in
+[`ROADMAP.md`](./ROADMAP.md); the two files are updated together.
 
 The current NestJS backend remains the implementation target through feature completion. Backend 2.0
-— Elysia 2 is a future, parity-first milestone only after the gates listed in [SPEC.md](./SPEC.md)
-§17.6; no migration preparation is underway.
-
-See [SPEC.md](./SPEC.md) for the canonical architecture and roadmap.
+(Elysia 2) is a future, parity-first milestone that starts only after every gate in
+[`ROADMAP.md`](./ROADMAP.md) §6.1 is satisfied, and the MCP Server / Agent Interface is a further
+conditional track (§6.2) that may start only after that port; neither is in preparation and no MCP
+server exists today.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT - see [LICENSE](./LICENSE).
 
 Not affiliated with Mojang Studios or Microsoft. Minecraft is a trademark of Mojang Synergies AB.

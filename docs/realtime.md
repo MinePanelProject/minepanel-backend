@@ -40,8 +40,11 @@ Tokens are revalidated before every collection and again immediately before each
 ```
 
 - `totalRamMb` — host total RAM from Docker `info.MemTotal`.
-- `usedRamMb` — `totalRamMb - freeRamMb`.
-- `freeDiskMb` — free space on the Docker data volume (`fs.statfs`).
+- `usedRamMb` — `totalRamMb - freeRamMb`, where `freeRamMb` is `node:os.freemem()` (host free memory
+  as the backend process sees it). The two values come from different sources, so treat the result as
+  display telemetry: it is never used for admission or authorization.
+- `freeDiskMb` — free space on the data root, measured with `fs.statfs(MC_DATA_PATH)` (fixed to
+  `/mc-data` in Compose).
 - `cpuCount` — host CPU count from Docker `info.NCPU`.
 
 No timestamp, user, token, Docker ID, path, total disk, free RAM, or server data is included.

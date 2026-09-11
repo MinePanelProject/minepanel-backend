@@ -242,24 +242,24 @@ Every reconciliation write compares the full observed snapshot (`status`, `conta
 
 ## Server Model (Drizzle schema)
 
-| Field       | Type           | Notes                          |
-|-------------|----------------|--------------------------------|
-| id          | String         | UUID PK                        |
-| name        | String         |                                |
-| provider    | ServerProvider | VANILLA \| PAPER \| PURPUR \| FABRIC \| FORGE |
-| version     | String         | e.g. "1.21.1"                  |
-| port        | Int            | unique, host port              |
-| containerId | String?        | set after Docker create        |
-| status      | ServerStatus   | STOPPED \| CREATING \| STARTING \| RUNNING \| STOPPING \| ERROR |
-| maxPlayers  | Int            | default: 20                    |
-| difficulty  | String         | default: "normal"              |
-| gamemode    | String         | default: "survival"            |
-| pvp         | Boolean        | default: true                  |
-| worldPath   | String?        |                                |
-| ownerId     | String         | FK → User                      |
-| accessType  | Enum           | OPEN \| REQUEST \| PRIVATE (Phase 1.5) |
-| createdAt   | DateTime       |                                |
-| updatedAt   | DateTime       |                                |
+The authoritative, column-complete definition of `servers` — every column, type, default and
+constraint, including `memoryLimitMb`, `onlineMode`, `viewDistance`, `allowFlight`, `motd`,
+`levelSeed`, `rconPassword` and the unused-by-code columns — is [`SPEC.md`](../SPEC.md) §6.1, backed by
+`src/db/schema.ts`. Do not mirror the table here; the schema moves and this document would silently
+drift.
+
+Fields with product-level meaning beyond the schema:
+
+| Field | Note |
+|-------|------|
+| `provider` | `VANILLA` \| `PAPER` \| `PURPUR` \| `FABRIC` \| `FORGE`; passed to the container as itzg `TYPE` |
+| `version` | Minecraft version string, passed to the container as `VERSION` |
+| `port` | Unique host port; must fall within `MC_PORT_MIN`–`MC_PORT_MAX` |
+| `containerId` | Set only after a successful Docker create; null while unprovisioned |
+| `status` | Lifecycle state machine (§State machine above) |
+| `accessType` | `OPEN` \| `REQUEST` \| `PRIVATE` — the visibility model |
+| `ownerId` | Records the creator; confers **no** visibility or ownership rights |
+| `worldPath`, `rconPassword` | Exist in the schema but are never written by any code path |
 
 ---
 

@@ -2,16 +2,36 @@
 
 ## 1. Document purpose, authority and status legend
 
-This document is the authoritative, internally consistent source of truth for the MinePanel project: product vision, implemented behavior, accepted architecture, accepted implementation backlog, future proposals and open decisions. When this specification disagrees with any other repository document, this specification wins; when it disagrees with the code, the code is the immediate truth and the discrepancy is recorded here as a correction or backlog item.
+This document is the authoritative, internally consistent source of truth for the MinePanel project: product vision, intended behavior, accepted architecture, accepted implementation backlog, future proposals and open decisions. When this specification disagrees with any other repository document, this specification wins.
+
+**Implementation truth vs normative contract.** The two are separate authorities and neither silently overwrites the other:
+
+* **Currently implemented behavior** is evidenced by production code, database migrations and schema, automated tests, and runtime/deployment configuration — in that order of specificity.
+* **Intended product contracts, invariants and required behavior** are defined by this document.
+
+The code tells us what the system currently *does*; this specification tells us what the system is *required* to do. When they conflict, the discrepancy MUST be investigated and classified as exactly one of: an implementation defect; an intentionally changed contract that requires a specification update; a stale or incorrect specification; or an unresolved discrepancy. Never rewrite this specification merely because the code currently behaves differently, and never treat an implementation as correct merely because it exists. Equally, never state that specification behavior is implemented without implementation evidence.
+
+**Canonical document set for this repository.** Each file has exactly one responsibility; do not duplicate one file's content into another.
+
+| Document | Owns |
+|----------|------|
+| `SPEC.md` (this file) | Contract-level truth: intended observable behavior, invariants, status markers, decisions, security requirements |
+| `ARCHITECTURE.md` | How the **current** implementation satisfies this specification (structure, flows, boundaries); it must track the actual codebase |
+| `ROADMAP.md` | Future/planned work: what is next, committed, conditional or exploratory, with dependencies and acceptance conditions. It is never evidence that functionality currently exists |
+| `DEVELOPMENT.md` | The **current** development, build and validation workflow |
+| `AGENTS.md` | Coding-agent working rules and red lines |
+| `roadmap.json` | Machine-readable published projection of `ROADMAP.md`, consumed by the website |
+
+§16 and §17 below state contract-level status and future design constraints only. **`ROADMAP.md` is authoritative for roadmap state, scope, sequencing, dependencies, gates and acceptance conditions**; when this file and `ROADMAP.md` disagree about planning, `ROADMAP.md` governs and this file is corrected.
 
 Every feature statement below carries one of these status markers:
 
 | Marker | Meaning |
 |--------|---------|
 | `[IMPLEMENTED]` | Verified in the code, schema, migrations and tests at the explicitly named audit revision/date at the top of this document and in Appendix B. |
-| `[ACCEPTED]` | Approved target behavior or architecture that is not yet implemented; tracked in the backlog (§16). |
-| `[PROPOSED]` | Future design that still requires validation or a product/architecture decision; phase-marked (§17). |
-| `[CONTRADICTED]` | A previous specification or configuration claim disproved by current code; the observed current behavior is documented with its correction/backlog item. |
+| `[ACCEPTED]` | Approved target behavior or architecture that is not yet implemented; tracked in the backlog registry (§16) and `ROADMAP.md`. |
+| `[PROPOSED]` | Future design that still requires validation or a product/architecture decision; phase-marked in `ROADMAP.md`, with the binding constraints in §17. |
+| `[CONTRADICTED]` | A previous specification or configuration claim disproved by current code; the observed current behavior is recorded and the disagreement is classified per this section rather than assumed to be a specification error. |
 | `[DECISION REQUIRED]` | An unresolved choice that materially affects security, compatibility, product behavior or deployment. Silently picking one is forbidden; see the decision register (§19). |
 
 Normative language, defined once and used consistently:
@@ -20,8 +40,12 @@ Normative language, defined once and used consistently:
 - **SHOULD** — a strong recommendation; a valid exception must be justified in the code or docs.
 - **MAY** — optional behavior; no default obligation either way.
 
+## 2. Status, revision evidence and license
+
 - **Status: stable-v1 hardening implemented.** Foundation / Next items B-NEXT-1 through B-NEXT-7 are implemented and tested; their required seven-item scope is complete. Hosted-browser compatibility expansion remains conditional future work and does not block this milestone.
 - **Stable-v1 implementation evidence:** master merge commit `7a184f63da49d2a8be7c4319d91a2dbe770441f8` and master CI run `33647554764`.
+- **Documentation revision:** this document, `ARCHITECTURE.md`, `ROADMAP.md` and `DEVELOPMENT.md` were consolidated and re-verified at backend revision `6b703c935ac9ee843d2c98bd902ae7946d9f13f9` (branch `perf/sql-allocation-host-info`, 2026-09-11). Re-verification evidence: §B.2.
+- **Documentation ownership:** `SPEC.md` owns contracts and invariants, `ARCHITECTURE.md` owns the current implementation structure, `ROADMAP.md` owns planning state and gates, `DEVELOPMENT.md` owns the developer workflow. Planning disagreements are resolved in `ROADMAP.md`.
 - **Version truth:** `package.json` says `1.0.0`; `PANEL_VERSION` defaults to `"1.0"`; the Swagger fallback is `"N/A"`; CI sets `PANEL_VERSION` to `1.0.0` in e2e. This inconsistency is tracked as backlog item B-P2-6.
 - **License:** the repository is MIT-licensed. `package.json` declares `"license": "MIT"` and `LICENSE` is present. `private: true` controls package publication and does not change the license.
 
@@ -34,7 +58,7 @@ MinePanel is a self-hosted Minecraft server management panel. A single `docker c
 | Client | Repo | Tech | Status |
 |--------|------|------|--------|
 | Web dashboard (hosted PWA) | `minepanel-pwa` | React 19 + Vite 7 + TypeScript + Tailwind 4 | `[IMPLEMENTED]` — hosted React PWA at `app.minepanel.xyz` with multi-backend discovery and a protocol-1 auth/management surface; current hosted auth uses cross-origin HttpOnly CHIPS cookies and Web Locks on supported browser environments; not part of this backend's compose file |
-| Mobile app | `minepanel-mobile` | KMP + Compose Multiplatform (iOS + Android) | `[PROPOSED]` — Phase 6 |
+| Mobile app | `minepanel-mobile` | KMP + Compose Multiplatform (iOS + Android) | `[PROPOSED]` — exploratory; no repository exists and no roadmap phase is assigned (`ROADMAP.md` §7.3) |
 | Backend API | `minepanel-backend` (this repo) | NestJS 11 + PostgreSQL | `[IMPLEMENTED]` |
 
 The backend is client-agnostic. Role-based guards (`ADMIN` / `MOD` / `USER`) plus per-server access rules and MOD granular permissions enforce access at the API level.
@@ -47,19 +71,10 @@ Direct browser access from `https://app.minepanel.xyz` to LAN/private-network in
 
 - **Self-hosted first**: backend + database + MC servers run on the operator's machine. External calls are optional (Discord webhooks, Mojang UUID API, Hangar/Modrinth metadata in future phases).
 - **No external queue or cache**: PostgreSQL is the only stateful dependency. No Redis, no BullMQ, no CDN.
-- **Not admin-only**: regular players have a dedicated portal surface in the roadmap (access requests, player profile, notifications — Phase 6).
+- **Not admin-only**: regular players have a dedicated portal surface in the roadmap (access requests, player profile, notifications — exploratory, `ROADMAP.md` §7.3).
 - **`[ACCEPTED]`** the backend data mount is **read-only**; every future write feature (backups, file manager, plugins) must route through the write architecture decided in §10.4 (owner decision D-8).
 
-**Development phases (canonical numbering — used consistently everywhere):**
-
-- **Foundation / Next:** stable-v1 hardening is `[IMPLEMENTED]`: stable API errors/request IDs; explicit password byte semantics; dead login configuration removal; bounded progressive abuse protection; Minecraft CPU/PID isolation; reproducible image identity; and trusted real-Docker lifecycle coverage.
-- **Phase 1.5 — Identity / Onboarding:** Google OAuth, server visibility/access requests, requestable discovery, and MOD PBAC are `[IMPLEMENTED]`. Remaining GitHub OAuth, Minecraft/Microsoft linking, offline UUID linking, invitation/registration modes, and magic links are explicitly classified in §17.1; none is assumed mandatory for backend feature completion.
-- **Phase 2A — Platform foundations:** audit log, framework-neutral system-event model, and a scheduler only when first required by a real feature. `[PROPOSED]`.
-- **Phase 3 — Core operations:** RCON/console broker, real-time server events, backup/restore, scheduled tasks, controlled filesystem writes, file manager, player management, plugins/mods, and notifications. `[PROPOSED]`.
-- **Phase 2B — Integrations:** API keys, outbound webhooks, external integrations, and system-event consumers after the foundations. `[PROPOSED]`.
-- **Later product surfaces:** creation presets/wizard, mod-loader selection, Velocity/networking, Geyser/Bedrock, and other deferred surfaces. `[PROPOSED]`.
-- **Backend 2.0 — Elysia 2:** a future parity-first port after the Nest feature set and migration gates are complete; see §17.6. `[PROPOSED]`.
-- **MCP Server / Agent Interface:** a post-Elysia, thin client-agnostic MCP server adapter over the application/domain layer — never direct Docker, filesystem, or database access; see §17.7. `[PROPOSED]`.
+**Development phases.** The canonical phase list, current status, dependencies and gates live in [`ROADMAP.md`](./ROADMAP.md). Phase names used in this specification (`Foundation / Next`, `Phase 1.5`, `Phase 2A`, `Phase 2B`, `Phase 3`, `Backend 2.0`, `MCP Server / Agent Interface`) correspond to the published `roadmap.json` phase ids `1`, `next`, `1.5`, `2a`, `2b`, `3`, `identity-future`, `later`, `backend-2` and `mcp-server`; `ROADMAP.md` §1.1 maps them. Do not restate phase progress here — use `ROADMAP.md`.
 
 ## 4. Deployment topology and trust boundaries
 
@@ -128,12 +143,11 @@ current revision, so `edge` is the supported pre-stable channel.
 5. **MC containers.** Untrusted, modded game code. They run unprivileged, memory-capped, with no added Linux capabilities, on a bridge network. Known gap (backlog B-P2-4): the `mc` bridge allows unrestricted container-to-container traffic; per-server networks are `[PROPOSED]`.
 6. **Data volume.** Host directory owned via daemon binds; itzg entrypoint chowns to its runtime user at container start; the backend reads it `:ro`.
 
-### 4.3 Hardening backlog `[IMPLEMENTED]`
+### 4.3 Hardening backlog relevant to these boundaries
 
-- **B-NEXT-1 through B-NEXT-7:** stable-v1 API errors/request IDs, password semantics, throttle configuration, progressive login abuse protection, CPU/PID isolation, reproducible Minecraft image identity, and trusted lifecycle coverage are implemented below and gated in CI. No additional item gates the completed milestone.
-- **B-P2-4:** document/restrict inter-container traffic on the `mc` network; per-server networks remain `[PROPOSED]`.
-- **B-P2-5:** run the backend as a non-root user with `group_add` for the Docker group instead of `user: root`.
-- **B-P2-6:** consider `cap_drop: [ALL]` + `read_only: true` + `tmpfs: /tmp` for the backend container.
+- **B-NEXT-1 through B-NEXT-7 (all `[IMPLEMENTED]`):** stable-v1 API errors/request IDs, password semantics, throttle configuration, progressive login abuse protection, CPU/PID isolation, reproducible Minecraft image identity, and trusted lifecycle coverage. No item gates the completed milestone. Identifier registry: §16.1.
+- **B-P2-4 (`[ACCEPTED]`, security-relevant):** document or restrict inter-container traffic on the `mc` network; per-server networks remain `[PROPOSED]`. This is the only open backlog item that weakens a trust boundary in §4.2.
+- **B-P2-5, B-P2-6 (`[ACCEPTED]`, container-hardening suggestions):** backend container privilege reduction and `cap_drop`/`read_only`/`tmpfs` hardening. Both are tracked in `ROADMAP.md` §8; neither changes the current contract.
 
 ## 5. Accepted architectural invariants
 
@@ -272,7 +286,7 @@ Global prefix `api` (except `/health`); Swagger UI at `/docs` (public — backlo
 | POST | `/api/auth/logout-all` | JWT | Revokes all refresh rows, clears cookies |
 | GET | `/api/auth/profile` | JWT | Current user (`req.user` shape) |
 | PATCH | `/api/auth/profile` | JWT | Update **username only** (email is not editable through any endpoint today); 400 `No changes` when identical |
-| PATCH | `/api/auth/password` | JWT | Change password; requires `currentPassword`; keeps current session, revokes others (normal flow) or all (forced recovery flow) |
+| PATCH | `/api/auth/password` | JWT | Change password; body is `{ oldPassword, newPassword }` (the DTO field is `oldPassword`, not `currentPassword`); keeps current session, revokes others (normal flow) or all (forced recovery flow) |
 | GET | `/api/auth/sessions` | JWT | List **unexpired** refresh-token rows (id, userId, expiresAt, createdAt); expired rows filtered (B-P1-3) |
 | DELETE | `/api/auth/sessions/:id` | JWT | Revoke own session; silently succeeds for missing rows |
 | POST | `/api/auth/2fa/setup` | JWT | Returns `{ secret, uri }`; secret encrypted at rest |
@@ -324,8 +338,8 @@ Global prefix `api` (except `/health`); Swagger UI at `/docs` (public — backlo
 - Default namespace (`/`), socket.io v4, CORS locked to the canonical origin (adapter `allowRequest`: handshakes carrying an Origin must match exactly; header size limits).
 - **Auth:** `access_token` cookie in the handshake, or one `auth` event `{ accessToken }` within 5 seconds; otherwise silent disconnect. Reservation cap 100 pending connections.
 - **Eligibility:** ADMIN only, excluding temporary-auth sessions (`mustChangePassword`).
-- **Events:** one event today — `system.stats` `{ totalRamMb, usedRamMb, freeDiskMb, cpuCount }` every 10s (volatile, cached ≤10s), token re-validated each tick. `usedRamMb = hostTotal − containerFree` (container cgroup free memory; documented caveat, B-P2-8).
-- **Contradiction to fix:** JS cannot read the HttpOnly access token, so the `auth`-event fallback is unusable by browsers; and the adapter rejects cookie-carrying handshakes without an Origin (mobile clients). Accepted fix: one-time WS ticket (B-P1-4, §8.6). The richer event set in the old SPEC (server.status/log/console, subscribe) is `[PROPOSED]` Phase 3 (§17.3).
+- **Events:** one event today — `system.stats` `{ totalRamMb, usedRamMb, freeDiskMb, cpuCount }` every 10s (volatile, cached ≤10s), token re-validated each tick. `totalRamMb` and `cpuCount` come from Docker `info` (`MemTotal`, `NCPU`); `freeDiskMb` is `fs.statfs(MC_DATA_PATH)` (`/mc-data` in Compose); `usedRamMb = totalRamMb − os.freemem()` as reported inside the backend container. Two independent sources are combined, so the derived value is display telemetry only, never an admission or authorization input, and a runtime that reports cgroup-scoped `/proc/meminfo` instead of host memory would skew it (documented caveat, B-P2-8).
+- **Contradiction to fix:** JS cannot read the HttpOnly access token, so the `auth`-event fallback is unusable by browsers; and the adapter rejects cookie-carrying handshakes without an Origin (mobile clients). Accepted fix: one-time WS ticket (B-P1-4, §8.6). The richer event set in the old SPEC (server.status/log/console, subscribe) is `[PROPOSED]` Phase 3 (§17.2).
 
 ---
 
@@ -345,7 +359,7 @@ This closes the former concurrent-admin and insert/flag failure races. D-2 is ad
 - Access JWT: `{ sub, type: 'access', username, role, temporaryAuth? }` — TTL from `JWT_EXPIRES_IN` via `JwtModule` `signOptions`.
 - Refresh JWT: `{ sub, type: 'refresh', jti, temporaryAuth? }` — TTL from the single parsed `JWT_REFRESH_EXPIRES_IN` (B-P1-5). The random `jti` is the DB row key (SHA-256 digest stored); the raw refresh token is never stored, and the DB never leaks a reusable credential.
 - `type` claims pin token purpose: only `type: 'refresh'` may rotate; only `type: 'access'` passes the JWT guard; `pre-auth` is a five-minute response-body Bearer token restricted to `POST /api/auth/2fa/verify`.
-- Login and refresh return `PublicUser` plus session cookies. A 2FA-required login instead returns `{ requiresTwoFactor: true, preAuthToken }` without setting session cookies; the browser-visible pre-auth exception is scoped in §5.2.
+- Login and refresh return `PublicUser` plus session cookies. A 2FA-required login instead returns `{ requiresTwoFactor: true, preAuthToken }` without setting session cookies; the browser-visible pre-auth exception is scoped by invariant 2 in §5.
 
 ### 8.3 Refresh rotation contract `[IMPLEMENTED]` — remaining session metadata accepted
 
@@ -440,8 +454,8 @@ Because a bind mount exposes the same filesystem, `statfs(/mc-data)` measures th
 
 - Image `itzg/minecraft-server`; name `mc-{serverId}`; labels `minepanel.server-id`, `minepanel.managed=true`.
 - Env **whitelist** (nothing else): `EULA=TRUE`, `ENABLE_RCON=TRUE`, `TYPE=<provider>`, `VERSION`, `MEMORY={n}M`, `MAX_PLAYERS`, `DIFFICULTY`, `MODE` (itzg uses MODE, not GAMEMODE), `ONLINE_MODE`, `VIEW_DISTANCE`, `ALLOW_FLIGHT`, `PVP`, `MOTD` (CR/LF stripped), `SEED`.
-- Binds `{MC_DATA_BIND_SOURCE}/{serverId}:/data`; port mapping `25565/tcp` → `server.port` within `MC_PORT_MIN`–`MC_PORT_MAX`; `Memory` = `memoryLimitMb` bytes (min 512); `Privileged: false`; `CapAdd: []`; `NetworkMode` = `DOCKER_NETWORK` (must be a named network — `host`/`none`/`container:` rejected); `RestartPolicy: unless-stopped`.
-- Missing CPU/pids limits and untagged image are tracked in Foundation / Next (§16).
+- Binds `{MC_DATA_BIND_SOURCE}/{serverId}:/data`; port mapping `25565/tcp` → `server.port` within `MC_PORT_MIN`–`MC_PORT_MAX`; `Memory` = `memoryLimitMb` bytes (min 512); `NanoCpus` = `MC_CPU_NANO_CPUS` (default `2000000000`, accepted range `100000000`–`64000000000`); `PidsLimit` = `MC_PIDS_LIMIT` (default `512`, accepted range `128`–`32768`); `Privileged: false`; `CapAdd: []`; `NetworkMode` = `DOCKER_NETWORK` (must be a named network — `host`/`none`/`container:` rejected); `RestartPolicy: unless-stopped`.
+- Image identity: `MINECRAFT_IMAGE` is read once and validated at container creation. A reference ending in `:latest` is rejected, as is anything not matching a versioned `name:tag` or `name:tag@sha256:<64 hex>` form. A digest suffix is therefore accepted but **not required** at runtime; the digest is required only by the trusted lifecycle smoke and is the shipped `.env.example` default and the Compose prefetch identity (§4.1, D-4).
 
 **RCON today = `docker exec rcon-cli`** (validated argv, bounded bytes/arguments, and hard timeout), used by graceful stop. The backend is intentionally not attached to the Minecraft network. There is no TCP RCON service, and `rconPassword` is not written today. Future work is a **RCON command broker/service with pluggable transport; Docker-exec transport is the default**. TCP RCON is optional only if isolation and operational needs justify it; credential ownership remains a decision, not a required encrypted-storage feature.
 
@@ -592,31 +606,49 @@ The release-gated `trusted-lifecycle` job additionally runs
 `scripts/docker-lifecycle-smoke.mjs` against a real Docker daemon.
 
 
-| Job | Runs | Gate |
-|-----|------|------|
-| `test` | biome lint:ci, build, anti-slop tests, TOTP smoke, Jest in-band | PR + hardening branch + master |
-| `migration` | full `db:migrate` chain on a fresh Postgres | PR + hardening branch + master |
-| `e2e` | migrations + e2e on live PG (no daemon) | PR + hardening branch + master |
-| `image` | build amd64, degraded-mode smoke, image-content assertions, bcrypt load, Trivy CRITICAL + fixed-HIGH | PR + hardening branch + master |
-| `trusted-lifecycle` | build + migration + real create/run/RCON-stop/delete/data-retention lifecycle | hardening branch + master + release tags |
-| `publish` | trusted smoke, multi-arch (amd64/arm64) GHCR push with SBOM/provenance | master push / `v*` tags |
+| Job | Runs | Trigger |
+|-----|------|---------|
+| `test` | package-script contract, deployment contract, `lint:ci` (typecheck + anti-slop oxlint + Biome), build, anti-slop rule tests, TOTP smoke, Jest in-band | pull request or `master` push |
+| `migration` | full `db:migrate` chain on a fresh PostgreSQL 16 | pull request or `master` push |
+| `e2e` | migrations + e2e on live PostgreSQL, no daemon | pull request or `master` push |
+| `image` | build amd64, degraded-mode smoke, image-content assertions, bcrypt load, Trivy CRITICAL + fixed-HIGH | pull request or `master` push |
+| `trusted-lifecycle` | build + migration + real create/run/RCON-stop/delete/data-retention lifecycle | `master` push or `v*` tag only |
+| `publish` | trusted daemon smoke, multi-arch (amd64/arm64) GHCR push with SBOM/provenance | `master` push or `v*` tag only |
+
+`trusted-lifecycle` and `publish` **never run on pull requests**; a PR build is exercised only in
+degraded mode without a Docker socket. All jobs are skipped for changes limited to
+`README.md`, `SPEC.md`, `AGENTS.md`, `roadmap.json`, `LICENSE`, `docs/**`, `.github/FUNDING.yml` and
+`.vscode/**` (see the workflow's `paths-ignore`).
 
 The trusted lifecycle uses an isolated temporary data root, a unique bridge
 network, strong cleanup assertions, and proves retained data before cleanup.
 
-### 14.4 Coverage status `[IMPLEMENTED]`
+### 14.3 Coverage status `[IMPLEMENTED]`
 
 Setup race and throttling retain live-Postgres coverage; refresh rotation
 concurrency retains exactly-one-winner coverage. The trusted lifecycle now
 covers real container configuration, readiness, graceful RCON stop, removal,
 and retained data semantics.
 
+Measured at revision `6b703c935ac9ee843d2c98bd902ae7946d9f13f9`: 44 unit suites with 760 tests and
+13 live-PostgreSQL e2e suites with 91 tests (§B.2). Two coverage boundaries are intentional and must
+not be misrepresented:
+
+* **Docker is mocked in unit and e2e suites.** No e2e suite creates a real Minecraft container; only
+  `scripts/docker-lifecycle-smoke.mjs` (`bun run docker:lifecycle`, the release-gated
+  `trusted-lifecycle` job) exercises the real daemon.
+* **The PR `image` job runs without a Docker socket** and asserts degraded-mode behaviour only. The
+  daemon-backed health-200 smoke runs in the trusted `publish` job.
+
+Local commands, the e2e database guard, and the per-change validation expectations are in
+[`DEVELOPMENT.md`](./DEVELOPMENT.md) §6.
+
 
 ---
 
 ## 15. Implemented feature matrix
 
-Verified against commit `f638031e737117264455132de0668c0cbb9528c4` on 2026-08-27. `✓` = implemented and tested as noted; `(✓)` = implemented, partial/indirect test coverage.
+Verified against commit `f638031e737117264455132de0668c0cbb9528c4` on 2026-08-27, and re-verified against the documentation revision `6b703c935ac9ee843d2c98bd902ae7946d9f13f9` (see Appendix B for the re-verification evidence). `✓` = implemented and tested as noted; `(✓)` = implemented, partial/indirect test coverage.
 
 | Domain | Feature | Status | Evidence |
 |--------|---------|--------|----------|
@@ -650,138 +682,90 @@ Verified against commit `f638031e737117264455132de0668c0cbb9528c4` on 2026-08-27
 | Deploy | compose image prefetch, resource config, preflight, boot migrations | ✓ | deployment contract and trusted lifecycle jobs |
 | API | protocol-1 capability discovery with no-store | ✓ | `app.controller.ts`, unit |
 
-**Deferred or not implemented:** `@nestjs/schedule` cron, `nestjs-pino` logging, `/users` controller, `/versions`, `PATCH /servers/:id` (config), `PATCH /servers/:id/version`, server/panel icons, `/panel/logo`, `/system/stats` REST, GitHub OAuth, magic links, Minecraft linking endpoints, invitations, API keys, webhooks, audit log, system events, backups, scheduled tasks, notifications, plugins, file manager, player management, proxies, Bedrock, `Ban` table, and pagination beyond `GET /servers`.
+**Deferred or not implemented:** `@nestjs/schedule` cron, `nestjs-pino` logging, `/users` controller, `/versions`, `PATCH /servers/:id` (config), `PATCH /servers/:id/version`, server/panel icons, `/panel/logo`, `/system/stats` REST, GitHub OAuth, magic links, Minecraft linking endpoints, invitations, API keys, webhooks, audit log, system events, backups, scheduled tasks, notifications, plugins, file manager, player management, proxies, Bedrock, `Ban` table, an MCP server or MCP transport of any kind (§17.6), and pagination beyond `GET /servers`.
 
 ---
 
-## 16. Prioritized implementation roadmap
+## 16. Backlog identifier registry
 
-This roadmap is reconciled against the audited implementation revision in §2. Items are classified by delivery priority, not by framework preference. The current NestJS backend remains the implementation target until its intended feature set is complete.
+This section is only an index of the stable identifiers this specification references. Roadmap state, sequencing, dependencies, gates and acceptance conditions live in `ROADMAP.md`.
 
-### Foundation / Next — stable-v1 and release hardening `[IMPLEMENTED]`
+### 16.1 Completed — stable-v1 hardening `[IMPLEMENTED]`
 
-- **B-NEXT-1:** stable error envelope, validation normalization, request IDs, `X-Request-Id`, and structured correlation logs.
-- **B-NEXT-2:** strict 72 UTF-8-byte password policy across registration, login, setup, recovery, and password changes; existing bcrypt hashes remain usable when their credential is within policy.
-- **B-NEXT-3:** dead `LOGIN_THROTTLE_LIMIT` and `LOGIN_THROTTLE_TTL_MS` variables removed.
+- **B-NEXT-1:** stable error envelope, validation normalization, request IDs, `X-Request-Id`, and structured correlation logs (§12).
+- **B-NEXT-2:** strict 72 UTF-8-byte password policy across registration, login, setup, recovery, and password changes; existing bcrypt hashes remain usable when their credential is within policy (§18.1).
+- **B-NEXT-3:** dead `LOGIN_THROTTLE_LIMIT` and `LOGIN_THROTTLE_TTL_MS` variables removed (§13.2).
 - **B-NEXT-4:** bounded progressive account/source abuse protection layered with coarse source throttling; account-wide hard lockout is avoided.
-- **B-NEXT-5:** operator-configured global `NanoCpus` and `PidsLimit` guardrails on managed containers.
+- **B-NEXT-5:** operator-configured global `NanoCpus` and `PidsLimit` guardrails on managed containers (§10.3).
 - **B-NEXT-6:** one required `MINECRAFT_IMAGE` identity shared by Compose prefetch and backend-created containers; the shipped default is a verified amd64/arm64 digest.
-- **B-NEXT-7:** trusted CI runs create → ready → graceful RCON stop → delete and proves retained data.
+- **B-NEXT-7:** trusted CI runs create → ready → graceful RCON stop → delete and proves retained data (§14.2).
 
-### Phase 1.5 — Identity / Onboarding
+### 16.2 Completed — session and identity corrections
 
-Completed: Google OAuth (challenge-bound local verification and linking), server visibility/access requests, requestable discovery, and MOD PBAC.
+- **B-P1-2:** refresh failures return stable 401 machine codes, never 500 (§8.3).
+- **B-P1-3:** `GET /auth/sessions` returns only unexpired rows (§8.3).
+- **B-P1-5:** `JWT_REFRESH_EXPIRES_IN` is the single TTL source for the refresh JWT, DB `expiresAt`, and cookie `maxAge` (§8.3).
 
-The following are **optional or deferred**, not assumed requirements for backend feature completion:
+### 16.3 Future design constraints `[ACCEPTED]` / `[PROPOSED]`
 
-- **Optional:** GitHub OAuth; invitation flows and alternate registration modes; magic-link authentication when SMTP is deliberately enabled.
-- **Deferred:** Microsoft Minecraft linking and offline UUID linking until player-management consumers and identity ownership rules are defined.
+- **B-P1-4 / D-6:** WebSocket authentication gains a single-use ticket; the cookie handshake remains the fast path (§8.6).
+- **B-COMPAT-1:** hosted-browser compatibility is reassessed only if product requirements expand beyond the supported matrix; PKCE remains unimplemented and is not a Stable-v1 gap (§8.5, §17.4).
+- **Phase 3 RCON:** a pluggable command broker with Docker-exec as the default transport; a permanent TCP connection pool is not a prerequisite (§17.2).
+- **Phase 3 filesystem writes:** all data-tree mutation stays blocked by D-8 (§10.4, §17.2).
 
-### Future compatibility — hosted browsers `[PROPOSED]`
+Backlog identifiers that this specification does **not** reference (B-P2-4 … B-P2-10, B-P3-3 … B-P3-10, D-1 … D-11) are recorded in `ROADMAP.md` §8 and in the decision register (§19) respectively.
 
-- **B-COMPAT-1:** Reassess hosted-browser compatibility only if product requirements expand beyond the supported browser matrix. Any browser-based OAuth Authorization Code flow MUST use PKCE and receive a fresh security/design review against then-current browser OAuth guidance. PKCE is not implemented, is not part of Stable-v1, and is not a missing completion item.
-
-
-### Phase 2A — Platform foundations
-
-- **Required foundation:** append-only audit log with an internal, framework-neutral system-event model.
-- **Deferred until first consumer:** scheduler; add an in-process scheduler only when a real feature requires recurring work.
-
-API keys, webhooks, and external integrations MUST NOT block core Minecraft management.
-
-### Phase 3 — Core operations
-
-Deliver in dependency order as product requirements become concrete: RCON/console command broker, real-time server logs/stats/player events, backup and restore, scheduled tasks, controlled filesystem-write architecture, file manager, player management, plugin/mod management, and notifications.
-
-RCON future work MUST use a pluggable command-broker design with Docker-exec as the default transport; a permanent TCP connection pool is not a prerequisite. All filesystem mutation remains blocked by D-8 until its security boundary is decided.
-
-### Phase 2B — Integrations
-
-After Phase 2A foundations: API keys, outbound webhooks, external integrations, and system-event consumers. These are later consumers and MUST NOT gate the core server-management path.
-
-### Later product surfaces
-
-Creation presets/wizard, mod-loader/mod selection, Velocity/networking, Geyser/Bedrock, mobile/player surfaces, and other deferred product work remain later milestones. No detailed design is normative until its product and security decisions are made.
-
-### MCP Server / Agent Interface `[PROPOSED]`
-
-Post-Elysia only: a thin, client-agnostic MCP server adapter over MinePanel's application/domain layer through existing authorization and orchestration — never direct Docker, filesystem, or database access. Scope: shared contracts/schemas, scoped MCP auth with per-server restrictions, read/control/destructive permission separation, server state/logs/metrics/players/backups/node resources, lifecycle and console operations, structured diagnostics (`diagnose_server`, `safe_restart`), audit attribution for agent-triggered mutations, and generic MCP clients with Hermes as an example integration. See §17.7.
+Future tracks with binding constraints in §17: MCP Server / Agent Interface (§17.6), conditional on the Elysia 2 port (§17.5).
 
 ---
 
-## 17. Future architecture by phase
+## 17. Future design constraints
 
-Only current behavior is normative unless a future item is explicitly marked `[ACCEPTED]`. Unresolved features remain high-level proposals; implementation details require a later product and architecture decision.
+Only current behavior is normative unless a future item is explicitly marked `[ACCEPTED]`. Phase scope, sequencing and gates are in `ROADMAP.md`; this section records only the normative constraints that future implementations must satisfy.
 
-### 17.1 Phase 1.5 — Identity / Onboarding `[IMPLEMENTED — CORE SCOPE]`
+### 17.1 Identity linking `[IMPLEMENTED — CORE SCOPE]`
 
-The core Phase 1.5 scope is complete. Optional and deferred onboarding follow-ons remain future work and do not gate backend feature completion.
+Implemented: challenge-bound Google OIDC login and account linking, nullable provider-compatible password storage, and the `LinkConfirmationRequired` refusal to link silently by verified-email match.
 
-**Implemented:** challenge-bound Google OIDC login and account linking, nullable provider-compatible password storage, server visibility (`OPEN`/`REQUEST`/`PRIVATE`), access requests, requestable discovery, and MOD PBAC.
+The Google flow verifies the ID token locally against a configured audience, requires a verified email, binds the credential to a single-use backend challenge carried through the provider `nonce`, and forbids silent email-match linking. **Future providers MUST preserve equivalent token binding and explicit linking confirmation.**
 
-**Optional:** GitHub OAuth; invitation flows and alternate registration modes; magic-link authentication when SMTP is deliberately enabled.
+The presence of `users.minecraftUUID`, `users.minecraftName`, `users.githubId` and `users.minecraftVerified` columns does **not** mean any linking flow is implemented; no code path writes them (§6.1).
 
-**Deferred:** Microsoft Minecraft linking and offline UUID linking until player-management consumers and identity ownership rules are defined. The presence of `minecraftUUID`, `minecraftName`, and `minecraftVerified` columns does not mean linking is implemented.
+### 17.2 Core operations — constraints on future design
 
-The implemented Google flow verifies the ID token locally, requires a configured audience and verified email, binds the credential to a single-use backend challenge, and forbids silent email-match linking. Future providers MUST preserve equivalent token binding and explicit linking confirmation.
+These constraints bind any future implementation of the Phase 3 items listed in `ROADMAP.md` §5:
 
-### 17.2 Phase 2A — Platform foundations `[PROPOSED]`
+1. **RCON.** The command surface MUST be a broker/service with pluggable transport. Docker-exec is the default transport because the backend is intentionally off the Minecraft container network; a permanent TCP connection pool is not required, and TCP RCON is optional.
+2. **Filesystem writes.** Every data-tree mutation (backup, restore, file manager, plugin/mod install) MUST stay blocked until decision **D-8** selects a write boundary; the backend data mount stays read-only until then (§10.4).
+3. **Path safety.** Any data-tree file operation MUST implement the normative algorithm in §18.2 on resolved paths, never on string prefixes.
+4. **Archive safety.** Any restore or archive extraction MUST satisfy §18.3.
+5. **Backup consistency.** Any snapshot of a running server MUST satisfy §18.4.
+6. **Audit.** Any Phase 3 mutation that changes server data or access MUST emit the audit entry required by §18.3.
 
-Audit log and an internal framework-neutral system-event model are the required foundations. Add a scheduler only when the first real feature needs recurring work; no scheduler dependency is required merely to complete this phase.
+### 17.3 Platform foundations — constraints
 
-### 17.3 Phase 3 — Core operations `[PROPOSED]`
+The audit log MUST be append-only: application code never updates or deletes an entry. The system-event model MUST be framework-neutral — a service emits it without an HTTP request in flight, and it MUST NOT expose NestJS or HTTP types to consumers. API keys, webhooks and external integrations MUST NOT gate core Minecraft management.
 
-Expected areas: RCON/console command broker; real-time server logs, stats, and player events; backup and restore; scheduled tasks; controlled filesystem writes; file manager; player management; plugin/mod management; and notifications.
+### 17.4 Hosted-browser auth `[PROPOSED]`
 
-The future RCON design is a command broker/service with pluggable transport; Docker-exec is the default transport because the backend is intentionally off the Minecraft container network. TCP RCON is optional, not a permanent connection-pool requirement.
+The current supported hosted-browser contract does not require PKCE: it depends on a public HTTPS PWA, browser-trusted public HTTPS panel origins, CHIPS `Partitioned` HttpOnly cookies, and Web Locks where required by the PWA session-authority model. PKCE remains unimplemented and conditional future work only if MinePanel deliberately expands its browser compatibility requirements. **If MinePanel later adopts a browser-based OAuth Authorization Code flow, that flow MUST use PKCE and receive a fresh security/design review against then-current browser OAuth guidance.**
 
-All filesystem mutation remains blocked by D-8. The backend data mount stays read-only until the write boundary is selected and implemented.
+### 17.5 Backend framework port (Elysia 2) `[PROPOSED — FUTURE]`
 
-### 17.4 Phase 2B — Integrations `[PROPOSED]`
+Start gates are enumerated in `ROADMAP.md` §6.1 and are all required. The binding constraint here is the migration rule: **PARITY FIRST.** The port MUST preserve routes, HTTP statuses, response bodies, error codes, cookies, auth/session semantics, CORS/CSRF behavior, database schema and migrations, Docker lifecycle semantics, container labels and WebSocket protocol semantics. `protocolVersion` MUST NOT change merely because the framework changes. Performance, memory, image size, startup time and ergonomics are secondary to black-box compatibility and operational correctness.
 
-Later consumers of Phase 2A: API keys, outbound webhooks, external integrations, and system-event consumers. These MUST NOT block core Minecraft management.
+### 17.6 MCP Server / Agent Interface `[PROPOSED — FUTURE]`
 
-### 17.5 Later product surfaces `[PROPOSED]`
+Post-Elysia only: a thin, client-agnostic MCP server adapter over MinePanel's application/domain layer. It is a boundary adapter — never direct Docker, filesystem, or database access — and every operation routes through MinePanel's existing authorization and orchestration. It may start only after the Elysia 2 migration (§17.5) is complete. `ROADMAP.md` §6.2 records it as conditional; this section is never evidence that MCP exists.
 
-Creation presets/wizard, mod-loader/mod selection, Velocity/networking,
-Geyser/Bedrock, mobile/player surfaces, and other deferred product work
-remain later milestones. No detailed design is normative until its product
-and security decisions are made.
+Planned scope: shared contracts and schemas for MCP-exposed capabilities where appropriate; scoped MCP auth, including per-server restrictions; read / control / destructive permission separation; server state, logs, metrics, players, backups and node resources; lifecycle and console operations through existing MinePanel authorization and orchestration; structured diagnostics and higher-level tools such as `diagnose_server` / `safe_restart`; audit attribution for agent-triggered mutations; generic MCP clients, with Hermes as an example integration.
 
-### 17.6 Backend 2.0 — Elysia 2 `[PROPOSED — FUTURE]`
+Binding constraints:
 
-This is a post-feature-completion migration milestone, not current preparation work. It may start only after all of the following are true:
-
-1. The intended Nest backend feature set is complete.
-2. Deferred functionality is explicitly documented.
-3. SPEC, roadmap, and supporting docs are synchronized.
-4. Stable API and error contracts exist.
-5. Real Docker lifecycle testing exists.
-6. Framework-neutral black-box HTTP and WebSocket conformance coverage exists.
-7. The final Nest baseline is tagged and frozen.
-8. Elysia 2 is stable enough for the required deployment.
-9. The required Elysia ecosystem works reliably on the selected Bun runtime.
-
-**Migration rule: PARITY FIRST.** The initial port MUST preserve routes, HTTP statuses, response bodies, error codes, cookies, auth/session semantics, CORS/CSRF behavior, database schema/migrations, Docker lifecycle semantics, container labels, and WebSocket protocol semantics. `protocolVersion` MUST NOT change merely because the framework changes. Performance, memory, image-size, startup, and ergonomics improvements are secondary to black-box compatibility and operational correctness.
-
-### 17.7 MCP Server / Agent Interface `[PROPOSED — FUTURE]`
-
-Post-Elysia only: a thin, client-agnostic MCP server adapter over MinePanel's application/domain layer. It is a boundary adapter — never direct Docker, filesystem, or database access — and every operation routes through MinePanel's existing authorization and orchestration. It may start only after the Elysia 2 migration (§17.6) is complete.
-
-Planned scope:
-
-- Shared contracts and schemas for MCP-exposed capabilities where appropriate.
-- Scoped MCP auth, including per-server restrictions.
-- Read / control / destructive permission separation.
-- Server state, logs, metrics, players, backups, and node resources.
-- Lifecycle and console operations through existing MinePanel authorization and orchestration.
-- Structured diagnostics and higher-level tools such as `diagnose_server` / `safe_restart`.
-- Audit attribution for agent-triggered mutations.
-- Generic MCP clients, with Hermes as an example integration.
-
-### 17.8 Future compatibility — hosted-browser auth `[PROPOSED]`
-
-The current supported hosted-browser contract does not require PKCE: it depends on a public HTTPS PWA, browser-trusted public HTTPS panel origins, CHIPS `Partitioned` HttpOnly cookies, and Web Locks where required by the PWA session-authority model. PKCE remains unimplemented and conditional future work only if MinePanel deliberately expands its browser compatibility requirements. If MinePanel later adopts a browser-based OAuth Authorization Code flow, that flow MUST use PKCE and receive a fresh security/design review against then-current browser OAuth guidance.
+1. **No privileged path.** MCP MUST NOT reach Docker, the filesystem or the database directly; capability is composed from the same application services the HTTP API uses.
+2. **Read, control and destructive capabilities MUST be separable**, and every operation MUST pass the existing authorization boundary, including per-server restrictions.
+3. **Agent-triggered mutations MUST be attributable** in the Phase 2A audit log (§17.3).
+4. **Higher-level diagnostics MUST be composition**, not new privileged code paths.
 
 ---
 
@@ -871,4 +855,24 @@ The previous SPEC.md (pre-rewrite) was an ambitious design document that conflat
 
 ## Appendix B — Validation note
 
-The Stable-v1 implementation audit covered the canonical docs/config, schema and migrations, bootstrap and module composition, auth/identity/guards, admin and access-control paths, Docker and lifecycle services, gateway/adapters, controllers/DTOs, unit and e2e inventories, Compose, Dockerfile, and CI workflow. Local verification passed with 44 unit suites and 756 tests, 13 live-PostgreSQL e2e suites and 91 tests, a fresh migration chain, a production build, and a real-Docker create → readiness → graceful stop → delete scenario with retained data. The implementation evidence remains master merge commit `7a184f63da49d2a8be7c4319d91a2dbe770441f8` and master CI run `33647554764`; this documentation reconciliation does not re-run or re-prove that lifecycle scenario.
+### B.1 Stable-v1 implementation audit
+
+The Stable-v1 implementation audit covered the canonical docs/config, schema and migrations, bootstrap and module composition, auth/identity/guards, admin and access-control paths, Docker and lifecycle services, gateway/adapters, controllers/DTOs, unit and e2e inventories, Compose, Dockerfile, and CI workflow. Local verification passed with 44 unit suites and 756 tests, 13 live-PostgreSQL e2e suites and 91 tests, a fresh migration chain, a production build, and a real-Docker create → readiness → graceful stop → delete scenario with retained data. The implementation evidence remains master merge commit `7a184f63da49d2a8be7c4319d91a2dbe770441f8` and master CI run `33647554764`; the documentation reconciliation did not re-run or re-prove that lifecycle scenario.
+
+### B.2 Documentation-consolidation re-verification
+
+Re-run at revision `6b703c935ac9ee843d2c98bd902ae7946d9f13f9` against a fresh throwaway PostgreSQL 16 container, with the migration chain applied to a clean database:
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Typecheck + oxlint + Biome | `bun run lint:ci` | passed (136 files, no fixes) |
+| Fresh migration chain | `bun run db:migrate` | passed on an empty database |
+| Unit suites | `bun run test:ci` | 44 suites, **760** tests passed |
+| Production build | `bun run build` | passed |
+| e2e suites | `bun run test:e2e --runInBand` | 13 suites, 91 tests passed (live PostgreSQL, Docker mocked) |
+
+The unit-test count advanced from 756 to 760 between the audit revision and this one (four tests added by the resource-admission refactor). This re-verification covers the local gates only; the `image`, `trusted-lifecycle` and `publish` jobs require a Docker daemon on a trusted runner and were not executed here.
+
+### B.3 Discrepancies found and not fixed
+
+Documentation-only pass: no product code was modified. The discrepancies recorded while reconciling the documents with the code are listed in the task report; the durable ones are captured as `ROADMAP.md` §8 items (notably the version-string inconsistency B-P2-6) and as open decisions D-6/D-8 in §19.

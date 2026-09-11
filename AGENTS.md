@@ -2,7 +2,32 @@
 
 ## 1. Overview
 
-MinePanel Backend is a self-hosted Minecraft server-management API. It is a NestJS 11 application written primarily in TypeScript 5 with PostgreSQL 16 through Drizzle ORM. The API authenticates users with JWT cookie sessions and TOTP, manages Docker-backed Minecraft server lifecycle and access control, publishes minimal host metrics through Socket.IO, and runs behind Caddy in the Compose deployment. Development uses the Nest CLI; production runs the compiled application with Bun. `SPEC.md` is the authoritative distinction between implemented behavior, accepted backlog, proposals, and owner decisions.
+MinePanel Backend is a self-hosted Minecraft server-management API. It is a NestJS 11 application written primarily in TypeScript 5 with PostgreSQL 16 through Drizzle ORM. The API authenticates users with JWT cookie sessions and TOTP, manages Docker-backed Minecraft server lifecycle and access control, publishes minimal host metrics through Socket.IO, and runs behind Caddy in the Compose deployment. Development uses the Nest CLI; production runs the compiled application with Bun.
+
+### 1.1 Authoritative context — read before changing behaviour
+
+| Question | File |
+|----------|------|
+| Which repository am I in, and what does it own? | [`ARCHITECTURE.md`](./ARCHITECTURE.md) §2 |
+| What must the system do? Contracts, invariants, status markers | [`SPEC.md`](./SPEC.md) |
+| How is it built today? Modules, flows, boundaries | [`ARCHITECTURE.md`](./ARCHITECTURE.md) |
+| What is planned, deferred or conditional? | [`ROADMAP.md`](./ROADMAP.md) |
+| How do I build, test and validate? | [`DEVELOPMENT.md`](./DEVELOPMENT.md) |
+| What must I not do? | §14 Red Lines in this file |
+
+Rules that follow from that hierarchy:
+
+- `SPEC.md` wins over any other repository document: it defines the **intended** contracts and invariants. Production code, migrations, tests and runtime configuration define what is **currently implemented**. Neither silently overwrites the other — when they disagree, investigate and classify the discrepancy per `SPEC.md` §1 (implementation defect, intentional contract change needing a spec update, stale spec, or unresolved); never rewrite the spec just because the code behaves differently, and never assume code is correct because it ships.
+- Never document planned behaviour as implemented. Status markers (`[IMPLEMENTED]`, `[ACCEPTED]`,
+  `[PROPOSED]`, `[CONTRADICTED]`, `[DECISION REQUIRED]`) are the mechanism; use them.
+- Inspect the current code before changing behaviour, and read `ROADMAP.md` before assuming future
+  scope. Tests are behavioural evidence; comments and README prose are not.
+- Update the canonical document that owns a change in the same commit: contracts → `SPEC.md`,
+  structure → `ARCHITECTURE.md`, planning → `ROADMAP.md` **and** `roadmap.json`, workflow →
+  `DEVELOPMENT.md`. Do not create a new Markdown file when an existing canonical document can hold
+  the content.
+- `memory/` and `CLAUDE.md` are gitignored local scratch files, not project context. A stale
+  `memory/MEMORY.md` describes a pre-Drizzle (Prisma-era) state and must not be treated as truth.
 
 ## 2. Repository Structure
 
@@ -27,7 +52,13 @@ scripts/
 test/                        # e2e tests: live PostgreSQL, mocked Docker boundary
 drizzle/                     # generated Drizzle migrations and metadata
 docs/                        # deployment, auth, access-control, realtime, and server docs
-.github/workflows/ci.yml     # test, migration, e2e, image, and publish jobs
+  engineering/anti-slop.md   # governing anti-slop policy (§13)
+.github/workflows/ci.yml     # test, migration, e2e, image, trusted-lifecycle, and publish jobs
+SPEC.md                      # contract-level truth: behaviour, invariants, decisions
+ARCHITECTURE.md              # how the current system is built
+ROADMAP.md                   # planning state, dependencies, gates
+DEVELOPMENT.md               # setup, commands, validation gates
+roadmap.json                 # published machine-readable projection of ROADMAP.md
 ```
 
 > **Repo-wide:** create an HTTP feature in `src/<feature>/` with module, controller, service, DTOs, and colocated specs; register it in `AppModule`. Keep controllers as request/response adapters and put business rules in services.
@@ -38,7 +69,7 @@ docs/                        # deployment, auth, access-control, realtime, and s
 - Keep root source code out of the repository root. Root files are configuration, deployment, setup wizards, scripts, and project documentation.
 - Do not add generated artifacts under `src/`; `dist/` and `coverage/` stay ignored.
 
-## 5. Commands and Workflows
+## 3. Commands and Workflows
 
 ```bash
 # Dependencies
@@ -74,9 +105,9 @@ bun db:studio
 
 Use `bun install --frozen-lockfile`, `bun run lint:ci`, `bun run build`, and `bun run test:ci` for the unit-test CI gate. Never run `bun run lint` in CI: it writes changes.
 
-`bun run test:e2e` uses a live PostgreSQL instance and applies migrations, but mocks Docker. It does not create real Minecraft containers. The trusted `publish` job is the only current CI job with daemon-backed smoke coverage; a full real Docker lifecycle integration test remains backlog work in `SPEC.md`.
+`bun run test:e2e` uses a live PostgreSQL instance and applies migrations, but mocks Docker. It does not create real Minecraft containers. Real daemon-backed coverage lives in `scripts/docker-lifecycle-smoke.mjs`, run by the release-gated `trusted-lifecycle` job (create → readiness → graceful RCON stop → delete → retained data) and by the trusted `publish` job's health-200 smoke. Never present mocked Docker coverage as a real container-lifecycle test.
 
-## 6. Code Formatting
+## 4. Code Formatting
 
 Formatter and import organizer: Biome 2.4 in `biome.json`. Generate formatter-compliant code directly; do not rely on a cleanup pass.
 
@@ -140,7 +171,7 @@ step "1/3" "Checking prerequisites"
 
 Use `docker compose`, never `docker-compose`. Do not source `.env`; parse only required values because it is untrusted input. `setup.ps1` is the only PowerShell source, so do not invent repository-wide PowerShell style rules.
 
-## 7. Naming Conventions
+## 5. Naming Conventions
 
 ### TypeScript
 
@@ -164,7 +195,7 @@ const makeServer = (overrides: Partial<Server> = {}): Server => ({
 - Keep schema table constants camelCase (`refreshTokens`, `serverAccess`), inferred row types PascalCase (`Server`, `RefreshToken`), and enum constants with the existing `Enum` suffix where used.
 - Use UPPER_SNAKE_CASE environment variables in `.env.example` and setup wizard output.
 
-## 8. Type Annotations
+## 6. Type Annotations
 
 ### TypeScript
 
@@ -189,7 +220,7 @@ type ReconciliationOutcome =
   | { kind: 'unchanged' };
 ```
 
-## 9. Imports
+## 7. Imports
 
 ### TypeScript
 
@@ -206,7 +237,7 @@ import { LoginUserDto } from './dto/login.dto';
 
 Never cross feature boundaries through relative traversal. Do not use wildcard imports as a re-export mechanism.
 
-## 10. Error Handling
+## 8. Error Handling
 
 ### TypeScript
 
@@ -235,7 +266,7 @@ try {
 - Docker daemon absence is nonfatal at startup. Health becomes degraded and Docker operations return 503; a lifecycle operation already in progress may settle its row as `ERROR` when the daemon outcome is unknown.
 - Preserve the timing-equalized password flow: compare against `DUMMY_PASSWORD_HASH` when no user exists.
 
-## 11. Comments and Docstrings
+## 9. Comments and Docstrings
 
 ### TypeScript
 
@@ -253,7 +284,7 @@ httpAdapter.set('trust proxy', 1);
 - Use trailing comments for error-code or unit explanations when needed.
 - Group `.env.example` variables with section banners and document non-obvious values near their declaration.
 
-## 12. Testing
+## 10. Testing
 
 ### TypeScript
 
@@ -281,7 +312,7 @@ describe('ServersService', () => {
 - E2e tests use live loopback PostgreSQL with `TEST_DATABASE_URL`, but override the Docker boundary. Do not claim or write e2e tests that assume a daemon unless they are explicitly release-only integration coverage.
 - Never add “should be defined” scaffolding assertions.
 
-## 13. Git
+## 11. Git
 
 > **Repo-wide:** use Conventional Commit prefixes for all new commits.
 
@@ -294,7 +325,7 @@ describe('ServersService', () => {
 
 Use an optional scope only when the change is clearly feature-local, for example `fix(auth):`. Keep subjects imperative and lowercase-initial. Keep history linear; rebase rather than create merge commits. Do not commit, push, publish, or alter the user's existing uncommitted changes without explicit approval.
 
-## 14. Dependencies and Tooling
+## 12. Dependencies and Tooling
 
 ### TypeScript and JavaScript
 
@@ -305,7 +336,7 @@ Use an optional scope only when the change is clearly feature-local, for example
 - Controllers and DTOs use `class-validator`, `class-transformer`, and Swagger decorators. Global validation whitelists, transforms, and rejects extra properties.
 - CI contains separate unit/build, migration, e2e, image, and trusted publish jobs. Preserve the daemon boundary: ordinary PR image tests run degraded without a mounted Docker socket.
 
-## 15. Anti-slop and trust-boundary checklist
+## 13. Anti-slop and trust-boundary checklist
 
 Repository policy: `docs/engineering/anti-slop.md`. Anti-slop lint rules are
 guardrails, never the reason a design exists. Before completing any lint
@@ -322,7 +353,7 @@ remediation, every agent must verify all of the following:
 
 If any answer indicates the linter drove the code, fix the code or the lint rule.
 
-## 16. Red Lines
+## 14. Red Lines
 
 > **Repo-wide:** these prohibitions are grounded in the current codebase and release design.
 
